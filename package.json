@@ -1,0 +1,40 @@
+{
+  "name": "dsh-v-cosmos",
+  "description": "V Cosmos — DSH Web 的工作区星系可视化插件（工作区=星座、活跃提案=恒星（生命周期四态）、openspec 会话=行星、子代理=卫星、自由会话=彗星、归档=星云；风格 D HUD 银河 + dive-in 钻取）",
+  "version": "0.1.0",
+  "license": "MIT",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/index.js",
+    "lib/scan.mjs",
+    "lib/associations.mjs",
+    "lib/client.js",
+    "lib/client.js.map",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web"
+    }
+  },
+  "scripts": {
+    "build": "node build.mjs",
+    "check": "node --check lib/index.js && node --check lib/scan.mjs && node --check lib/associations.mjs && node --check lib/client.js",
+    "test": "node test/scan-smoke.mjs && node test/associations-smoke.mjs && node test/merge-smoke.mjs && node test/engine-smoke.mjs && node test/render-smoke.mjs && node test/factory-smoke.mjs && node test/zero-pollution-smoke.mjs && node test/cross-timing-smoke.mjs && node test/host-wiring-smoke.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0"
+  }
+}

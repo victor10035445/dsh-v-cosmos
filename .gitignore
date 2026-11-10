@@ -1,0 +1,16 @@
+# 依赖与日志
+node_modules/
+*.log
+
+# 构建产物（npm run build 重建，不入库）
+lib/
+
+# 本地基线 / 决策历史 / 工具缓存（用户点名 ignore：历史只留本地磁盘）
+demo/
+openspec/
+cosmos-spec/
+.trae/
+.dsh-v-explorer/
+
+# 历史打磨笔记
+STYLE-POLISH.md

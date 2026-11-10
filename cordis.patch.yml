@@ -1,0 +1,6 @@
+# dsh-v-cosmos 服务端补丁层：把插件注册进 cordis loader。
+# 宿主端提供 /api/dsh-v-cosmos/* 路由（星空骨架 + SSE 轻帧广播 + 关联存储）；
+# client-modules 发现本包的 dsh.client 声明后自动把 lib/client.js 编入 /plugins 启动图。
+- insert:
+    - id: dsh-v-cosmos
+      name: dsh-v-cosmos
