@@ -5,12 +5,20 @@ node_modules/
 # 构建产物（npm run build 重建，不入库）
 lib/
 
-# 本地基线 / 决策历史 / 工具缓存（用户点名 ignore：历史只留本地磁盘）
+# 本地基线 / 决策历史 / 工具缓存（历史只留本地磁盘，不入发布仓库）
 demo/
 openspec/
 cosmos-spec/
+docs/
 .trae/
+.claude/
 .dsh-v-explorer/
 
 # 历史打磨笔记
 STYLE-POLISH.md
+
+# 系统与打包卫生项
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.tgz
