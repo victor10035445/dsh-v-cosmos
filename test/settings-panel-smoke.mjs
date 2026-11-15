@@ -1,0 +1,922 @@
+/**
+ * 设置页「快捷动作」冒烟（add-cosmos-proposal-actions 5.1–5.4 /
+ * spec cosmos-button-settings「设置页『快捷动作』标签页」「按钮排序交互与顺序语义」）：
+ * 暂存-保存、CRUD 回显、`newSession` 锁定、覆盖标记/重置、排序与边界、CAS 409 重试流、
+ * 只读降级、模型目录降级与漂移回显、级别默认最高；
+ * fix-cosmos-const-float-send-close 4.4：每按钮「执行后跳转」（`jumpNewSession`，
+ * 缺省 true）的归一化/草稿/编辑/保存/回显与 UI 锚点（快捷动作行内勾选、参与暂存-保存、
+ * 随可写性禁用；星座行不呈现）；行内锁定「新增会话」徽标保持不变。
+ * 运行：node test/settings-panel-smoke.mjs
+ */
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { MAX_BUTTONS } from "../src/buttons.mjs";
+import {
+  CONSTELLATION_PROFILE,
+  buttonDraftOf,
+  buttonIssue,
+  constButtonDraftOf,
+  constButtonIssue,
+  createButtonSettingsController,
+  moveButton
+} from "../src/button-settings.mjs";
+import { catalogOptions, describeButtonModel, highestEffort, modelKeyOf } from "../src/model-catalog.mjs";
+import { buttonsSectionOf } from "../src/buttons.mjs";
+
+/** 设置作用域桩：set/unset 可编程失败（模拟 CAS 409 / 只读拒绝）。 */
+function fakeScope(options = {}) {
+  const listeners = new Set();
+  const initialValue = { buttons: options.buttons ?? [] };
+  const initialBase = { buttons: options.baseButtons ?? [] };
+  if (options.constellationButtons !== undefined) initialValue.constellationButtons = options.constellationButtons;
+  if (options.baseConstButtons !== undefined) initialBase.constellationButtons = options.baseConstButtons;
+  const userOf = () => {
+    if (options.user !== undefined) return options.user;
+    const parts = {};
+    if (options.buttons) parts.buttons = options.buttons;
+    if (options.constellationButtons) parts.constellationButtons = options.constellationButtons;
+    return Object.keys(parts).length > 0 ? parts : null;
+  };
+  let state = {
+    status: "ready",
+    value: initialValue,
+    base: initialBase,
+    user: userOf(),
+    revision: 1,
+    writable: options.writable !== false,
+    mode: "host"
+  };
+  const calls = [];
+  let failNext = 0;
+  const emit = () => {
+    for (const listener of [...listeners]) listener();
+  };
+  return {
+    calls,
+    failNextSet(times = 1) {
+      failNext = times;
+    },
+    patch(next) {
+      state = { ...state, ...next };
+      emit();
+    },
+    getSnapshot: () => state,
+    subscribe(listener) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    async set(key, value) {
+      calls.push({ op: "set", key, value });
+      if (!state.writable) throw new Error("read-only");
+      if (failNext > 0) {
+        failNext -= 1;
+        state = { ...state, revision: state.revision + 1 }; // 他端先写：revision 漂移
+        emit();
+        throw new Error("conflict 409");
+      }
+      state = {
+        ...state,
+        revision: state.revision + 1,
+        value: { ...state.value, [key]: value },
+        user: { ...(state.user ?? {}), [key]: value }
+      };
+      emit();
+    },
+    async unset(key) {
+      calls.push({ op: "unset", key });
+      if (!state.writable) throw new Error("read-only");
+      const value = { ...state.value };
+      delete value[key];
+      const user = { ...(state.user ?? {}) };
+      delete user[key];
+      state = { ...state, revision: state.revision + 1, value, user: Object.keys(user).length ? user : null };
+      emit();
+    }
+  };
+}
+
+const BUTTON = { name: "审查", prompt: "请使用 /cosmos-review 审查本提案", autoSend: true, newSession: true };
+
+/* ── 1. 草稿构造与校验（newSession 锁定） ── */
+{
+  assert.deepEqual(buttonDraftOf({ name: "a", prompt: "p" }), {
+    name: "a",
+    prompt: "p",
+    autoSend: false,
+    newSession: true
+  }, "草稿恒含 newSession: true");
+  assert.deepEqual(buttonDraftOf({ name: "a", prompt: "p", prepend: false }), {
+    name: "a",
+    prompt: "p",
+    autoSend: false,
+    newSession: true
+  }, "prepend=false 不落键");
+  assert.deepEqual(buttonDraftOf({ name: "a", prompt: "p", model: { provider: "x", model: "y" } }).model, { provider: "x", model: "y" }, "model 透传");
+
+  assert.equal(buttonIssue([{ name: "", prompt: "p" }]), "buttonNameRequired");
+  assert.equal(buttonIssue([{ name: "a", prompt: "" }]), "buttonPromptRequired");
+  assert.equal(buttonIssue([{ name: "a", prompt: "p" }, { name: " a ", prompt: "q" }]), "buttonDup", "trim 后重名");
+  assert.equal(buttonIssue([{ name: "a", prompt: "p", newSession: false }]), "buttonNewSessionFixed", "newSession 非 true 拒绝");
+  assert.equal(buttonIssue(Array.from({ length: MAX_BUTTONS + 1 }, (_v, i) => ({ name: "b" + i, prompt: "p" }))), "tooManyButtons");
+  assert.equal(buttonIssue([BUTTON]), "", "合法草稿通过");
+}
+
+/* ── 2. CRUD 回显 / 暂存-保存 / 放弃修改 ── */
+{
+  const scope = fakeScope({ buttons: [BUTTON] });
+  const face = createButtonSettingsController(scope);
+  let state = face.getSnapshot();
+  assert.equal(state.writable, true);
+  assert.equal(state.buttonsOverridden, true, "用户层存在 buttons → 覆盖标记");
+  assert.deepEqual(state.buttonsDraft, [buttonDraftOf(BUTTON)], "生效值回显为草稿");
+  assert.equal(state.buttonsDirty, false);
+
+  face.addButton();
+  state = face.getSnapshot();
+  assert.equal(state.buttonsDraft.length, 2, "新增追加到尾部");
+  assert.equal(state.buttonsDirty, true, "新增即未保存");
+  assert.equal(state.buttonsInvalid, true, "空 name 草稿非法");
+
+  face.editButton(1, "name", "审查2");
+  face.editButton(1, "prompt", "请使用 /cosmos-apply-change 执行本提案");
+  face.editButton(1, "autoSend", false);
+  face.editButton(1, "prepend", true);
+  state = face.getSnapshot();
+  assert.equal(state.buttonsInvalid, false, "补齐后合法");
+  assert.equal(state.buttonsDraft[1].prepend, true);
+  assert.equal(state.buttonsDraft[1].newSession, true, "newSession 恒 true");
+
+  /* 锁定：直接写 newSession=false 被忽略 */
+  face.editButton(1, "newSession", false);
+  assert.equal(face.getSnapshot().buttonsDraft[1].newSession, true, "锁定项不可改");
+
+  /* 保存 → 只写配置层 */
+  const ok = await face.save();
+  assert.equal(ok, true);
+  const setCall = scope.calls.find((call) => call.op === "set");
+  assert.ok(setCall, "保存经作用域写入");
+  assert.deepEqual(setCall.value[1], {
+    name: "审查2",
+    prompt: "请使用 /cosmos-apply-change 执行本提案",
+    autoSend: false,
+    newSession: true,
+    prepend: true
+  }, "保存写出归一化条目（newSession 恒 true、prepend 条件键）");
+  assert.ok(!("model" in setCall.value[1]), "未绑定不写 model 键");
+  state = face.getSnapshot();
+  assert.equal(state.buttonsDirty, false, "保存后回清未保存标记");
+  assert.equal(state.failed, false);
+
+  /* 再编辑后放弃 → 回退生效值 */
+  face.editButton(0, "name", "临时改名");
+  assert.equal(face.getSnapshot().buttonsDirty, true);
+  face.discard();
+  assert.equal(face.getSnapshot().buttonsDraft[0].name, "审查", "放弃修改回退草稿");
+  assert.equal(face.getSnapshot().buttonsDirty, false);
+
+  /* 删除 */
+  face.removeButton(1);
+  assert.equal(face.getSnapshot().buttonsDraft.length, 1);
+  face.dispose();
+}
+
+/* ── 3. 模型/级别字段（条件键 + 先切后发的数据面） ── */
+{
+  const scope = fakeScope({ buttons: [BUTTON] });
+  const face = createButtonSettingsController(scope);
+  face.editButton(0, "model", { provider: "deepseek", model: "deepseek-chat", reasoningEffort: "max" });
+  assert.deepEqual(face.getSnapshot().buttonsDraft[0].model, {
+    provider: "deepseek",
+    model: "deepseek-chat",
+    reasoningEffort: "max"
+  }, "模型三元组入草稿");
+  await face.save();
+  assert.deepEqual(scope.calls.find((call) => call.op === "set").value[0].model, {
+    provider: "deepseek",
+    model: "deepseek-chat",
+    reasoningEffort: "max"
+  }, "保存透传模型三元组");
+
+  /* 解绑 → 删除 model 键（不留 undefined） */
+  face.editButton(0, "model", undefined);
+  assert.ok(!("model" in face.getSnapshot().buttonsDraft[0]), "解绑删除 model 键");
+  face.dispose();
+}
+
+/* ── 3b. 前置状态（add-cosmos-action-prestate-gate 4.1/4.2）：草稿/保存/回显与 proto 联动 ── */
+{
+  /* 草稿：preState 尾部键序；proto ⇒ newSession false 且 prepend 不落键。 */
+  assert.deepEqual(
+    Object.keys(buttonDraftOf({ name: "a", prompt: "p", preState: "reviewed" })),
+    ["name", "prompt", "autoSend", "newSession", "preState"],
+    "preState 追加尾部"
+  );
+  assert.deepEqual(buttonDraftOf({ name: "a", prompt: "p", preState: "proto", prepend: true }), {
+    name: "a",
+    prompt: "p",
+    autoSend: false,
+    newSession: false,
+    preState: "proto"
+  }, "proto 行 newSession false、prepend 不落键");
+  assert.equal(buttonIssue([{ name: "a", prompt: "p", preState: "proto", newSession: false }]), "", "proto 草稿合法");
+  assert.equal(buttonIssue([{ name: "a", prompt: "p", preState: "doing" }]), "buttonPreStateInvalid", "漂移 preState 保存拒绝");
+  assert.equal(buttonIssue([{ name: "a", prompt: "p", preState: 7 }]), "buttonPreStateInvalid", "非字符串 preState 拒绝");
+  assert.equal(buttonIssue([{ name: "a", prompt: "p", preState: "reviewed", newSession: false }]), "buttonNewSessionFixed", "非 proto 行 newSession 非 true 仍拒绝");
+
+  /* 控制器：下拉切换 → 锁定方向联动 / 保存写出 preState。 */
+  const scope = fakeScope({ buttons: [{ name: "推进", prompt: "p", autoSend: false, newSession: false, preState: "proto" }] });
+  const face = createButtonSettingsController(scope);
+  let state = face.getSnapshot();
+  assert.equal(state.buttonsDraft[0].newSession, false, "proto 生效值回显为锁定不勾选");
+  assert.equal(state.buttonsDirty, false, "初始不脏");
+  face.editButton(0, "preState", "reviewed");
+  state = face.getSnapshot();
+  assert.equal(state.buttonsDraft[0].preState, "reviewed", "preState 落草稿");
+  assert.equal(state.buttonsDraft[0].newSession, true, "切离 proto → 锁定翻回勾选");
+  assert.equal(await face.save(), true);
+  assert.deepEqual(scope.calls.find((call) => call.op === "set").value[0], {
+    name: "推进",
+    prompt: "p",
+    autoSend: false,
+    newSession: true,
+    preState: "reviewed"
+  }, "保存写出 preState（尾部键序）");
+  face.dispose();
+
+  /* 切到「不限」→ 不落 preState 键（存储最小形）。 */
+  const scope2 = fakeScope({ buttons: [{ name: "a", prompt: "p", preState: "created", newSession: true }] });
+  const face2 = createButtonSettingsController(scope2);
+  face2.editButton(0, "preState", undefined);
+  assert.equal(await face2.save(), true);
+  assert.ok(!("preState" in scope2.calls.find((call) => call.op === "set").value[0]), "不限 → 不写 preState 键");
+  face2.dispose();
+
+  /* 漂移值：原样回显（草稿保留）→ 保存被拒（草稿保留可修正，不写配置层）。 */
+  const driftScope = fakeScope({ buttons: [{ name: "旧行", prompt: "p", preState: "doing", newSession: true }] });
+  const driftFace = createButtonSettingsController(driftScope);
+  state = driftFace.getSnapshot();
+  assert.equal(state.buttonsDraft[0].preState, "doing", "漂移值原样回显");
+  assert.equal(state.buttonsInvalid, true);
+  assert.equal(state.buttonsInvalidReason, "buttonPreStateInvalid");
+  assert.equal(await driftFace.save(), false, "漂移保存被拒");
+  assert.equal(driftScope.calls.filter((call) => call.op === "set").length, 0, "未写配置层");
+  assert.equal(driftFace.getSnapshot().buttonsDraft[0].preState, "doing", "草稿保留可修正");
+  driftFace.dispose();
+
+  /* proto 行「提示词在前」：编辑 prepend 不落键，保存不写。 */
+  const protoScope = fakeScope({ buttons: [{ name: "推进", prompt: "p", preState: "proto", newSession: false }] });
+  const protoFace = createButtonSettingsController(protoScope);
+  protoFace.editButton(0, "prompt", "推进本提案");
+  protoFace.editButton(0, "prepend", true);
+  assert.ok(!("prepend" in protoFace.getSnapshot().buttonsDraft[0]), "proto 行 prepend 不落草稿");
+  assert.equal(protoFace.getSnapshot().buttonsDirty, true, "其他字段真实改动 → 脏");
+  assert.equal(await protoFace.save(), true, "proto 行保存成功");
+  assert.ok(!("prepend" in protoScope.calls.find((call) => call.op === "set").value[0]), "proto 行保存不写 prepend");
+  protoFace.dispose();
+
+  /* 星座 profile：无前置状态控件（editButton 空操作，保存不写该键）。 */
+  const constScope = fakeScope({
+    buttons: [],
+    constellationButtons: [{ name: "探索", prompt: "p", autoSend: false, newSession: true }]
+  });
+  const constFace = createButtonSettingsController(constScope, CONSTELLATION_PROFILE);
+  assert.equal(CONSTELLATION_PROFILE.supportsPreState, false, "星座 profile 不呈现前置状态");
+  constFace.editButton(0, "prompt", "探索本提案");
+  constFace.editButton(0, "preState", "proto");
+  assert.ok(!("preState" in constFace.getSnapshot().buttonsDraft[0]), "星座行无 preState");
+  assert.equal(constFace.getSnapshot().buttonsDirty, true, "其他字段真实改动 → 脏");
+  assert.equal(await constFace.save(), true, "星座行保存成功");
+  assert.ok(!("preState" in constScope.calls.find((call) => call.op === "set").value[0]), "星座节不写 preState");
+  constFace.dispose();
+}
+
+/* ── 4. 排序与边界（spec「按钮排序交互与顺序语义」） ── */
+{
+  const list = [1, 2, 3, 4].map((n) => ({ name: "b" + n, prompt: "p", newSession: true }));
+  assert.deepEqual(moveButton(list, 2, 0).map((b) => b.name), ["b3", "b1", "b2", "b4"], "拖到首位");
+  assert.deepEqual(moveButton(list, 0, 3).map((b) => b.name), ["b2", "b3", "b4", "b1"], "拖到末位");
+  assert.deepEqual(moveButton(list, 1, 1).map((b) => b.name), ["b1", "b2", "b3", "b4"], "同位空操作");
+  assert.deepEqual(moveButton(list, -1, 2).map((b) => b.name), ["b1", "b2", "b3", "b4"], "越界空操作");
+  assert.deepEqual(moveButton(list, 0, 9).map((b) => b.name), ["b1", "b2", "b3", "b4"], "越界空操作");
+  assert.notEqual(moveButton(list, 0, 1), list, "不 mutate 输入");
+  assert.deepEqual(list.map((b) => b.name), ["b1", "b2", "b3", "b4"], "原数组不变");
+
+  const buttons = [BUTTON, { name: "第二个", prompt: "p2", newSession: true }, { name: "第三个", prompt: "p3", newSession: true }];
+  const scope = fakeScope({ buttons });
+  const face = createButtonSettingsController(scope);
+  face.moveButton(2, 0);
+  assert.equal(face.getSnapshot().buttonsDirty, true, "排序只改草稿（未保存标记出现）");
+  assert.deepEqual(scope.calls.filter((call) => call.op === "set"), [], "排序不写配置层");
+  await face.save();
+  assert.deepEqual(scope.calls.find((call) => call.op === "set").value.map((b) => b.name), ["第三个", "审查", "第二个"], "保存后数组顺序 = 展示顺序");
+
+  /* 0/1 条时排序为空操作、无未保存标记 */
+  const single = fakeScope({ buttons: [BUTTON] });
+  const singleFace = createButtonSettingsController(single);
+  singleFace.moveButton(0, 1);
+  singleFace.moveButton(1, 0);
+  assert.equal(singleFace.getSnapshot().buttonsDirty, false, "单条排序不产生未保存标记");
+  assert.equal(singleFace.getSnapshot().buttonsDraft[0].name, "审查");
+  singleFace.dispose();
+}
+
+/* ── 5. 覆盖标记 / 重置回组合层 ── */
+{
+  const scope = fakeScope({ buttons: [BUTTON], baseButtons: [{ name: "组合层", prompt: "p", autoSend: false, newSession: true }] });
+  const face = createButtonSettingsController(scope);
+  assert.equal(face.getSnapshot().buttonsOverridden, true);
+  assert.equal(face.getSnapshot().baseButtonsCount, 1);
+  const ok = await face.resetButtons();
+  assert.equal(ok, true);
+  assert.deepEqual(scope.calls.find((call) => call.op === "unset"), { op: "unset", key: "buttons" });
+  assert.equal(face.getSnapshot().buttonsOverridden, false, "重置后覆盖标记消失");
+  assert.deepEqual(face.getSnapshot().buttonsDraft, [], "回退生效值（本桩置空）");
+  face.dispose();
+}
+
+/* ── 6. CAS 409 重试流（spec 场景「并发保存 CAS」） ── */
+{
+  const scope = fakeScope({ buttons: [] });
+  const face = createButtonSettingsController(scope);
+  face.addButton();
+  face.editButton(0, "name", "审查");
+  face.editButton(0, "prompt", "请审查本提案");
+  scope.failNextSet(1);
+  const first = await face.save();
+  assert.equal(first, false, "冲突 → 保存未生效");
+  let state = face.getSnapshot();
+  assert.equal(state.failed, true, "失败标记（UI 提示「保存未生效，请重试」）");
+  assert.equal(state.buttonsDirty, true, "草稿保留");
+  assert.deepEqual(state.buttonsDraft[0], { name: "审查", prompt: "请审查本提案", autoSend: false, newSession: true });
+  assert.equal(state.saving, false);
+
+  const retry = await face.save();
+  assert.equal(retry, true, "重试成功（revision 已随 409 刷新）");
+  state = face.getSnapshot();
+  assert.equal(state.failed, false);
+  assert.equal(state.buttonsDirty, false);
+  assert.equal(scope.calls.filter((call) => call.op === "set").length, 2, "两次写入尝试");
+  face.dispose();
+}
+
+/* ── 7. 只读降级（三条通道皆缺） ── */
+{
+  const scope = fakeScope({ buttons: [], writable: false });
+  const face = createButtonSettingsController(scope);
+  assert.equal(face.getSnapshot().writable, false, "不可写（UI 呈现 notWritable）");
+  face.addButton();
+  assert.equal(await face.save(), false, "只读 → 保存被拒");
+  assert.equal(await face.resetButtons(), false, "只读 → 重置被拒");
+  assert.deepEqual(scope.calls, [], "只读路径不发起写入");
+  face.dispose();
+
+  /* 不可用快照（合成只读底座形态） */
+  const readOnlyFace = createButtonSettingsController({
+    getSnapshot: () => ({ status: "ready", value: {}, base: {}, user: null, revision: undefined, writable: false, mode: "host" }),
+    subscribe: () => () => {},
+    set: () => Promise.reject(new Error("read-only")),
+    unset: () => Promise.reject(new Error("read-only"))
+  });
+  assert.equal(readOnlyFace.getSnapshot().available, true);
+  assert.deepEqual(readOnlyFace.getSnapshot().buttonsDraft, []);
+  readOnlyFace.dispose();
+}
+
+/* ── 8. 模型目录：降级 / 漂移回显 / 级别默认最高 ── */
+{
+  const catalog = {
+    status: "ready",
+    groups: [
+      {
+        id: "deepseek",
+        name: "DeepSeek",
+        models: [
+          { id: "deepseek-chat", name: "Chat", reasoning: { efforts: [{ id: "low" }, { id: "medium" }, { id: "max", name: "Max" }] } },
+          { id: "deepseek-reasoner", name: "Reasoner" }
+        ]
+      },
+      { id: "other", name: "Other", models: [{ id: "m1", name: "", reasoning: { efforts: [{ id: "off" }, { id: "high" }] } }] }
+    ]
+  };
+  assert.equal(highestEffort([{ id: "low" }, { id: "max" }, { id: "medium" }]), "max", "已知序取最大");
+  assert.equal(highestEffort([{ id: "off" }, { id: "weird" }]), "weird", "未知 id → 列表末项");
+  assert.equal(highestEffort([]), undefined, "无等级 → undefined");
+  assert.equal(modelKeyOf({ provider: "p", model: "m" }), "p/m");
+  assert.equal(modelKeyOf({ provider: "p", model: "m", reasoningEffort: "max" }), "p/m/max");
+
+  const { items, byKey } = catalogOptions(catalog.groups);
+  assert.equal(items.length, 3, "候选按 provider 分组展开");
+  assert.equal(items[0].label, "DeepSeek · Chat", "label = provider.name · model.name");
+  assert.equal(byKey.get("deepseek/deepseek-chat").efforts.length, 3);
+
+  /* 降级：目录不可达 → 仅「跟随会话（默认）」+ 提示 */
+  for (const broken of [null, { status: "error", groups: [] }]) {
+    const view = describeButtonModel(undefined, broken);
+    assert.equal(view.degraded, true, "目录不可达 → degraded");
+    assert.deepEqual(view.options, [], "无候选");
+    assert.equal(view.key, "", "未绑定 → 跟随");
+  }
+
+  /* 已绑定 + 目录正常：回显；级别默认取已存值 */
+  const bound = describeButtonModel({ provider: "deepseek", model: "deepseek-chat" }, catalog);
+  assert.equal(bound.drift, false);
+  assert.equal(bound.key, "deepseek/deepseek-chat");
+  assert.equal(bound.levelVisible, true, "带等级元数据 → 渲染级别下拉");
+  assert.equal(bound.levelValue, "max", "未存等级 → 默认最高");
+  const savedLow = describeButtonModel({ provider: "deepseek", model: "deepseek-chat", reasoningEffort: "low" }, catalog);
+  assert.equal(savedLow.levelValue, "low", "已存等级原样回显");
+
+  /* 漂移：模型不在目录 → 原样回显标不可用 */
+  const drift = describeButtonModel({ provider: "vend", model: "retired" }, catalog);
+  assert.equal(drift.drift, true, "模型漂移");
+  assert.equal(drift.key, "vend/retired", "原样回显（不被静默改写）");
+  assert.equal(drift.levelVisible, false, "漂移模型无等级元数据");
+
+  /* 等级漂移：模型在册但等级已下线 */
+  const levelDrift = describeButtonModel({ provider: "deepseek", model: "deepseek-chat", reasoningEffort: "xhigh" }, catalog);
+  assert.equal(levelDrift.levelDrift, true, "等级漂移标记");
+  assert.equal(levelDrift.levelValue, "xhigh", "漂移等级原样回显");
+
+  /* 无等级模型 → 不渲染级别下拉 */
+  const noLevel = describeButtonModel({ provider: "deepseek", model: "deepseek-reasoner" }, catalog);
+  assert.equal(noLevel.levelVisible, false, "无等级元数据 → 不渲染级别下拉");
+  assert.equal(noLevel.levelValue, undefined);
+
+  /* 目录降级时的漂移：仍回显原名（不加「不可用」标，由 UI 依 degraded 决定文案） */
+  const degradedDrift = describeButtonModel({ provider: "vend", model: "retired" }, null);
+  assert.equal(degradedDrift.drift, true);
+  assert.equal(degradedDrift.degraded, true);
+
+  /* 换模型后级别按新模型等级重算（spec 场景「级别默认最高与换算」） */
+  const switched = describeButtonModel({ provider: "other", model: "m1" }, catalog);
+  assert.equal(switched.levelValue, "high", "新模型最高等级");
+}
+
+/* ── 9. 投影读面容错（动作条数据面） ── */
+{
+  const projected = buttonsSectionOf({ buttons: [BUTTON, { name: "", prompt: "x" }] });
+  assert.equal(projected.length, 1);
+  assert.equal(projected[0].newSession, true);
+}
+
+/* ── 10. 第二控制器实例：星座 profile（add-cosmos-constellation-actions 5.1） ── */
+{
+  const CONST_BUTTON = { name: "探索新需求", prompt: "请使用 /cosmos-explore 探索新需求", autoSend: false, newSession: true };
+
+  /* 缺省 profile 恒等既有行为（快捷动作回归锁定）。 */
+  assert.equal(CONSTELLATION_PROFILE.section, "constellationButtons", "星座 profile 节键");
+  assert.equal(CONSTELLATION_PROFILE.supportsPrepend, false, "星座 profile 无 prepend");
+
+  /* 草稿构造：恒无 prepend 键（即使来源带 prepend 也不复制）。 */
+  assert.deepEqual(constButtonDraftOf({ name: "a", prompt: "p" }), {
+    name: "a",
+    prompt: "p",
+    autoSend: false,
+    newSession: true
+  }, "星座草稿恒含 newSession、无 prepend");
+  assert.deepEqual(
+    Object.keys(constButtonDraftOf({ name: "a", prompt: "p", prepend: true })),
+    ["name", "prompt", "autoSend", "newSession"],
+    "来源 prepend 不落草稿键"
+  );
+  assert.deepEqual(
+    constButtonDraftOf({ name: "a", prompt: "p", model: { provider: "x", model: "y" } }).model,
+    { provider: "x", model: "y" },
+    "model 透传"
+  );
+
+  /* 校验：星座专属错误键（UI 直接 cosmo s.settings.<key> 取文案）。 */
+  assert.equal(constButtonIssue([{ name: "", prompt: "p" }]), "constButtonNameRequired");
+  assert.equal(constButtonIssue([{ name: "a", prompt: "" }]), "constButtonPromptRequired");
+  assert.equal(constButtonIssue([{ name: "a", prompt: "p" }, { name: " a ", prompt: "q" }]), "constButtonDup");
+  assert.equal(constButtonIssue([{ name: "a", prompt: "p", newSession: false }]), "constButtonNewSessionFixed");
+  assert.equal(constButtonIssue([{ name: "a", prompt: "p", prepend: true }]), "constButtonPrependRejected", "prepend 键拒绝");
+  assert.equal(
+    constButtonIssue(Array.from({ length: 33 }, (_v, i) => ({ name: "b" + i, prompt: "p" }))),
+    "tooManyConstButtons",
+    "星座上限 32（独立计数）"
+  );
+  assert.equal(constButtonIssue([CONST_BUTTON]), "", "合法星座草稿通过");
+
+  /* CRUD / 保存：写 constellationButtons 节、条目无 prepend、不碰 buttons 节。 */
+  const scope = fakeScope({ buttons: [BUTTON], constellationButtons: [] });
+  const constFace = createButtonSettingsController(scope, CONSTELLATION_PROFILE);
+  const actionFace = createButtonSettingsController(scope);
+  assert.deepEqual(constFace.getSnapshot().buttonsDraft, [], "星座实例只读自己的节（buttons 非空也不渗入）");
+  assert.deepEqual(actionFace.getSnapshot().buttonsDraft, [buttonDraftOf(BUTTON)], "快捷动作实例不受影响");
+
+  constFace.addButton();
+  assert.deepEqual(constFace.getSnapshot().buttonsDraft[0], { name: "", prompt: "", autoSend: false, newSession: true }, "新增行无 prepend 字段");
+  constFace.editButton(0, "prepend", true);
+  assert.ok(!("prepend" in constFace.getSnapshot().buttonsDraft[0]), "星座行 prepend 编辑是空操作");
+  constFace.editButton(0, "name", " 探索 ");
+  constFace.editButton(0, "prompt", " 请使用 /cosmos-explore 探索新需求 ");
+  constFace.editButton(0, "autoSend", true);
+  assert.equal(constFace.getSnapshot().buttonsInvalid, false);
+  assert.equal(await constFace.save(), true);
+  const setCall = scope.calls.find((call) => call.op === "set");
+  assert.equal(setCall.key, "constellationButtons", "写星座节（不碰 buttons）");
+  assert.deepEqual(setCall.value, [{ name: "探索", prompt: "请使用 /cosmos-explore 探索新需求", autoSend: true, newSession: true }], "保存条目无 prepend 键");
+  assert.equal(scope.calls.filter((call) => call.op === "set" && call.key === "buttons").length, 0, "星座保存零写 buttons");
+  assert.deepEqual(scope.getSnapshot().value.buttons, [BUTTON], "buttons 节内容不变");
+  assert.equal(constFace.getSnapshot().buttonsOverridden, true, "用户层存在星座节 → 覆盖标记");
+  assert.equal(actionFace.getSnapshot().buttonsDirty, false, "另一实例零干扰");
+
+  /* 重置：只 unset 星座节。 */
+  const resetScope = fakeScope({ buttons: [BUTTON], constellationButtons: [CONST_BUTTON] });
+  const resetFace = createButtonSettingsController(resetScope, CONSTELLATION_PROFILE);
+  assert.equal(resetFace.getSnapshot().buttonsOverridden, true);
+  assert.equal(await resetFace.resetButtons(), true);
+  assert.deepEqual(
+    resetScope.calls.find((call) => call.op === "unset"),
+    { op: "unset", key: "constellationButtons" },
+    "重置只清星座节"
+  );
+  assert.deepEqual(resetScope.getSnapshot().value.buttons, [BUTTON], "buttons 节保留");
+
+  /* 配置层遗留 prepend 条目：读面/草稿投影剥除该键（归一化口径），草稿本身合法；
+     直接携带 prepend 的草稿违规由 constButtonIssue 拦截（上方已直测）。 */
+  const leftoverScope = fakeScope({ constellationButtons: [{ name: "a", prompt: "p", prepend: true }] });
+  const leftoverFace = createButtonSettingsController(leftoverScope, CONSTELLATION_PROFILE);
+  assert.deepEqual(
+    leftoverFace.getSnapshot().buttonsDraft,
+    [{ name: "a", prompt: "p", autoSend: false, newSession: true }],
+    "遗留 prepend 被投影口径剥除（回显为规范形态）"
+  );
+  assert.equal(leftoverFace.getSnapshot().buttonsInvalid, false);
+  assert.equal(await leftoverFace.save(), false, "无修改 → 保存无动作（不产生写入）");
+
+  /* 大小写/节隔离补充：快捷动作 profile 仍支持 prepend（既有语义零改动）。 */
+  const plainScope = fakeScope({ buttons: [] });
+  const plainFace = createButtonSettingsController(plainScope);
+  plainFace.addButton();
+  plainFace.editButton(0, "name", "p");
+  plainFace.editButton(0, "prompt", "x");
+  plainFace.editButton(0, "prepend", true);
+  assert.equal(plainFace.getSnapshot().buttonsDraft[0].prepend, true, "快捷动作仍可设 prepend");
+  assert.equal(await plainFace.save(), true);
+  assert.deepEqual(
+    plainScope.calls.find((call) => call.op === "set").value[0],
+    { name: "p", prompt: "x", autoSend: false, newSession: true, prepend: true },
+    "快捷动作保存仍写 prepend 键"
+  );
+
+  constFace.dispose();
+  actionFace.dispose();
+  resetFace.dispose();
+  leftoverFace.dispose();
+  plainFace.dispose();
+}
+
+/* ── 皮肤页签数据面（add-cosmos-skin-themes 3.4/3.6）：卡片清单与「点选即持久化」链路 ── */
+{
+  const { COSMOS_DEFAULT_SKIN, COSMOS_SKINS, skinCardOf } = await import("../src/cosmos/skin-registry.mjs");
+  const { COSMOS_SETTINGS_VERSION, loadCosmosSettings, sanitizeCosmosSettings, saveCosmosSettings } = await import("../src/settings.mjs");
+
+  assert.equal(COSMOS_SETTINGS_VERSION, 5, "设置面 v5（新增星座动作发送前编辑分支；跳转属按钮配置，不进偏好面）");
+  const cards = COSMOS_SKINS.map(skinCardOf);
+  assert.equal(cards.length, 12, "12 张卡片");
+  assert.deepEqual(cards.map((c) => c.id), COSMOS_SKINS.map((s) => s.id), "卡片顺序 = 注册表顺序");
+  assert.equal(cards.filter((c) => c.isDefault).length, 1, "默认徽标唯一");
+  assert.equal(cards.find((c) => c.isDefault).id, COSMOS_DEFAULT_SKIN, "默认徽标落在 rosepine");
+  for (const card of cards) {
+    assert.equal(card.swatches.length, 5, card.id + ": 预览色板 5 色");
+    assert.ok(card.name && card.ref, card.id + ": 名称/血统齐备");
+    assert.ok(card.mode === "dark" || card.mode === "light", card.id + ": 明暗模式声明");
+  }
+
+  /* 选择 → 写持久化 → 读回（页面「所见即所得 + 下次保持」的数据链） */
+  const store = new Map();
+  globalThis.localStorage = {
+    getItem: (key) => (store.has(key) ? store.get(key) : null),
+    setItem: (key, value) => store.set(key, String(value)),
+    removeItem: (key) => store.delete(key)
+  };
+  try {
+    assert.equal(loadCosmosSettings().skin, COSMOS_DEFAULT_SKIN, "无存储 → 默认皮肤");
+    assert.equal(saveCosmosSettings({ skin: "fermata" }).skin, "fermata", "点选写入");
+    assert.equal(loadCosmosSettings().skin, "fermata", "重开读回同一皮肤");
+    assert.equal(sanitizeCosmosSettings(JSON.parse(store.get("dsh-v-cosmos:settings"))).skin, "fermata", "落盘载荷经净房仍合法");
+    assert.equal(saveCosmosSettings({ skin: "not-a-skin" }).skin, COSMOS_DEFAULT_SKIN, "非法值写侧回落默认");
+    store.set("dsh-v-cosmos:settings", "{not json");
+    assert.equal(loadCosmosSettings().skin, COSMOS_DEFAULT_SKIN, "损坏载荷 → 默认（无报错）");
+  } finally {
+    delete globalThis.localStorage;
+  }
+}
+
+/* ── 导航页签数据面（add-cosmos-zoom-focus-nav 3.1–3.4）：页签注册 / 三控件 /
+   改动即持久化 + 整页热更数据链 / 非法输入净化 ── */
+{
+  const {
+    COSMOS_SETTINGS_DEFAULTS,
+    COSMOS_SETTINGS_BOUNDS,
+    COSMOS_SETTINGS_VERSION,
+    loadCosmosSettings,
+    sanitizeCosmosSettings,
+    saveCosmosSettings
+  } = await import("../src/settings.mjs");
+
+  assert.equal(COSMOS_SETTINGS_VERSION, 5, "设置面 v5（新增星座动作发送前编辑分支）");
+  assert.deepEqual(
+    [COSMOS_SETTINGS_DEFAULTS.zoomDiveRatio, COSMOS_SETTINGS_DEFAULTS.zoomFlyOutRatio, COSMOS_SETTINGS_DEFAULTS.zoomPointerFocus],
+    [100, 25, true],
+    "三键默认：进入 100% / 返回 25% / 指针聚焦开"
+  );
+  assert.equal(COSMOS_SETTINGS_DEFAULTS.sessionPanelOpen, true, "会话列表面板缺省展开（布局偏好，add-cosmos-session-list-panel 3.3）");
+  assert.deepEqual(
+    [COSMOS_SETTINGS_BOUNDS.zoomDiveRatio, COSMOS_SETTINGS_BOUNDS.zoomFlyOutRatio],
+    [[60, 140], [10, 50]],
+    "数值界：进入 60–140 / 返回 10–50"
+  );
+
+  /* 即时生效数据链（纯面）：改动 → 写持久化 → 读回；越界/非法净化 */
+  const store = new Map();
+  globalThis.localStorage = {
+    getItem: (key) => (store.has(key) ? store.get(key) : null),
+    setItem: (key, value) => store.set(key, String(value)),
+    removeItem: (key) => store.delete(key)
+  };
+  try {
+    const applied = saveCosmosSettings({ zoomDiveRatio: 80, zoomFlyOutRatio: 40, zoomPointerFocus: false });
+    assert.deepEqual(
+      [applied.zoomDiveRatio, applied.zoomFlyOutRatio, applied.zoomPointerFocus],
+      [80, 40, false],
+      "三控件改动写入净房结果"
+    );
+    assert.deepEqual(
+      [loadCosmosSettings().zoomDiveRatio, loadCosmosSettings().zoomFlyOutRatio, loadCosmosSettings().zoomPointerFocus],
+      [80, 40, false],
+      "重开读回（持久化）"
+    );
+    assert.deepEqual(
+      [sanitizeCosmosSettings({ zoomDiveRatio: 9999 }).zoomDiveRatio, sanitizeCosmosSettings({ zoomFlyOutRatio: "x" }).zoomFlyOutRatio, sanitizeCosmosSettings({ zoomPointerFocus: "yes" }).zoomPointerFocus],
+      [140, 25, true],
+      "非法输入净化（越界落端点 / 非数字落缺省 / 非布尔落 true）"
+    );
+    /* 会话面板展开态（add-cosmos-session-list-panel 3.3）：同一存储通道、缺省展开、布尔净化。 */
+    assert.equal(saveCosmosSettings({ sessionPanelOpen: false }).sessionPanelOpen, false, "收起写侧保留");
+    assert.equal(loadCosmosSettings().sessionPanelOpen, false, "重开读回收起态");
+    assert.equal(sanitizeCosmosSettings({ sessionPanelOpen: "collapse" }).sessionPanelOpen, true, "非布尔落缺省展开");
+  } finally {
+    delete globalThis.localStorage;
+  }
+
+  /* UI 锚点：面板组件 + 两输入一开关 + 触控/aria + 数字输入净化 */
+  const ui = readFileSync(new URL("../src/settings-ui.jsx", import.meta.url), "utf8");
+  assert.ok(ui.includes("export function CosmosNavPanel"), "导航面板组件");
+  assert.ok(ui.includes('data-plugin-anchor="dsh-v-cosmos:settings-nav"'), "导航面板插件锚点");
+  assert.ok(ui.includes('id="cosmos-nav-dive"') && ui.includes('id="cosmos-nav-flyout"'), "两个数字输入稳定 id");
+  assert.ok(ui.includes("min={60}") && ui.includes("max={140}") && ui.includes("step={5}"), "进入阈值 60–140 步长 5");
+  assert.ok(ui.includes("min={10}") && ui.includes("max={50}"), "返回阈值 10–50 步长 5");
+  assert.ok(ui.includes('type="checkbox"') && ui.includes("zoomPointerFocus"), "指针聚焦开关控件");
+  assert.ok(ui.includes("onBlur={(event) => normalize("), "数字输入失焦夹取（非法/越界输入净化）");
+  assert.ok(ui.includes("min-height:44px"), "输入/开关触控目标 ≥44px");
+  assert.ok(ui.includes('aria-label={tr(t, "cosmos.settings.navDiveAria"'), "数字输入 aria 文案");
+  assert.ok(ui.includes('aria-label={tr(t, "cosmos.settings.navFocusAria"'), "开关 aria 文案");
+  const navPanel = ui.slice(ui.indexOf("export function CosmosNavPanel"), ui.indexOf("export function CosmosSkinPanel"));
+  assert.ok(!/face\.save\(\)/.test(navPanel), "导航页签无「保存」按钮（即时生效语义）");
+  assert.ok(navPanel.includes("face?.set?.(patch)"), "改动直接写 face（无草稿-保存）");
+
+  /* 注册与词典（client.jsx 源码面）：order 3、nav face 注入、zh/en 成对 */
+  const client = readFileSync(new URL("../src/client.jsx", import.meta.url), "utf8");
+  assert.ok(client.includes("CosmosNavPanel"), "面板组件注册");
+  assert.ok(client.includes('id: "nav"'), "「导航」标签页注册");
+  assert.ok(client.includes('label: () => sectionT("cosmos.settings.tabNav")'), "标签文案走词典");
+  assert.ok(client.includes("inject: () => ({ nav: navFace, selectHealth: selectHealthFace })"), "注入 nav face（受控镜像 + 写入 + 失败观测面）");
+  const navTab = client.slice(client.indexOf('id: "nav"'), client.indexOf("/* 4. hero 接力消费条目"));
+  assert.ok(/order: 3,/.test(navTab), "排于「皮肤」(2) 之后");
+  assert.ok(client.includes('"cosmos.settings.tabNav": "导航"'), "词典 zh：页签名");
+  assert.ok(client.includes('"cosmos.settings.tabNav": "Navigation"'), "词典 en：页签名");
+  assert.ok(client.includes('"cosmos.settings.navDiveLabel": "进入星座视图"'), "词典 zh：进入控件");
+  assert.ok(client.includes('"cosmos.settings.navFocusHint": "Zoom gradually focuses'), "词典 en：开关说明");
+  /* 即时生效数据链（客户端源码面）：saveNav → 净房持久化 → engine.setTuning 热更 → store */
+  const saveNavSlice = client.slice(client.indexOf("saveNav(patch)"), client.indexOf("getTuning()"));
+  assert.ok(saveNavSlice.includes("saveCosmosSettings(patch)"), "改动即净房持久化");
+  assert.ok(saveNavSlice.includes("engine?.setTuning(merged)"), "对打开中整页热更引擎参数（无需重开）");
+  assert.ok(saveNavSlice.includes("cosmosNavStore.set(navPrefsOf(merged))"), "受控镜像同步（设置页回显）");
+  assert.ok(client.includes("saveNav: actions.saveNav"), "控制器顶层暴露 saveNav（设置页 face 调用链）");
+  assert.ok(client.includes("selectSkin: actions.selectSkin"), "控制器顶层暴露 selectSkin（皮肤页既有链路同款）");
+}
+
+/* ── 每按钮「执行后跳转」（fix-cosmos-const-float-send-close 4.1/4.2/4.4）：
+   按钮配置可选 `jumpNewSession`（缺省 true = 跳转；仅 false 落键）；草稿/编辑/保存
+   与归一化同形；UI 面 = 快捷动作行内勾选框（缺省勾选、参与暂存-保存、随可写性禁用；
+   星座行不呈现）。页面偏好面 MUST NOT 含该语义。 ── */
+{
+  const { buttonDraftOf: draftOf, buttonIssue: issueOf, createButtonSettingsController: createController, CONSTELLATION_PROFILE: CONST_PROFILE } = await import("../src/button-settings.mjs");
+  const { normalizeButtons } = await import("../src/buttons.mjs");
+
+  /* 归一化：缺省/true 不落键，false 落键，非布尔拒绝 */
+  assert.equal("jumpNewSession" in normalizeButtons([{ name: "a", prompt: "p" }])[0], false, "缺省 → 不落键（缺省跳转）");
+  assert.equal(normalizeButtons([{ name: "a", prompt: "p", jumpNewSession: true }])[0].jumpNewSession, undefined, "显式 true → 不落键（存储最小形）");
+  assert.equal(normalizeButtons([{ name: "a", prompt: "p", jumpNewSession: false }])[0].jumpNewSession, false, "false 透传落键");
+  assert.throws(() => normalizeButtons([{ name: "a", prompt: "p", jumpNewSession: "no" }]), /jumpNewSession must be a boolean/, "非布尔拒绝");
+  assert.deepEqual(
+    Object.keys(normalizeButtons([{ name: "a", prompt: "p", jumpNewSession: false, prepend: true }])[0]),
+    ["name", "prompt", "autoSend", "newSession", "jumpNewSession", "prepend"],
+    "键序：jumpNewSession 位于 newSession 与 prepend 之间"
+  );
+
+  /* 草稿构造：缺省不带键；取消勾选落 false；恢复勾选删键 */
+  const base = draftOf({ name: "a", prompt: "p" });
+  assert.equal("jumpNewSession" in base, false, "草稿缺省不带跳转键");
+  assert.equal(draftOf({ name: "a", prompt: "p", jumpNewSession: false }).jumpNewSession, false, "草稿保留 false");
+  assert.equal("jumpNewSession" in draftOf({ name: "a", prompt: "p", jumpNewSession: true }), false, "草稿 true 归一为缺键");
+  assert.equal(issueOf([base]), "", "合法草稿通过（缺键）");
+
+  /* 控制器：编辑 → 草稿脏；保存 → 落键；恢复勾选 → 删键并干净 */
+  const scope = fakeScope({ buttons: [{ ...BUTTON }] });
+  const face = createController(scope);
+  face.editButton(0, "jumpNewSession", false);
+  let state = face.getSnapshot();
+  assert.equal(state.buttonsDraft[0].jumpNewSession, false, "取消勾选进草稿");
+  assert.equal(state.buttonsDirty, true, "跳转编辑触发未保存标记");
+  assert.equal(state.invalid, false, "跳转字段不产生校验错误");
+  assert.equal(await face.save(), true);
+  assert.equal(scope.calls.find((call) => call.op === "set").value[0].jumpNewSession, false, "保存落 jumpNewSession: false");
+  face.editButton(0, "jumpNewSession", true);
+  state = face.getSnapshot();
+  assert.equal("jumpNewSession" in state.buttonsDraft[0], false, "恢复勾选删除键");
+  assert.equal(state.buttonsDirty, true, "相对已存 false 仍有差异");
+  await face.save();
+  assert.equal("jumpNewSession" in scope.calls.filter((call) => call.op === "set").pop().value[0], false, "恢复跳转后保存不写键");
+  face.dispose();
+
+  /* 星座 profile：不支持跳转字段（编辑为空操作、保存不写键） */
+  const cscope = fakeScope({ constellationButtons: [{ name: "c", prompt: "p" }] });
+  const cface = createController(cscope, CONST_PROFILE);
+  cface.editButton(0, "jumpNewSession", false);
+  assert.equal("jumpNewSession" in cface.getSnapshot().buttonsDraft[0], false, "星座草稿不产生跳转键");
+  cface.dispose();
+
+  /* UI 锚点（settings-ui.jsx 源码面） */
+  const ui = readFileSync(new URL("../src/settings-ui.jsx", import.meta.url), "utf8");
+  assert.ok(ui.includes("showJump: true") && ui.includes("showJump: false"), "跳转勾选框按 variant 门控（星座不呈现）");
+  assert.ok(ui.includes("{copy.showJump ? ("), "行内跳转勾选框按 copy 门控");
+  assert.ok(ui.includes('checked={button.jumpNewSession !== false}'), "勾选态 = 缺省跳转");
+  assert.ok(/face\.editButton\(index, "jumpNewSession", event\.target\.checked\)/.test(ui), "切换走按钮行草稿编辑（暂存-保存模型）");
+  assert.ok(ui.includes('disabled={disabled}'), "行内编辑控件随可写性禁用（既有纪律）");
+  assert.ok(ui.includes('className="cs-auto cs-locked"'), "行内「新增会话」锁定徽标保留");
+  assert.ok(ui.includes("copyText(copy.newSessionTitle)"), "锁定徽标 title 保留");
+  assert.ok(!/cs-pref/.test(ui), "页面级设置区已移除（跳转下沉为每按钮配置）");
+}
+
+/* ── 「发送前编辑」呈现设置 `constPreflight`（add-cosmos-native-composer 1.1/1.2/4.1–4.3；
+   rework：缺省翻转为 float（星空保持优先）、native 语义归位「关页跳转会话页」）：
+   v5 枚举键净房（缺省 float / 非法回落 / 合法双值透传 / 其余键零影响）+ 持久化 +
+   星座动作页签开关（独立轻量 face：即时写回、不随按钮暂存-保存、不受按钮 saving 门控） ── */
+{
+  const {
+    COSMOS_DEFAULT_PREFLIGHT,
+    COSMOS_PREFLIGHT_MODES,
+    COSMOS_SETTINGS_DEFAULTS,
+    loadCosmosSettings,
+    sanitizeCosmosSettings,
+    saveCosmosSettings
+  } = await import("../src/settings.mjs");
+
+  /* 枚举与缺省（rework：缺省 float = 浮窗输入器、星空保持；native = 关页跳转会话页） */
+  assert.deepEqual([...COSMOS_PREFLIGHT_MODES], ["native", "float"], "枚举恰为 native / float");
+  assert.equal(COSMOS_DEFAULT_PREFLIGHT, "float", "缺省分支 = float（星空保持优先）");
+  assert.equal(COSMOS_SETTINGS_DEFAULTS.constPreflight, "float", "出厂默认 = float");
+  assert.ok(Object.isFrozen(COSMOS_PREFLIGHT_MODES), "枚举表冻结（只读）");
+  /* 缺省读出：空载荷 / v4 旧载荷（无该键）→ float */
+  assert.equal(sanitizeCosmosSettings({}).constPreflight, "float", "空载荷 → float");
+  assert.equal(
+    sanitizeCosmosSettings({ skin: "lotus", zoomDiveRatio: 80, sessionPanelOpen: false }).constPreflight,
+    "float",
+    "v4 旧载荷 → float（逐键补默认）"
+  );
+  /* 非法值回落缺省（含近义串 / 非字符串 / 空串），SHALL NOT 抛错 */
+  for (const bad of ["auto", "", "Native", " native ", "FLOAT", "floaty", 123, null, undefined, true, {}, [], 0]) {
+    assert.equal(sanitizeCosmosSettings({ constPreflight: bad }).constPreflight, "float", "非法值回落 float：" + String(bad));
+  }
+  /* 合法双值透传 */
+  assert.equal(sanitizeCosmosSettings({ constPreflight: "native" }).constPreflight, "native");
+  assert.equal(sanitizeCosmosSettings({ constPreflight: "float" }).constPreflight, "float");
+  /* 其余键零影响 */
+  const { constPreflight: _baselineMode, ...baselineRest } = COSMOS_SETTINGS_DEFAULTS;
+  for (const mode of COSMOS_PREFLIGHT_MODES) {
+    const applied = sanitizeCosmosSettings({ ...COSMOS_SETTINGS_DEFAULTS, constPreflight: mode });
+    const { constPreflight: modeOut, ...rest } = applied;
+    assert.equal(modeOut, mode, "枚举透传：" + mode);
+    assert.deepEqual(rest, baselineRest, "切换 " + mode + " 不波及其余设置键");
+  }
+
+  /* 写侧持久化：切换即时写回 → 重开读回（执行器每次 run 现读的事实基础） */
+  const store = new Map();
+  globalThis.localStorage = {
+    getItem: (key) => (store.has(key) ? store.get(key) : null),
+    setItem: (key, value) => store.set(key, String(value)),
+    removeItem: (key) => store.delete(key)
+  };
+  try {
+    assert.equal(loadCosmosSettings().constPreflight, "float", "无存储 → 缺省 float");
+    store.set("dsh-v-cosmos:settings", JSON.stringify({ panSpeed: 200 }));
+    assert.equal(loadCosmosSettings().constPreflight, "float", "v4 旧载荷（无该键）读出 float");
+    assert.equal(saveCosmosSettings({ constPreflight: "native" }).constPreflight, "native", "切换写侧保留");
+    assert.equal(loadCosmosSettings().constPreflight, "native", "重开读回 native（切换即时生效）");
+    assert.equal(saveCosmosSettings({ constPreflight: "bogus" }).constPreflight, "float", "非法写侧回落 float");
+    assert.equal(saveCosmosSettings({ constPreflight: "float", skin: "fermata" }).skin, "fermata", "同批写入不互相干扰");
+
+    /* 按钮草稿流与本键正交：暂存 / 放弃 / 保存 / 重置均不读写该键 */
+    saveCosmosSettings({ constPreflight: "float" });
+    const scope = fakeScope({ buttons: [{ ...BUTTON }] });
+    const face = createButtonSettingsController(scope);
+    face.editButton(0, "autoSend", false);
+    assert.equal(loadCosmosSettings().constPreflight, "float", "按钮草稿编辑不动该键");
+    face.discard();
+    assert.equal(loadCosmosSettings().constPreflight, "float", "放弃按钮草稿不回滚该键");
+    face.editButton(0, "autoSend", true);
+    await face.save();
+    assert.equal(loadCosmosSettings().constPreflight, "float", "保存按钮草稿不覆盖该键");
+    face.dispose();
+    const resetScope = fakeScope({ buttons: [{ ...BUTTON }] });
+    const resetFace = createButtonSettingsController(resetScope);
+    await resetFace.resetButtons();
+    assert.equal(loadCosmosSettings().constPreflight, "float", "重置按钮为组合层不动该键");
+    resetFace.dispose();
+  } finally {
+    delete globalThis.localStorage;
+  }
+
+  /* UI 锚点（settings-ui.jsx 源码面）：星座动作页签顶部下拉，独立 face、即时写回 */
+  const ui = readFileSync(new URL("../src/settings-ui.jsx", import.meta.url), "utf8");
+  assert.ok(ui.includes("showPreflight: true") && ui.includes("showPreflight: false"), "开关按页签门控（快捷动作不呈现）");
+  assert.ok(ui.includes("{copy.showPreflight ? ("), "星座动作页签渲染开关块");
+  assert.ok(ui.includes('id="cosmos-const-preflight"'), "开关控件稳定 id");
+  assert.ok(ui.includes('data-preflight={preflightMode}'), "开关态稳定钩子");
+  assert.ok(ui.includes("preflight ? preflight.subscribe : noopSubscribe"), "订阅 preflight face（受控镜像回显）");
+  assert.ok(ui.includes("preflight?.set?.(mode);"), "切换走 face.set（无草稿-保存）");
+  assert.ok(ui.includes('value="native"') && ui.includes('value="float"'), "两分支选项齐备");
+  /* rework：缺省翻转 → 非显式 native 一律按 float（受控镜像兜底方向） */
+  assert.ok(ui.includes('preflightState.constPreflight === "native"'), "镜像取值只认显式 native");
+  assert.ok(ui.includes('htmlFor="cosmos-const-preflight"') && ui.includes("aria-describedby=\"cosmos-const-preflight-hint\""), "标签关联 + hint 描述（可达性）");
+  assert.ok(ui.includes("min-height:44px"), "开关行触控目标 ≥44px");
+  const block = ui.slice(
+    ui.indexOf('data-plugin-anchor="dsh-v-cosmos:settings-const-preflight"'),
+    ui.indexOf("{catalogDegraded ?")
+  );
+  assert.ok(block.length > 0, "开关块切片可达");
+  assert.ok(!/disabled=/.test(block), "开关不受按钮 writable/saving 门控禁用");
+  assert.ok(!/face\.editButton/.test(block), "开关不写按钮草稿（MUST NOT 纳入暂存-保存流）");
+
+  /* 注册与词典（client.jsx 源码面） */
+  const client = readFileSync(new URL("../src/client.jsx", import.meta.url), "utf8");
+  assert.ok(
+    client.includes('inject: () => ({ face: constButtonSettings, models: modelsFace, variant: "constellation", preflight: preflightFace })'),
+    "星座动作页签注入 preflight face（与按钮 face 正交）"
+  );
+  const pfFace = client.slice(client.indexOf("const preflightFace = {"), client.indexOf('id: "constellation-actions"'));
+  assert.ok(pfFace.includes("controllerRef.current == null"), "控制器存活前置检查同款");
+  assert.ok(pfFace.includes('markSelectFailure("preflight")'), "控制器缺失落印 health 失败（可观测）");
+  assert.ok(pfFace.includes("controllerRef.current.savePreflight?.(mode)"), "写入唯一链路 = 控制器 savePreflight");
+  assert.ok(client.includes("savePreflight: actions.savePreflight"), "控制器顶层暴露 savePreflight（face 调用链）");
+  const savePreflightSlice = client.slice(client.indexOf("savePreflight(mode) {"), client.indexOf("getTuning() {"));
+  assert.ok(savePreflightSlice.includes("saveCosmosSettings({ constPreflight: mode })"), "改动即净房持久化");
+  assert.ok(savePreflightSlice.includes("cosmosPreflightStore.set(preflightPrefsOf(merged))"), "受控镜像同步（设置页回显）");
+  assert.ok(client.includes("const cosmosPreflightStore = createSnapshotStore(preflightPrefsOf(loadCosmosSettings()));"), "模块级镜像 store 冷启动取持久化值");
+  /* 执行链路接线（3.1）：每次 run 现读设置面 + native 分支关整页 */
+  const constExecutorBody = client.slice(
+    client.indexOf("const constExecutor = createConstellationExecutor({"),
+    client.indexOf("const clearPendingDive")
+  );
+  assert.ok(constExecutorBody.includes("preflight: () => loadCosmosSettings().constPreflight,"), "执行器现读设置面（MUST NOT 构造期缓存）");
+  assert.ok(constExecutorBody.includes("closePage: () => cosmosOpenStore.set(false),"), "native 分支关整页 = 整页开合 store（与提案动作同通道）");
+  assert.ok(constExecutorBody.includes("pending: heroMarkers,") && constExecutorBody.includes("floats: floatMarkers,"), "双通道注入不变（native 复用 hero / float 保留浮窗）");
+  /* 回归确认（3.2）：hero 消费器零改动即承接 native 落稿；浮窗组件承载增强（不读 preflight 设置——分流在执行器） */
+  const heroDockBody = client.slice(
+    client.indexOf("function ActionHeroDock(props)"),
+    client.indexOf("function ConstellationFloatDock(props)")
+  );
+  assert.ok(heroDockBody.length > 0 && !/preflight/.test(heroDockBody), "hero 消费器零改动（meta.channel 不参与消费判定）");
+  const floatDockBody = client.slice(
+    client.indexOf("function ConstellationFloatDock(props)"),
+    client.indexOf("星胚动作消费条目")
+  );
+  assert.ok(!/preflight/.test(floatDockBody), "浮窗组件不读呈现分支设置（分流在执行器）");
+  assert.ok(client.includes('id: "v-cosmos-constellation-float"'), "浮窗注册条目保留");
+  /* DICT zh/en 成对（各 2 次：zh + en） */
+  for (const key of ["constPreflightLabel", "constPreflightAria", "constPreflightNative", "constPreflightFloat", "constPreflightHint", "constPreflightInstant"]) {
+    assert.equal(
+      (client.match(new RegExp('"cosmos\\.settings\\.' + key + '"', "g")) ?? []).length,
+      2,
+      "词典 zh/en 成对：cosmos.settings." + key
+    );
+  }
+  assert.ok(client.includes('"cosmos.settings.constPreflightNative": "跳转会话页（原生输入区）"'), "词典 zh：native 分支语义 = 关页跳转会话页");
+  assert.ok(client.includes('"cosmos.settings.constPreflightNative": "Jump to the session page (native composer)"'), "词典 en：native 分支语义成对");
+  assert.ok(client.includes('"cosmos.settings.constPreflightFloat": "浮窗补写（星空保持，缺省）"'), "词典 zh：float 分支 = 浮窗（缺省）");
+  assert.ok(client.includes('"cosmos.settings.constPreflightFloat": "Floating composer (cosmos stays open, default)"'), "词典 en：float 分支语义成对");
+  assert.ok(client.includes("模型选择与语音转写在浮窗内直接可用"), "词典 zh：hint 标注浮窗增强能力");
+  assert.ok(client.includes("with model picking and voice transcription built in"), "词典 en：hint 成对（浮窗增强）");
+  /* 设置面板选项兜底文案同步（settings-ui 源码面） */
+  assert.ok(ui.includes('errorText("constPreflightNative", "跳转会话页（原生输入区）")'), "面板 native 选项兜底文案");
+  assert.ok(ui.includes('errorText("constPreflightFloat", "浮窗补写（星空保持，缺省）")'), "面板 float 选项兜底文案");
+  /* 提示口径核对：缺省 = 浮窗（星空保持）；旧「浮动原生窗口」死设计口径零残留 */
+  assert.ok(client.includes('未勾选时按下方「发送前编辑」分流'), "词典 zh：星座 hint 与开关语义对齐");
+  assert.ok(!/浮动原生输入窗口/.test(client) && !/原生窗口呈现通道/.test(client), "词典不得残留「浮动原生窗口」死设计口径");
+}
+
+console.log("settings-panel-smoke: all assertions passed");

@@ -79,22 +79,27 @@ assert.deepEqual(
 assert.deepEqual(collectPendingNames(null), [], "pending 目录缺失 → 空");
 assert.deepEqual(collectPendingNames([]), [], "pending 目录空 → 空");
 
-/* ── pendingItemsOf：非法条目跳过 + 目录优先剔除（2.4） ── */
+/* ── pendingItemsOf：非法条目跳过 + 目录优先剔除（2.4）＋ sessionId 容错
+      （add-cosmos-embryo-cards 2.1：字符串非空才采纳，缺失/非法 → null） ── */
 const rawPending = [
-  { name: "explore-ui", by: "cosmos-explore", at: 100 },
+  { name: "explore-ui", by: "cosmos-explore", at: 100, sessionId: "sess-1" },
   { name: "add-a", by: "cosmos-explore", at: 200 }, // 同名真实目录 → 剔除
   { name: "", at: 300 }, // 非法：空名
   null, // 非法：非对象
   { by: "x" }, // 非法：缺 name
-  { name: "no-at" } // 合法：at 缺省 → null
+  { name: "no-at" }, // 合法：at 缺省 → null；sessionId 缺省 → null
+  { name: "bad-session", at: 400, sessionId: 42 }, // 非法 sessionId（非字符串）→ null
+  { name: "empty-session", at: 500, sessionId: "" } // 空串 → null
 ];
 assert.deepEqual(
   pendingItemsOf(rawPending, new Set(["add-a", "add-b"])),
   [
-    { name: "explore-ui", by: "cosmos-explore", at: 100 },
-    { name: "no-at", by: null, at: null }
+    { name: "bad-session", by: null, at: 400, sessionId: null },
+    { name: "empty-session", by: null, at: 500, sessionId: null },
+    { name: "explore-ui", by: "cosmos-explore", at: 100, sessionId: "sess-1" },
+    { name: "no-at", by: null, at: null, sessionId: null }
   ],
-  "pending 归一：同名目录剔除 + 非法跳过 + 缺省补 null"
+  "pending 归一：同名目录剔除 + 非法跳过 + 缺省补 null + sessionId 读取方容错"
 );
 assert.deepEqual(pendingItemsOf(null, []), [], "pending 条目缺失 → 空");
 
@@ -106,7 +111,7 @@ const readers = {
   readBirthMs: (dir) => (dir.endsWith("add-a") ? 1000 : null),
   readState: (dir) => (dir.endsWith("add-a") ? JSON.stringify({ version: 1, state: "executed", setBy: "cosmos-apply", at: 42 }) : null),
   readPendingDir: () => [
-    { name: "explore-ui", by: "cosmos-explore", at: 300 },
+    { name: "explore-ui", by: "cosmos-explore", at: 300, sessionId: "sess-ws" },
     { name: "add-a", by: "cosmos-explore", at: 400 } // 同名真实目录 → 此层剔除
   ]
 };
@@ -120,7 +125,7 @@ assert.equal(ws.stars[0].at, 42, "at 透传");
 assert.equal(ws.stars[1].lifecycle, "created", "readState 缺失 → created 兜底");
 assert.equal(ws.stars[1].setBy, null, "缺失兜底 → setBy null");
 assert.equal(ws.archives, 2);
-assert.deepEqual(ws.pending, [{ name: "explore-ui", by: "cosmos-explore", at: 300 }], "pending 挂入骨架（同名目录剔除）");
+assert.deepEqual(ws.pending, [{ name: "explore-ui", by: "cosmos-explore", at: 300, sessionId: "sess-ws" }], "pending 挂入骨架（同名目录剔除 + sessionId 透传）");
 const missing = scanWorkspace({ id: "ws2", path: "C:/none" }, { readChangesDir: () => null, readArchiveDir: () => null, readPendingDir: () => null });
 assert.deepEqual(missing.stars, [], "目录缺失 → 空骨架");
 assert.equal(missing.archives, 0);
@@ -155,6 +160,31 @@ assert.deepEqual(
   [],
   "空 registry → 空骨架"
 );
+
+/* ── 骨架指纹涵盖 pending 条目整体序列化（add-cosmos-embryo-cards 2.1）：宿主
+      `skeletonFingerprint` 以 `ws.pending` 整体入键 → 仅 sessionId 值增改即触发增量。 ── */
+{
+  const pendingSerializationOf = (sessionId) => JSON.stringify(
+    buildSkeleton(
+      [{ id: "ws1", title: "WS", path: "C:/ws" }],
+      {
+        ...readers,
+        readPendingDir: () => [{ name: "explore-ui", by: "cosmos-explore", at: 300, sessionId }]
+      },
+      { now: 42, associations: [] }
+    ).workspaces[0].pending
+  );
+  assert.notEqual(
+    pendingSerializationOf("sess-1"),
+    pendingSerializationOf("sess-2"),
+    "sessionId 值增改 → pending 序列化变化（骨架指纹 → 增量重扫）"
+  );
+  assert.equal(
+    pendingSerializationOf(undefined),
+    pendingSerializationOf(null),
+    "缺失/非字符串 → 同归 null（旧锚点零迁移，无幽灵增量）"
+  );
+}
 
 /* ── matchProposalSlugs：词边界 slug 匹配 ── */
 assert.deepEqual(matchProposalSlugs("plan for add-cosmos-entry and more", ["add-cosmos-entry", "add-other"]), ["add-cosmos-entry"], "slug 命中");

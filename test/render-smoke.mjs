@@ -239,6 +239,75 @@ function findCanvas(node) {
   return null;
 }
 
+/* ── 关联聚焦 / 活力状态行 / 决策按钮（cosmos-relation-focus + cosmos-session-decide / 7.1）：
+   真实 merge 产物驱动——rel 段/环经 skin-d 绘制（无头 ctx 下不得抛错），信息卡内容断言。 ── */
+{
+  const root = container.children[0];
+  const canvasEl = root._byClass["cos-canvas"];
+  const cardEl = root._byClass["cos-card"];
+  const fireEv = (el, type, ev) => { for (const fn of el.listeners[type] ?? []) fn(ev); };
+  /** 世界坐标 → 屏幕点（与引擎 project 同式：默认 fov 60 / 视口 800×600 桩）。 */
+  const screenOf = (world) => {
+    const cam = engine.inspectFilter().camera;
+    const W = 800, H = 600;
+    let v = [world[0] - cam.target[0], world[1] - cam.target[1], world[2] - cam.target[2]];
+    const cy = Math.cos(-cam.yaw), sy = Math.sin(-cam.yaw);
+    v = [v[0] * cy + v[2] * sy, v[1], -v[0] * sy + v[2] * cy];
+    const cx = Math.cos(-cam.pitch), sx = Math.sin(-cam.pitch);
+    v = [v[0], v[1] * cx - v[2] * sx, v[1] * sx + v[2] * cx];
+    const vz = v[2] + cam.dist;
+    const f = (H * 1.1) / (2 * Math.tan(60 * Math.PI / 360));
+    const s = f / vz;
+    return { x: W / 2 + v[0] * s, y: H / 2 - v[1] * s };
+  };
+  const hoverWorld = (world) => {
+    const p = screenOf(world);
+    fireEv(root, "pointermove", { pointerId: 7, clientX: p.x, clientY: p.y, buttons: 0, target: canvasEl });
+    for (let i = 0; i < 3; i++) { now += 50; step(now); }
+  };
+  const starWp = (id) => engine.inspectEntities("ws1").stars.find((s) => s.id === id).wp;
+
+  /* ① 恒星聚焦：关系段/环/共享会话段进入渲染条目（skin-d rel 分支执行），卡面呈现活力行 */
+  hoverWorld(starWp("add-a"));
+  const relStar = engine.inspectRelation();
+  assert.equal(relStar.focusKey, "ws1|star:add-a", "hover 恒星 → 聚焦源");
+  assert.ok(relStar.last.segs.length >= 1, "恒星→行星关系段进入渲染条目");
+  assert.ok(relStar.last.orbits.some((o) => o.planetId === "p1"), "关联行星轨道环 rel 标记");
+  assert.ok(relStar.last.links.some((l) => l.aId === "add-a" && l.bId === "add-b"), "共享会话虚线点亮");
+  const starHtml = String(cardEl.innerHTML);
+  assert.ok(starHtml.includes("活力"), "恒星信息卡渲染活力状态行");
+  assert.ok(/活跃|沉睡/.test(starHtml), "活力行取值为两态之一");
+
+  /* ② 行星聚焦（idle）：关系段/自身环；非待决策 → 无决策按钮 */
+  hoverWorld(engine.worldPosOf("planet", "p1"));
+  for (let i = 0; i < 3; i++) { now += 50; step(now); } // 旧聚焦集渐熄
+  const relPlanet = engine.inspectRelation();
+  assert.equal(relPlanet.focusKey, "ws1|planet:p1", "聚焦源切换为行星");
+  assert.equal(relPlanet.last.segs.length, 1, "单星行星 → 一条关系段");
+  assert.deepEqual(relPlanet.last.orbits.map((o) => o.planetId), ["p1"], "自身轨道环 rel");
+  const idleHtml = String(cardEl.innerHTML);
+  assert.ok(idleHtml.includes("打开会话") && idleHtml.includes("归档会话"), "行星卡双按钮");
+  assert.ok(!idleHtml.includes('data-action="decide"'), "非待决策行星无决策按钮");
+
+  /* ③ 待决策行星（patch → waiting）：决策按钮进入渲染，顺序 打开 → 决策 → 归档 */
+  const sceneWait = mergeScene({
+    skeleton: skeletonFixture(),
+    sessions: sessionsFixture("idle"),
+    workspaces: workspacesFixture(),
+    statuses: new Map([["p1", { running: false, pendingInteraction: { kind: "approval" } }]]),
+    now: 3000
+  });
+  engine.setScene(sceneWait, "patch");
+  for (let i = 0; i < 2; i++) { now += 50; step(now); }
+  const waitHtml = String(cardEl.innerHTML);
+  assert.ok(waitHtml.includes('data-action="decide"') && waitHtml.includes(">待批准<"), "待决策行星卡渲染决策按钮（待批准）");
+  assert.ok(
+    waitHtml.indexOf('data-action="open"') < waitHtml.indexOf('data-action="decide"') &&
+    waitHtml.indexOf('data-action="decide"') < waitHtml.indexOf('data-action="archive"'),
+    "按钮顺序 打开 → 决策 → 归档"
+  );
+}
+
 engine.stop();
 engine.dispose();
 
@@ -280,6 +349,13 @@ engine.dispose();
   assert.ok(source.includes('aria-busy={adding || undefined}'), "busy 态 aria-busy 保留");
   assert.ok(source.includes("engine.diveToWs?.(targetWsId)"), "注册成功后引擎 dive-in 消费点（D4）");
   assert.ok(source.includes("engine.markWsBirth?.(ws.id)"), "空星座出生高亮接线（D6）");
+  /* 成星捕获 from 采集（polish-cosmos-orbit-insertion 3.1）：快照时序与回归同款 */
+  assert.ok(source.includes('engine.worldPosOf?.("comet", info.id)'), "捕获 from 采集：worldPosOf 查旧彗星体");
+  assert.ok(source.includes("engine.markCapture(info.id, from, { wsId: info.wsId })"), "捕获标记携带 from + wsId（P2 错峰归组）");
+  assert.ok(
+    source.indexOf("engine.markCapture(info.id, from") < source.indexOf("engine.setScene(next,"),
+    "markCapture 先于 setScene（旧彗星体在册才采得到切向/尾迹）"
+  );
   /* HUD 精简（2.2）：右上操作提示的覆盖样式已随引擎侧提示行一并删除 */
   assert.ok(!source.includes(".cos-hint"), "client.jsx 无 `.cos-hint` 覆盖样式");
 }

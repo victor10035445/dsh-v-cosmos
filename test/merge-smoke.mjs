@@ -7,7 +7,7 @@
  * 运行：node test/merge-smoke.mjs
  */
 import assert from "node:assert/strict";
-import { mergeScene, sceneDiffLevel, planetStateOf, relativeTime, constellationPositions, starOffset, dustCountOf, hash32, matchWorkspaces, filteredPositions, normalizeWorkspacePath, findRegisteredWorkspace, isWindowsPlatform } from "../src/merge.mjs";
+import { mergeScene, sceneDiffLevel, planetStateOf, relativeTime, constellationPositions, starOffset, dustCountOf, hash32, matchWorkspaces, embryoGroupsOf, filteredPositions, normalizeWorkspacePath, findRegisteredWorkspace, isWindowsPlatform, starPlanetIdsOf } from "../src/merge.mjs";
 
 const NOW = 1_000_000_000_000;
 const MIN = 60_000;
@@ -176,22 +176,74 @@ assert.equal(planetStateOf(summaryBase, "bogus"), "idle", "非法 status 条目 
 /* ── 星胚装配（add-celestial-states 3.2）：pending 锚点 → lifecycle:"proto" 恒星 ── */
 const protoSkeleton = skeletonFixture();
 protoSkeleton.workspaces[0].pending = [
-  { name: "explore-ui", by: "cosmos-explore", at: NOW - 5 * MIN },
-  { name: "add-a", by: "dup", at: NOW } // 同名真实目录 → 防御剔除（骨架层已剔，merge 再防御）
+  { name: "explore-ui", by: "cosmos-explore", at: NOW - 5 * MIN, sessionId: "sess-explore" },
+  { name: "add-a", by: "dup", at: NOW }, // 同名真实目录 → 防御剔除（骨架层已剔，merge 再防御）
+  { name: "explore-old", by: "cosmos-explore", at: NOW - 30 * MIN } // 旧锚点：无 sessionId（零迁移）
 ];
 protoSkeleton.workspaces[1].pending = [{ name: "hive-proto", by: null, at: null }];
 const protoScene = mergeScene({ skeleton: protoSkeleton, sessions: sessionsFixture(), workspaces: workspacesFixture(), now: NOW });
 const protoWs = protoScene.workspaces[0];
-assert.equal(protoWs.stars.length, 3, "2 真实恒星 + 1 星胚（同名锚点被剔除）");
+assert.equal(protoWs.stars.length, 4, "2 真实恒星 + 2 星胚（同名锚点被剔除）");
 const protoStar = protoWs.stars.find((s) => s.id === "explore-ui");
 assert.equal(protoStar.lifecycle, "proto", "星胚 lifecycle=proto");
 assert.equal(protoStar.setBy, "cosmos-explore", "锚点 by → setBy");
 assert.equal(protoStar.at, NOW - 5 * MIN, "锚点 at 透传");
+assert.equal(protoStar.sessionId, "sess-explore", "锚点 sessionId 原样透传（数据链第三跳）");
 assert.deepEqual(protoStar.tasks, [0, 0], "星胚无任务进度");
 assert.deepEqual(protoStar.off, starOffset("explore-ui", 26), "星胚 off = starOffset(slug) 确定性预占位");
 assert.deepEqual(protoWs.links, [[0, 1]], "星胚追加在骨架恒星之后 → links 索引不受影响");
 assert.equal(protoScene.workspaces[1].stars.length, 1, "仅锚点无目录的星座也渲染星胚");
 assert.equal(protoScene.workspaces[1].stars[0].lifecycle, "proto");
+assert.equal(protoScene.workspaces[1].stars[0].sessionId, null, "缺 sessionId → null（读取方容错）");
+assert.equal(protoWs.stars.find((s) => s.id === "explore-old").sessionId, null, "旧锚点（无该字段）→ null");
+
+/* ── 星胚归并分组（add-cosmos-embryo-cards 2.2/2.3）：同会话归并 / 旧锚点自组 /
+      组间首 slug 字典序 / slugs 字典序 / at 取最早 ── */
+{
+  const stars = [
+    { id: "add-zeta", lifecycle: "proto", sessionId: "sess-A", at: 300 },
+    { id: "add-alpha", lifecycle: "proto", sessionId: "sess-A", at: 100 },
+    { id: "add-solo", lifecycle: "proto", at: 200 },
+    { id: "add-beta", lifecycle: "proto", sessionId: "sess-A", at: 250 },
+    { id: "add-null-at", lifecycle: "proto", sessionId: "sess-B" },
+    { id: "real-star", lifecycle: "created", at: 1 } // 非星胚 → 不参与
+  ];
+  const grouped = embryoGroupsOf(stars);
+  assert.deepEqual(grouped, [
+    { key: "sess-A", sessionId: "sess-A", slugs: ["add-alpha", "add-beta", "add-zeta"], at: 100 },
+    { key: "sess-B", sessionId: "sess-B", slugs: ["add-null-at"], at: null },
+    { key: "add-solo", sessionId: null, slugs: ["add-solo"], at: 200 }
+  ], "同会话归并（slugs 字典序 + at 取最早）/ 缺失 sessionId 自组 / 组间按首 slug 字典序 / at 全缺 → null");
+  assert.deepEqual(embryoGroupsOf([...stars].reverse()), grouped, "归并分组与输入顺序解耦（确定性）");
+  assert.deepEqual(embryoGroupsOf(null), [], "非数组 → 空组");
+  assert.deepEqual(embryoGroupsOf([{ id: "", lifecycle: "proto" }]), [], "空 id → 跳过");
+  /* 重复 slug 去重（防御：骨架层不会重复） */
+  assert.deepEqual(
+    embryoGroupsOf([{ id: "dup", lifecycle: "proto", sessionId: "s" }, { id: "dup", lifecycle: "proto", sessionId: "s" }]),
+    [{ key: "s", sessionId: "s", slugs: ["dup"], at: null }],
+    "同组同 slug 去重"
+  );
+}
+
+/* 星胚 sessionId 纳入恒星属性签名（design D10）：重分组（锚点集合不变）→ patch，
+   MUST NOT 被差分守卫误判 none；增删锚点 → rebuild（两条路径全覆盖）。 */
+{
+  const regroupSkeleton = JSON.parse(JSON.stringify(protoSkeleton));
+  regroupSkeleton.workspaces[0].pending[0].sessionId = "sess-other";
+  const regroupScene = mergeScene({ skeleton: regroupSkeleton, sessions: sessionsFixture(), workspaces: workspacesFixture(), now: NOW });
+  assert.equal(sceneDiffLevel(protoScene, regroupScene), "patch", "sessionId 重分组（锚点集合不变）→ 属性级 patch");
+  const dropSkeleton = JSON.parse(JSON.stringify(protoSkeleton));
+  dropSkeleton.workspaces[0].pending = dropSkeleton.workspaces[0].pending.slice(0, 1);
+  const dropScene = mergeScene({ skeleton: dropSkeleton, sessions: sessionsFixture(), workspaces: workspacesFixture(), now: NOW });
+  assert.equal(sceneDiffLevel(protoScene, dropScene), "rebuild", "锚点增删 → rebuild");
+  /* 无 sessionId 两侧同为 null/undefined → 签名同值（不产生幽灵 patch） */
+  const noSessionSkeleton = JSON.parse(JSON.stringify(protoSkeleton));
+  noSessionSkeleton.workspaces[0].pending = [{ name: "only-old", by: null, at: null }];
+  noSessionSkeleton.workspaces[1].pending = [];
+  const noSessionA = mergeScene({ skeleton: noSessionSkeleton, sessions: sessionsFixture(), workspaces: workspacesFixture(), now: NOW });
+  const noSessionB = mergeScene({ skeleton: JSON.parse(JSON.stringify(noSessionSkeleton)), sessions: sessionsFixture(), workspaces: workspacesFixture(), now: NOW });
+  assert.equal(sceneDiffLevel(noSessionA, noSessionB), "none", "旧锚点无 sessionId → 无变化判 none（零误判）");
+}
 
 /* ── 卫星装配（add-celestial-states 3.3）：直属挂父、深层折叠、孤儿剔除 ── */
 function satSessionsFixture() {
@@ -485,6 +537,24 @@ const wsSetChanged = JSON.parse(JSON.stringify(sceneA));
 wsSetChanged.workspaces.pop();
 assert.equal(sceneDiffLevel(sceneA, wsSetChanged), "rebuild", "星座集合变化 → rebuild");
 
+/* 相对时间文本（age/when）必须计入 patch：否则「仅时间桶变化」被判 none，
+   客户端为刷新文本只能全量重建（画面闪烁）。patchScene 已就地更新这些字段。 */
+const starAgePatched = JSON.parse(JSON.stringify(sceneA));
+starAgePatched.workspaces[0].stars[0].age = "1 分钟前";
+assert.equal(sceneDiffLevel(sceneA, starAgePatched), "patch", "恒星相对年龄变化 → patch");
+const planetWhenPatched = JSON.parse(JSON.stringify(sceneA));
+planetWhenPatched.workspaces[0].planets[0].when = "1 分钟前";
+assert.equal(sceneDiffLevel(sceneA, planetWhenPatched), "patch", "行星相对活跃时间变化 → patch");
+const cometWhenPatched = JSON.parse(JSON.stringify(sceneA));
+cometWhenPatched.workspaces[0].comets[0].when = "1 分钟前";
+assert.equal(sceneDiffLevel(sceneA, cometWhenPatched), "patch", "彗星相对活跃时间变化 → patch");
+const wsRenamed = JSON.parse(JSON.stringify(sceneA));
+wsRenamed.workspaces[0].name = "renamed-ws";
+assert.equal(sceneDiffLevel(sceneA, wsRenamed), "patch", "工作区重命名 → patch（chip/面板文本更新，不重建）");
+const wsPathMoved = JSON.parse(JSON.stringify(sceneA));
+wsPathMoved.workspaces[0].path = "C:/moved";
+assert.equal(sceneDiffLevel(sceneA, wsPathMoved), "patch", "工作区路径变化 → patch（面板 @提案路径更新）");
+
 /* ── 添加工作区：路径比对纯函数（add-cosmos-add-workspace D2/D7/4.1） ── */
 {
   /* 归一化：斜杠/尾分隔符/重复分隔符/UNC/Windows 大小写 */
@@ -516,6 +586,54 @@ assert.equal(sceneDiffLevel(sceneA, wsSetChanged), "rebuild", "星座集合变�
   assert.equal(isWindowsPlatform({ platform: "MacIntel", userAgent: "Mozilla/5.0 (Macintosh)" }), false, "macOS → false");
   assert.equal(isWindowsPlatform({ platform: "Linux x86_64", userAgent: "Mozilla/5.0 (X11; Linux)" }), false, "Linux → false");
   assert.equal(isWindowsPlatform(null), false, "无 navigator → false（Node 环境安全默认）");
+}
+
+/* ── 关联投影纯函数（cosmos-relation-focus「关联投影纯函数」2.2）：恒星→行星反向映射 ── */
+{
+  /* 单星多行星：同一恒星被三个行星关联 → 全量展开（按行星在册顺序） */
+  const single = starPlanetIdsOf({
+    stars: [{ id: "s1" }],
+    planets: [
+      { id: "p1", stars: ["s1"] },
+      { id: "p2", stars: ["s1"] },
+      { id: "p3", stars: ["s1"] }
+    ]
+  });
+  assert.deepEqual(single.get("s1"), ["p1", "p2", "p3"], "单星多行星：该恒星 id 对应三个行星 id");
+  assert.equal(single.size, 1, "单星多行星：映射条目数 = 1");
+
+  /* 联星行星双向可见：某行星关联两颗恒星 → 两颗恒星在映射中均含该行星 */
+  const binary = starPlanetIdsOf({
+    stars: [{ id: "sa" }, { id: "sb" }],
+    planets: [
+      { id: "pbin", stars: ["sa", "sb"] },
+      { id: "pother", stars: ["sb"] }
+    ]
+  });
+  assert.deepEqual(binary.get("sa"), ["pbin"], "联星：恒星 sa 映射含该行星");
+  assert.deepEqual(binary.get("sb"), ["pbin", "pother"], "联星：恒星 sb 映射含该行星（多行星）");
+
+  /* 空星座：无行星（或星座缺席）→ 空 Map，不报错 */
+  assert.equal(starPlanetIdsOf({ stars: [{ id: "lonely" }], planets: [] }).size, 0, "空星座 → 空 Map");
+  assert.equal(starPlanetIdsOf({}).size, 0, "缺字段 → 空 Map");
+  assert.equal(starPlanetIdsOf(null).size, 0, "空入参 → 空 Map（零异常）");
+
+  /* 引擎场景形态兼容：planet.stars 为恒星对象（带 id）时同函数可用 */
+  const engineShape = starPlanetIdsOf({
+    stars: [{ id: "sx" }, { id: "sy" }],
+    planets: [{ id: "px", stars: [{ id: "sx" }, { id: "sy" }] }, { id: "py", stars: [{ id: "sx" }] }]
+  });
+  assert.deepEqual(engineShape.get("sx"), ["px", "py"], "引擎形态（恒星对象条目）同样反向展开");
+  assert.deepEqual(engineShape.get("sy"), ["px"], "引擎形态：第二颗恒星只关联首行星");
+
+  /* 重复条目去重：同一行星重复列出同一恒星 → 该组合只出现一次 */
+  const dedup = starPlanetIdsOf({ stars: [{ id: "s1" }], planets: [{ id: "p1", stars: ["s1", "s1", 7, null] }] });
+  assert.deepEqual(dedup.get("s1"), ["p1"], "重复/非法条目去重且不抛错");
+
+  /* merge 产物实景：s-planet 关联 add-a/add-b 两颗恒星（联星）→ 双向命中 */
+  const merged = starPlanetIdsOf(scene.workspaces[0]);
+  assert.deepEqual(merged.get("add-a"), ["s-planet"], "merge 产物：add-a → 联星行星");
+  assert.deepEqual(merged.get("add-b"), ["s-planet"], "merge 产物：add-b → 联星行星");
 }
 
 console.log("merge-smoke: all assertions passed");

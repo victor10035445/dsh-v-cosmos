@@ -7,6 +7,30 @@
  *  - GET  /api/dsh-v-cosmos/events SSE 轻帧广播：`proposals-changed` /
  *                                 `associations-changed`（帧体不带载荷，客户端收到
  *                                 后自行重拉 scene——hive 同款；心跳注释防代理断连）
+ *  - GET/PUT /api/dsh-v-cosmos/config 动作按钮配置（add-cosmos-proposal-actions）：
+ *                                 GET 返回 `{status, revision, value, base, user, writable}`
+ *                                 （base = 补丁层 entry config，user = 共享存储节，
+ *                                 value = base ← user 逐节覆盖）；PUT = CAS 写入
+ *                                 `{baseRevision, sections}`（null = unset 该节），
+ *                                 200 / 409 conflict / 400 invalid / 503 busy / 500 io。
+ *                                 存储 = `$DSH_HOME/dsh-v-cosmos.config.json`（configstore.mjs）。
+ *  - POST /api/dsh-v-cosmos/archive-sessions 会话扫尾批量归档
+ *                                 （add-cosmos-archive-session-sweep）：请求 `{sessionIds}`
+ *                                 （条目非空、去重后 ≤32，空数组合法）；先按
+ *                                 `archivedSessionIds` 预过滤（already-archived），其余按
+ *                                 数组序**依次** `archiveSession`（**不带 stopActivity**——
+ *                                 在跑工作只跳过不杀），逐会话 outcome
+ *                                 archived / skipped+activity / missing / failed，恒 200；
+ *                                 重复调用幂等。分流规则见 sweep.mjs。
+ *  - POST /api/dsh-v-cosmos/rename-session 会话扫尾前缀改名：请求
+ *                                 `{sessionId, prefix}`（prefix 非空、UTF-8 ≤64 字节）；
+ *                                 读原题（sessionTitle.get）→ 空题回退 `prefix+未命名` /
+ *                                 已带前缀幂等 no-op（unchanged）→ `sessionTitle.rename`
+ *                                 （超长宿主按 maxTitleBytes 保头截尾、改名钉住标题）；
+ *                                 200 `{outcome, title}` / 404 session/unknown /
+ *                                 503 rename-unavailable（部署未挂载 session-title）/
+ *                                 400 invalid / 500。sessionTitle 经 ctx.get 请求期惰性
+ *                                 可选查找、**不入 inject**（design D9）。
  *  - 关联存储：$DSH_HOME/storages/dsh-v-cosmos.json（storage-json 同款语义：内存态即
  *    全量、temp 写 + rename 原子替换）。**MUST NOT 落盘到 openspec 工件**——
  *    工作区目录恒只读（零侵入纪律，任务 3.6 冒烟断言）。旧名 dsh-cosmos 的存量
@@ -25,9 +49,6 @@
  *  - 注册→骨架链路（add-cosmos-add-workspace D3）：`/scene` 请求期比对在册工作区
  *    **id 集合指纹**（`idSetFingerprint`）与骨架 id 集合，不一致 → 全量扫描——宿主
  *    workspaceRegistry 无注册事件，这是「新增/注销工作区」在插件边界内的唯一收敛点。
- *  - 注册→骨架链路（add-cosmos-add-workspace D3）：`/scene` 请求期比对在册工作区
- *    **id 集合指纹**（`idSetFingerprint`）与骨架 id 集合，不一致 → 全量扫描——宿主
- *    workspaceRegistry 无注册事件，这是「新增/注销工作区」在插件边界内的唯一收敛点。
  *
  * 数据源边界（对齐 hive 数据流原则）：宿主半区只读 registry/agents 头信息与
  * openspec 工件；displayTitle / pendingInteraction / todos 等投影字段只存在于
@@ -39,6 +60,14 @@ import { existsSync, mkdirSync, openSync, readFileSync, readdirSync, closeSync, 
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { buildSkeleton } from "./scan.mjs";
+import { normalizeView, createConfigStore, resolveConfigStorePath } from "./configstore.mjs";
+import {
+  normalizeArchiveRequest,
+  normalizeRenameRequest,
+  classifyArchiveError,
+  composePrefixedTitle,
+  normalizeRenameResult
+} from "./sweep.mjs";
 import {
   ASSOC_VERSION,
   normalizeAssociations,
@@ -52,7 +81,14 @@ import {
 
 export const name = "dsh-v-cosmos";
 
-export const inject = ["webServer", "agents", "workspaceRegistry"];
+/**
+ * cordis 注入声明：`sessions` 是核心服务（活会话解析，恒在；先例 archived-session-gate
+ * 的 `inject: ['agents', 'sessions', 'workspaceRegistry']`）。`sessionTitle` MUST NOT
+ * 入 inject——它是可选插件服务，声明而未挂载会让 fiber 等待激活，未装
+ * dsh-session-title 的部署中整个插件停摆（scene/events/config 全灭，design D9）；
+ * 改经请求期 `ctx.get("sessionTitle")` 惰性可选查找，缺失 → rename 端点 503 降级。
+ */
+export const inject = ["webServer", "agents", "workspaceRegistry", "sessions"];
 
 const API_PREFIX = "/api/dsh-v-cosmos";
 /** 旧插件名（品牌更名前的存储文件名，读取回落迁移用；写入恒走新名）。 */
@@ -78,6 +114,16 @@ export function legacyStoragePath(env = process.env) {
   const envHome = typeof env.DSH_HOME === "string" ? env.DSH_HOME.trim() : "";
   const home = envHome || join(homedir(), ".dsh");
   return join(home, "storages", LEGACY_STORAGE_FILENAME);
+}
+
+/**
+ * 动作按钮配置的共享存储路径（`$DSH_HOME/dsh-v-cosmos.config.json`）。
+ * 与关联存储（`storages/dsh-v-cosmos.json`）完全独立：互不读写对方数据。
+ * @param {Record<string, string|undefined>} [env]
+ * @returns {string}
+ */
+export function configStoragePath(env = process.env) {
+  return resolveConfigStorePath({ env });
 }
 
 /**
@@ -161,8 +207,10 @@ const readers = {
     return readFileSync(join(String(proposalDir), ".state.json"), "utf8");
   },
   readPendingDir(workspacePath) {
-    /* cosmos-spec 契约 v1（add-celestial-states 2.3）：原始条目列表（{name, by, at}），
-       归一/非法跳过/目录优先剔除由 scan.mjs 纯层完成。 */
+    /* cosmos-spec 契约 v1（add-celestial-states 2.3 / add-cosmos-embryo-cards 2.1）：
+       原始条目列表（{name, by, at, sessionId?}），归一/非法跳过/目录优先剔除由 scan.mjs
+       纯层完成。`sessionId` 为可选加法扩展——**三跳第一跳**，此处漏透传即静默退化为
+       旧锚点（各自成卡），故原样携带、不做解释。 */
     const dir = join(String(workspacePath), "openspec", "pending-changes");
     return readdirSync(dir, { withFileTypes: true })
       .filter((entry) => entry.isFile() && typeof entry.name === "string" && entry.name.endsWith(".json"))
@@ -170,7 +218,7 @@ const readers = {
         try {
           const parsed = JSON.parse(readFileSync(join(dir, entry.name), "utf8"));
           if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
-          return { name: parsed.name, by: parsed.by, at: parsed.at };
+          return { name: parsed.name, by: parsed.by, at: parsed.at, sessionId: parsed.sessionId };
         } catch {
           return null; // 非法文件跳过
         }
@@ -237,9 +285,19 @@ export function lastActivityMsOf(agent, now) {
 
 /* ── 插件主体 ── */
 
-export function apply(ctx) {
+/**
+ * @param {object} ctx 宿主 cordis 上下文
+ * @param {object} [config] 补丁层 entry config（动作按钮配置的组合层 base：
+ *        `buttons` 提案动作 + `constellationButtons` 星座动作，两节互不读写；
+ *        共享存储的同名节分别覆盖各自 base。缺省 = 无自定义按钮）
+ */
+export function apply(ctx, config) {
   /** 关联条目（内存态即全量；持久化 = temp 写 + rename）。 */
   let entries = [];
+  /** 组合层视图（entry config；宿主半区不注册 settings 命名空间——design D7）。 */
+  const baseView = normalizeView(config);
+  /** 动作按钮配置共享存储（`$DSH_HOME/dsh-v-cosmos.config.json`）。 */
+  const configStore = createConfigStore({ logger: ctx.logger ?? null });
   /** 星空骨架缓存（per-workspace 指纹增量比对）。 */
   let skeleton = { version: DOC_VERSION, generatedAt: 0, workspaces: [] };
   /** 已执行过至少一次全量扫描（懒启动门）。 */
@@ -325,6 +383,28 @@ export function apply(ctx) {
       return new Set(ctx.workspaceRegistry?.archivedSessionIds ?? []);
     } catch {
       return new Set();
+    }
+  };
+
+  /**
+   * 会话标题服务惰性可选查找（add-cosmos-archive-session-sweep design D9）：
+   * `sessionTitle` 是可选插件服务，不入 inject；请求期经 `ctx.get` 沙箱查找
+   * （无需声明），缺失 / 查找失败 → undefined（rename 端点 503 rename-unavailable）。
+   */
+  const sessionTitleService = () => {
+    try {
+      return ctx.get?.("sessionTitle") ?? undefined;
+    } catch {
+      return undefined;
+    }
+  };
+
+  /** 活会话对象解析（rename 要求 exact live session；缺席 → 404 session/unknown）。 */
+  const liveSessionOf = (sessionId) => {
+    try {
+      return ctx.sessions?.get?.(sessionId) ?? undefined;
+    } catch {
+      return undefined;
     }
   };
 
@@ -551,6 +631,33 @@ export function apply(ctx) {
     entries = Array.isArray(doc?.entries) ? doc.entries : [];
     entries = normalizeAssociations(entries) ?? [];
 
+    /* ── 动作按钮配置共享存储（configstore.mjs） ──
+       装载 + 幂等播种（组合层视图 = entry config；空视图 ⇒ 只写 revision/migratedFrom
+       骨架文件，节缺席 = 未自定义）+ fs.watch 热重载（他端进程写入 → 重读）。 */
+    configStore.refresh();
+    void configStore.ensureSeeded(baseView, { source: "entry-config" }).catch((error) => {
+      ctx.logger?.warn?.("[dsh-v-cosmos] 配置存储播种失败: %s", String(error?.message || error));
+    });
+    const stopConfigWatch = configStore.watch(() => {
+      try {
+        configStore.refresh();
+      } catch (error) {
+        ctx.logger?.warn?.("[dsh-v-cosmos] 配置存储热重载失败: %s", String(error?.message || error));
+      }
+    });
+
+    const readJsonBody = async (req) => {
+      const chunks = [];
+      for await (const chunk of req) chunks.push(typeof chunk === "string" ? Buffer.from(chunk) : chunk);
+      const text = Buffer.concat(chunks).toString("utf8");
+      if (!text) return {};
+      try {
+        return JSON.parse(text);
+      } catch {
+        return {};
+      }
+    };
+
     const dispose = ctx.webServer.register({
       kind: "prefix",
       path: API_PREFIX,
@@ -588,6 +695,123 @@ export function apply(ctx) {
             return;
           }
 
+          /* ── 动作按钮配置：读（视图语义 base/user/value；存储缺席按 revision 0 空存储） ── */
+          if (route === "/config" && req.method === "GET") {
+            configStore.refresh();
+            json(res, 200, configStore.snapshot(baseView));
+            return;
+          }
+
+          /* ── 动作按钮配置：CAS 写入 `{ baseRevision, sections }`（null = unset 该节） ── */
+          if (route === "/config" && req.method === "PUT") {
+            const body = await readJsonBody(req);
+            let outcome;
+            try {
+              outcome = await configStore.writeSections(body);
+            } catch (error) {
+              if (error?.code === "conflict") {
+                json(res, 409, {
+                  error: "conflict",
+                  revision: typeof error.revision === "number" ? error.revision : configStore.revision()
+                });
+                return;
+              }
+              if (error?.code === "invalid") {
+                json(res, 400, { error: "invalid", reason: String(error?.message || error) });
+                return;
+              }
+              if (error?.code === "busy") {
+                json(res, 503, { error: "busy" });
+                return;
+              }
+              json(res, 500, { error: "io", reason: String(error?.message || error) });
+              return;
+            }
+            json(res, 200, { revision: outcome.revision });
+            return;
+          }
+
+          /* ── 会话扫尾：批量归档（add-cosmos-archive-session-sweep 2.2） ──
+             预过滤 `archivedSessionIds`（幂等）→ 按数组序**依次**逐个
+             `await archiveSession`——**不带 stopActivity**：turn / subagent 链 /
+             job / schedule 由宿主活动瀑布判定，在跑工作只跳过不杀。部分失败不改变
+             整体成功语义（逐会话 outcome，恒 200）。 */
+          if (route === "/archive-sessions" && req.method === "POST") {
+            const request = normalizeArchiveRequest(await readJsonBody(req));
+            if (!request.ok) {
+              json(res, 400, { error: "invalid", reason: request.reason });
+              return;
+            }
+            const archived = archivedSessionIds();
+            const results = [];
+            for (const sessionId of request.sessionIds) {
+              if (archived.has(sessionId)) {
+                results.push({ sessionId, outcome: "already-archived" });
+                continue;
+              }
+              let outcome;
+              try {
+                await ctx.workspaceRegistry.archiveSession(sessionId);
+                outcome = { outcome: "archived" };
+                archived.add(sessionId); // 单请求内重复 id 已被归一化去重，此处仅保持集合语义
+              } catch (error) {
+                outcome = classifyArchiveError(error);
+              }
+              results.push({ sessionId, ...outcome });
+            }
+            json(res, 200, { results });
+            return;
+          }
+
+          /* ── 会话扫尾：前缀改名（2.3） ──
+             会话先解析为 live 对象（标题服务要求 exact live session）→
+             `sessionTitle` 惰性查找（缺失 → 503）→ 读原题 → 前缀拼接（空题回退 /
+             已带前缀幂等 no-op）→ rename（超长由宿主 maxTitleBytes 保头截尾）。 */
+          if (route === "/rename-session" && req.method === "POST") {
+            const request = normalizeRenameRequest(await readJsonBody(req));
+            if (!request.ok) {
+              json(res, 400, { error: "invalid", reason: request.reason });
+              return;
+            }
+            const session = liveSessionOf(request.sessionId);
+            if (!session) {
+              json(res, 404, { error: "session/unknown", sessionId: request.sessionId });
+              return;
+            }
+            const titles = sessionTitleService();
+            if (!titles) {
+              json(res, 503, { error: "rename-unavailable" });
+              return;
+            }
+            let current = "";
+            try {
+              const snapshot = titles.get?.(session);
+              current = typeof snapshot?.title === "string" ? snapshot.title : "";
+            } catch (error) {
+              json(res, 500, { error: "internal", reason: String(error?.message || error) });
+              return;
+            }
+            const composed = composePrefixedTitle(current, request.prefix);
+            if (composed.unchanged) {
+              json(res, 200, normalizeRenameResult({ unchanged: true, title: composed.title }));
+              return;
+            }
+            let accepted;
+            try {
+              accepted = titles.rename?.(session, composed.title);
+            } catch (error) {
+              json(res, 500, { error: "internal", reason: String(error?.message || error) });
+              return;
+            }
+            const result = normalizeRenameResult({ unchanged: false, accepted });
+            if (result.outcome === "failed") {
+              json(res, 500, { error: "internal", reason: result.error });
+              return;
+            }
+            json(res, 200, result);
+            return;
+          }
+
           /* ── SSE 轻帧广播 ── */
           if (route === "/events" && req.method === "GET") {
             res.writeHead(200, {
@@ -615,6 +839,7 @@ export function apply(ctx) {
 
     return () => {
       dispose();
+      stopConfigWatch();
       for (const workspaceId of [...watchers.keys()]) dropWatcher(workspaceId);
       if (scanTimer) {
         clearTimeout(scanTimer);

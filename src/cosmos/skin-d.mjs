@@ -121,9 +121,13 @@ const SESS = { idle: '#a8b8d8', busy: '#54c8ff', waiting: '#ffaa4a', 'done-unrea
 const GOLD = '#ffd28a';
 
 /**
- * 创建风格 D 皮肤实例（引擎构造参数形态；每次创建独立 glow sprite 缓存）。
+ * 创建风格 D（内置皮肤 `deepspace`）实例（引擎构造参数形态；每次创建独立 glow sprite 缓存）。
+ *
+ * add-cosmos-skin-themes 1.2：导出改名 `createSkinDeepspace`（注册表按 `deepspace` 注册，
+ * 其 HUD 令牌表 = 改造前现值，即全部 `var(--cos-*, fallback)` 的 fallback 基线）；
+ * 旧名 `createSkinD` 保留为具名兼容别名（外壳/冒烟既有引用零改动）。
  */
-export function createSkinD() {
+export function createSkinDeepspace() {
   const spriteCache = {};
   function glow(hex) {
     if (!spriteCache[hex]) spriteCache[hex] = glowSprite(hexA(hex, 0.95), hexA(hex, 0.22));
@@ -199,7 +203,7 @@ export function createSkinD() {
   }
 
   return {
-    skin: 'd',
+    skin: 'deepspace',
     useBand: true,
     palette: { prop: PROP, sess: SESS },
     gold: GOLD,
@@ -260,11 +264,17 @@ export function createSkinD() {
       }
       if (it.kind === 'constline') {
         /* 连线段淡入淡出（8.1）：段状态以恒星 id 对为键（引擎侧差分），seg.alpha
-           ∈[0,1] 携带坡道（新增段渐入 / 移除段渐熄幽灵）。 */
-        ctx.lineWidth = 1;
+           ∈[0,1] 携带坡道（新增段渐入 / 移除段渐熄幽灵）。
+           关联聚焦段（cosmos-relation-focus D2/D8，风格 D 参考实现）：seg.rel 金色虚线
+           增亮——α = 基线 0.28 → 聚焦坡道因子 × 0.8 上限（design D8：低于选中实金环，
+           保持辅助层定位）。未适配皮肤忽略标记即回落普通段——本分支 else 路径即降级基线。 */
         ctx.setLineDash([2, 4]);
         it.segs.forEach(function (seg) {
-          ctx.strokeStyle = 'rgba(255,214,150,' + (0.28 * it.alpha * (seg.alpha ?? 1)).toFixed(3) + ')';
+          const segK = seg.alpha ?? 1;
+          const relK = seg.rel ? clamp(seg.relAlpha ?? 1, 0, 1) : 0;
+          const alpha = (0.28 + 0.52 * relK) * it.alpha * segK;
+          ctx.strokeStyle = 'rgba(255,214,150,' + alpha.toFixed(3) + ')';
+          ctx.lineWidth = 1 + 0.6 * relK;
           ctx.beginPath();
           ctx.moveTo(seg.a.x, seg.a.y);
           ctx.lineTo(seg.b.x, seg.b.y);
@@ -274,8 +284,11 @@ export function createSkinD() {
         return;
       }
       if (it.kind === 'orbit') {
-        ctx.strokeStyle = 'rgba(255,214,150,' + (0.20 * it.alpha).toFixed(3) + ')';
-        ctx.lineWidth = 1;
+        /* 轨道环常显 0.20α；关联聚焦环（rel，cosmos-relation-focus D2/D8）增亮至
+           0.20+0.42×relAlpha、线宽 1→1.8 —— 低于选中实金环（辅助层定位）。 */
+        const relK = it.rel ? clamp(it.relAlpha ?? 1, 0, 1) : 0;
+        ctx.strokeStyle = 'rgba(255,214,150,' + ((0.20 + 0.42 * relK) * it.alpha).toFixed(3) + ')';
+        ctx.lineWidth = 1 + 0.8 * relK;
         ctx.setLineDash([4, 6]);
         ctx.beginPath();
         it.orbitPts.forEach(function (p, i) { if (i === 0) ctx.moveTo(p.x, p.y); else ctx.lineTo(p.x, p.y); });
@@ -433,10 +446,13 @@ export function createSkinD() {
         return;
       }
       if (it.kind === 'suborbit') {
-        /* 卫星子轨道虚线环 `[3,5]`（色随父天体状态，0.28α；states-core drawSubOrbit 同款）。 */
+        /* 卫星子轨道虚线环 `[3,5]`（色随父天体状态，0.28α；states-core drawSubOrbit 同款）。
+           挂卫星行星聚焦时子轨道环同源增亮（cosmos-relation-focus「挂卫星行星聚焦」
+           SHOULD：rel 标记 + 同一 relAlpha）。 */
         const oc = this.palette.sess[it.data?.state] || this.palette.sess.idle;
-        ctx.strokeStyle = hexA(oc, 0.28 * it.alpha);
-        ctx.lineWidth = 1;
+        const relK = it.rel ? clamp(it.relAlpha ?? 1, 0, 1) : 0;
+        ctx.strokeStyle = hexA(oc, (0.28 + 0.42 * relK) * it.alpha);
+        ctx.lineWidth = 1 + 0.8 * relK;
         ctx.setLineDash([3, 5]);
         ctx.beginPath();
         it.orbitPts.forEach(function (p, i) { if (i === 0) ctx.moveTo(p.x, p.y); else ctx.lineTo(p.x, p.y); });
@@ -742,3 +758,6 @@ export function createSkinD() {
 
 /* 供外壳/面板复用的调色常量（HUD 卡等待用；键为生命周期/会话四态枚举）。 */
 export const SKIN_D_PALETTE = Object.freeze({ prop: Object.freeze({ ...PROP }), sess: Object.freeze({ ...SESS }), gold: GOLD });
+
+/** 兼容别名（add-cosmos-skin-themes 1.2：导出改名，旧名保留；行为与 `createSkinDeepspace` 同一引用）。 */
+export const createSkinD = createSkinDeepspace;

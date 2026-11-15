@@ -12,8 +12,10 @@
  *  - tasks：tasks.md 中**任意缩进**的 checkbox 行同口径计入 done 与 total
  *    （design 修订：原「一级统计 + 嵌套计入总数」两口径并存会让嵌套未勾项永远
  *    无法 complete，修订为同口径）；
- *  - pending：`<ws>/openspec/pending-changes/*.json` 待创建锚点（{name, by, at}，
- *    一文件一条目）；同名真实提案目录的锚点剔除（目录优先）；
+ *  - pending：`<ws>/openspec/pending-changes/*.json` 待创建锚点（{name, by, at, sessionId?}，
+ *    一文件一条目）；同名真实提案目录的锚点剔除（目录优先）；`sessionId` 为可选加法
+ *    扩展（add-cosmos-embryo-cards 2.1：字符串非空才采纳，否则 null——读取方容错，
+ *    旧锚点零迁移）；
  *  - 星云 = `archive/` 一级子目录计数；
  *  - 容错（R3）：tasks.md / .state.json / pending 条目不可读/解析失败 → 按缺失兜底，
  *    SHALL NOT 抛错、不中断整工作区扫描。
@@ -173,12 +175,14 @@ export function collectPendingNames(entries) {
 }
 
 /**
- * pending 锚点条目归一（纯函数，add-celestial-states 2.2）：
- * `readPendingDir` 产出的原始条目 → 合法 `{name, by, at}` 列表（非法文件跳过）；
+ * pending 锚点条目归一（纯函数，add-celestial-states 2.2 / add-cosmos-embryo-cards 2.1）：
+ * `readPendingDir` 产出的原始条目 → 合法 `{name, by, at, sessionId}` 列表（非法文件跳过）；
  * 同名真实提案目录的锚点剔除（目录优先）。
- * @param {Array<{name?: unknown, by?: unknown, at?: unknown}>} items 原始条目
+ * `sessionId` 读取方容错：字符串非空才采纳，缺失/空值/非字符串一律归一为 null
+ * （= 无关联，该锚点独立成星胚卡片），SHALL NOT 抛错。
+ * @param {Array<{name?: unknown, by?: unknown, at?: unknown, sessionId?: unknown}>} items 原始条目
  * @param {Set<string>} activeNames 活跃提案名集合（目录优先剔除基准）
- * @returns {Array<{name: string, by: string|null, at: number|null}>}
+ * @returns {Array<{name: string, by: string|null, at: number|null, sessionId: string|null}>}
  */
 export function pendingItemsOf(items, activeNames) {
   const active = activeNames instanceof Set ? activeNames : new Set(Array.isArray(activeNames) ? activeNames : []);
@@ -191,7 +195,8 @@ export function pendingItemsOf(items, activeNames) {
     out.push({
       name: item.name,
       by: typeof item.by === "string" && item.by ? item.by : null,
-      at: Number.isFinite(at) && at > 0 ? at : null
+      at: Number.isFinite(at) && at > 0 ? at : null,
+      sessionId: typeof item.sessionId === "string" && item.sessionId ? item.sessionId : null
     });
   }
   return out.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
@@ -201,7 +206,7 @@ export function pendingItemsOf(items, activeNames) {
  * 单工作区骨架装配（纯函数，注入读目录回调）：
  *  - `readChangesDir(wsPath)` → `openspec/changes` 目录项（目录缺失 → null）；
  *  - `readArchiveDir(wsPath)` → `openspec/changes/archive` 目录项（缺失 → null）；
- *  - `readPendingDir(wsPath)` → `openspec/pending-changes/*.json` 的 `{name, by, at}`
+ *  - `readPendingDir(wsPath)` → `openspec/pending-changes/*.json` 的 `{name, by, at, sessionId?}`
  *    原始条目列表（目录缺失/不可读 → null，非法文件由调用方跳过）。
  * 目录缺失 → 该工作区产出空骨架（`stars: []`、`archives: 0`、`pending: []`），
  * SHALL NOT 抛错（对齐 hive「无 openspec 目录者空组不抛错」两侧分写口径）。

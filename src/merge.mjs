@@ -131,11 +131,14 @@ export function constellationPositions(workspaces, options = {}) {
 }
 
 /**
- * 工作区名称匹配（纯函数，add-cosmos-search-filter 1.1 / design D4）：
+ * 工作区名称匹配（纯函数，add-cosmos-search-filter 1.1 / design D4；
+ * add-cosmos-embryo-cards 3.2 扩展星胚 slug）：
  *  - `query.trim()` 为空（含仅空白）→ **全部工作区命中**（语义 = 过滤关闭）；
- *  - 非空 → 按空白切分多 token，工作区名称小写化后**每个 token 都必须是子串**
+ *  - 非空 → 按空白切分多 token，匹配域小写化后**每个 token 都必须是子串**
  *    （AND 语义；小写化只影响 ASCII，中文逐字语义不受影响）；
- *  - 匹配域**仅工作区名称**——恒星（提案名）MUST NOT 参与匹配；
+ *  - 匹配域 = **工作区名称 ∪ 该工作区星胚 slug**（`lifecycle === "proto"` 的恒星 id；
+ *    add-cosmos-embryo-cards 3.2：星胚 slug 是唯一可检索的锚点文本）；
+ *  - **正式提案名 MUST NOT 参与匹配**（既有契约不变）；
  *  - 输出命中 ws id 的 `Set`（顺序无关：集合语义，重排输入由
  *    `constellationPositions` 内部规范排序保证确定性）。
  *
@@ -158,10 +161,80 @@ export function matchWorkspaces(scene, query) {
   }
   for (const ws of list) {
     if (ws?.id == null) continue;
-    const name = String(ws?.name ?? "").toLowerCase();
-    if (tokens.every((token) => name.indexOf(token) >= 0)) out.add(ws.id);
+    /* 字段以换行拼接：子串语义只在单个字段内成立，MUST NOT 跨「名称 / slug」边界
+       拼出伪命中（例如名称尾部 + slug 头部拼出第三个词）。 */
+    const haystack = [String(ws?.name ?? ""), ...embryoSlugsOf(ws)].join("\n").toLowerCase();
+    if (tokens.every((token) => haystack.indexOf(token) >= 0)) out.add(ws.id);
   }
   return out;
+}
+
+/** 工作区内星胚 slug 清单（`matchWorkspaces` 匹配域；正式提案名不参与）。 */
+function embryoSlugsOf(ws) {
+  const slugs = [];
+  for (const star of Array.isArray(ws?.stars) ? ws.stars : []) {
+    if (!star || star.lifecycle !== "proto") continue;
+    const slug = typeof star.id === "string" ? star.id : "";
+    if (slug) slugs.push(slug);
+  }
+  return slugs;
+}
+
+/**
+ * 星胚归并分组（纯函数，add-cosmos-embryo-cards 2.2 / design D3、D10）：
+ * 从**单个工作区**的 proto 恒星推导星胚组。**零新增 scene 字段**——不落地到场景，
+ * 投影层（panel.mjs `projectPanel`）按需计算；场景差分对 `sessionId` 的比较面由
+ * `starPropertySignature` 承担（重分组 → patch，增删锚点 → rebuild）。
+ *
+ * 口径：
+ *  - 归并键 = 锚点 `sessionId`（同一探索会话 → 同一组）；缺失/空值 → **每 slug 自组**
+ *    （旧锚点宁可散落不错并，零迁移）；
+ *  - 组键 = `sessionId` 或该组唯一 slug（选中键与卡片 key 的稳定组成，跨工作区唯一性
+ *    由调用方叠加 wsId 保证）；
+ *  - `slugs` 字典序去重（组内展示先后确定，与骨架传入顺序解耦）；
+ *  - `at` = 组内**最早**锚点写入时间（有效值全缺失 → null）；
+ *  - 组间按**首 slug** 字典序（确定性；正式提案优先与其后的星胚组呈层排列）。
+ *
+ * @param {Array<object>} stars 单工作区 scene 恒星（仅 `lifecycle === "proto"` 参与）
+ * @returns {Array<{key: string, sessionId: string|null, slugs: string[], at: number|null}>}
+ */
+export function embryoGroupsOf(stars) {
+  const list = Array.isArray(stars) ? stars : [];
+  /* 内层分桶键带命名空间前缀：`sessionId` 与 slug 的取值域不同，但混合命名会让
+     极端同名输入（会话 id 恰好等于某 slug）被错误归并——隔离两域，组键对外仍是裸值。 */
+  const buckets = new Map(); // "session\0<id>" | "solo\0<slug>" → { key, sessionId, slugs, at }
+  for (const star of list) {
+    if (!star || star.lifecycle !== "proto") continue;
+    const slug = typeof star.id === "string" ? star.id : "";
+    if (!slug) continue;
+    const sessionId = typeof star.sessionId === "string" && star.sessionId ? star.sessionId : null;
+    const bucketKey = sessionId === null ? "solo\u0000" + slug : "session\u0000" + sessionId;
+    let bucket = buckets.get(bucketKey);
+    if (!bucket) {
+      bucket = { key: sessionId ?? slug, sessionId, slugs: [], at: null };
+      buckets.set(bucketKey, bucket);
+    }
+    if (!bucket.slugs.includes(slug)) bucket.slugs.push(slug);
+    const at = Number(star.at) > 0 ? Number(star.at) : null;
+    if (at !== null && (bucket.at === null || at < bucket.at)) bucket.at = at;
+  }
+  const groups = [];
+  for (const bucket of buckets.values()) {
+    bucket.slugs.sort(compareText);
+    groups.push({ key: bucket.key, sessionId: bucket.sessionId, slugs: bucket.slugs, at: bucket.at });
+  }
+  /* 组间：首 slug 字典序（首 slug 在同一工作区内唯一 → 无需二次兜底，仍给出确定序）。 */
+  groups.sort((a, b) => compareText(a.slugs[0], b.slugs[0]));
+  return groups;
+}
+
+/** 码点序比较（确定性字典序；不依赖运行环境 locale/ICU，与 panel.mjs 同源口径）。 */
+function compareText(a, b) {
+  const left = String(a ?? "");
+  const right = String(b ?? "");
+  if (left < right) return -1;
+  if (left > right) return 1;
+  return 0;
 }
 
 /**
@@ -377,7 +450,11 @@ export function mergeScene({ skeleton, sessions, workspaces, statuses = null, no
     /* 恒星生命周期装配（3.2）：骨架 star 的 lifecycle/setBy/at 透传；星胚（pending
        锚点）装配为 lifecycle:"proto" 条目（off = starOffset(slug) 确定性预占位；
        同名真实目录的锚点已在骨架层剔除，此处再防御一次）。索引顺序 = 骨架恒星在前、
-       星胚在后——骨架 links 索引不受影响。 */
+       星胚在后——骨架 links 索引不受影响。
+       `sessionId`（add-cosmos-embryo-cards 2.2）：锚点可选字段**原样透传**（读取端容错
+       已在 scan 层完成；此处空值归一为 null）——画布渲染不读该字段（逐字不变），
+       面板投影据此把同一探索会话的锚点归并为一张星胚卡片；同时纳入
+       `starPropertySignature`（重分组触发 patch 而非误判 none）。 */
     const stars = (Array.isArray(ws.stars) ? ws.stars : []).map((star) => ({
       id: star.id,
       name: star.name,
@@ -398,6 +475,7 @@ export function mergeScene({ skeleton, sessions, workspaces, statuses = null, no
         lifecycle: "proto",
         setBy: typeof anchor.by === "string" && anchor.by ? anchor.by : null,
         at: Number(anchor.at) || null,
+        sessionId: typeof anchor.sessionId === "string" && anchor.sessionId ? anchor.sessionId : null,
         tasks: [0, 0],
         age: relativeTime(anchor.at, now),
         act: 0,
@@ -484,6 +562,10 @@ export function mergeScene({ skeleton, sessions, workspaces, statuses = null, no
     return {
       id: ws.id,
       name: ws.name,
+      /* 工作区绝对路径透传（add-cosmos-proposal-actions D1 勘误）：提案列表面板的
+         @提案目录组装与「工作区归属」共用同一来源；骨架缺席 → 空串（面板侧据此
+         拒绝组装 @引用，不产生半截路径）。 */
+      path: typeof ws.path === "string" ? ws.path : "",
       pos,
       stars,
       links,
@@ -495,6 +577,44 @@ export function mergeScene({ skeleton, sessions, workspaces, statuses = null, no
   });
 
   return { workspaces: outWorkspaces };
+}
+
+/**
+ * 恒星 → 关联行星反向索引（cosmos-relation-focus「关联投影纯函数」，design D1）。
+ *
+ * 行星→恒星方向是现成的 `planet.stars[]`；关联聚焦需要反向路径，故在 merge 层提供
+ * 纯投影：输入单星座 merge 产物（`{ stars, planets, ... }`），输出
+ * `Map<starId, planetId[]>`。同一恒星被多行星关联、同一行星关联多恒星（联星）
+ * 均全量展开——每个 (恒星, 行星) 组合只出现一次；星座无行星 → 空 Map。
+ *
+ * `planet.stars[]` 条目兼容两形态（同一函数两处消费，零分支调用方）：
+ *  - merge 产物 = 提案 id 字符串（本函数的主契约输入）；
+ *  - 引擎场景 ws = `buildScenePure` 解析后的恒星对象（带 `wp`，buildItems 现场消费）。
+ *
+ * MUST 零 DOM、零网络依赖（冒烟直测，test/merge-smoke.mjs）。
+ *
+ * @param {object|null} ws 单星座（merge 产物或引擎 ws）
+ * @returns {Map<string, string[]>} starId → 关联行星 id 列表（按行星在册顺序）
+ */
+export function starPlanetIdsOf(ws) {
+  const out = new Map();
+  const planets = Array.isArray(ws?.planets) ? ws.planets : [];
+  for (const planet of planets) {
+    if (!planet || typeof planet.id !== "string" || !planet.id) continue;
+    const stars = Array.isArray(planet.stars) ? planet.stars : [];
+    const seen = new Set();
+    for (const entry of stars) {
+      const sid = typeof entry === "string"
+        ? entry
+        : (entry && typeof entry.id === "string" ? entry.id : "");
+      if (!sid || seen.has(sid)) continue;
+      seen.add(sid);
+      const list = out.get(sid);
+      if (list) list.push(planet.id);
+      else out.set(sid, [planet.id]);
+    }
+  }
+  return out;
 }
 
 function byUpdatedAtDesc(a, b) {
@@ -517,11 +637,15 @@ export function todoBadgeOf(summary) {
 
 /**
  * 场景变更分级（纯函数）：
- *  - "none"：结构键（星座集合/恒星集合/行星彗星集合/连线/pos）完全一致；
- *  - "patch"：集合一致，属性（lifecycle/setBy/at/tasks/act/state/delegatedBusy/
- *    satellites/satelliteCount/todos/when/archives）有差异——引擎按 id 就地补丁
+ *  - "none"：结构键（星座集合/恒星集合/行星彗星集合/连线/pos）与全部可见属性
+ *    （名称/路径/lifecycle/tasks/state/todos/age/when 等）完全一致；
+ *  - "patch"：集合一致，属性（lifecycle/setBy/at/tasks/act/age/state/delegatedBusy/
+ *    satellites/satelliteCount/todos/when/archives/name/path）有差异——引擎按 id 就地补丁
  *    （add-celestial-states 3.5：卫星走属性补丁路径，subagent 起停不触发场景级重建）；
- *  - "rebuild"：任一集合/连线/位置变化——引擎全量重建（dust 重播散、chip 重挂）。
+ *    相对时间文本（age/when）必须计入：否则「仅时间桶变化」会被误判为 none，
+ *    客户端为刷新文本只能全量重建（画面闪烁）。
+ *  - "rebuild"：任一集合/连线/位置变化——引擎全量重建（dust 重播散、覆盖层增量对齐、
+ *    同 id 天体的尾迹按中心继承）。
  *
  * @param {object|null} prev 上一帧 scene
  * @param {object} next 下一帧 scene
@@ -539,6 +663,9 @@ export function sceneDiffLevel(prev, next) {
     if (!sameVec(a.pos, b.pos)) return "rebuild";
     if (!sameIdList(a.stars, b.stars) || !sameIdList(a.planets, b.planets) || !sameIdList(a.comets, b.comets)) return "rebuild";
     if (!sameLinks(a.links, b.links)) return "rebuild";
+    /* 名称/路径是面板与 chip 的可见字段（重命名、工作区迁移），必须触发 patch——
+       否则会被判 none 而在客户端早退，界面文本停留在旧值。 */
+    if (a.name !== b.name || a.path !== b.path) patch = true;
     if (Number(a.archives) !== Number(b.archives)) { patch = true; continue; }
     if (Number(a.satelliteCount ?? 0) !== Number(b.satelliteCount ?? 0)) { patch = true; continue; }
     const starA = new Map(a.stars.map((s) => [s.id, s]));
@@ -585,7 +712,10 @@ function satellitesSignature(satellites) {
 
 function starPropertySignature(star) {
   if (!star) return "";
-  return [star.lifecycle, star.setBy ?? "", star.at ?? "", star.tasks?.[0], star.tasks?.[1], star.act].join("|");
+  /* `sessionId`（add-cosmos-embryo-cards 2.2）：星胚归并分组的唯一输入——手工编辑某
+     锚点的 sessionId（锚点集合不变）必须判为属性级 patch，MUST NOT 被差分守卫误判
+     none（否则客户端早退、星胚卡片停留旧分组）。 */
+  return [star.name, star.lifecycle, star.setBy ?? "", star.at ?? "", star.sessionId ?? "", star.tasks?.[0], star.tasks?.[1], star.act, star.age ?? ""].join("|");
 }
 
 function planetPropertySignature(planet) {
@@ -598,7 +728,8 @@ function planetPropertySignature(planet) {
     satellitesSignature(planet.satellites),
     planet.stars?.join(","),
     planet.todos,
-    planet.title
+    planet.title,
+    planet.when ?? ""
   ].join("|");
 }
 
@@ -610,6 +741,7 @@ function cometPropertySignature(comet) {
     comet.delegatedBusy ? 1 : 0,
     comet.satelliteCount ?? 0,
     satellitesSignature(comet.satellites),
-    comet.title
+    comet.title,
+    comet.when ?? ""
   ].join("|");
 }

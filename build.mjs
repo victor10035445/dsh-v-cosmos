@@ -6,8 +6,8 @@
  *  - 同时产出 lib/client.js.map（外置 sourcemap）：宿主 client-modules 探测该文件并
  *    组装索引 sourcemap，浏览器里插件栈直接指向 src/client.jsx 原始行列。
  *  - src/index.mjs 原样复制为 lib/index.js（宿主半区纯 ESM，零构建变换；依赖仅 node 内建）；
- *    纯逻辑模块（scan.mjs / associations.mjs）保留 .mjs 扩展名复制（lib/index.js 的相对
- *    import 说明符 ./<name>.mjs 与文件名一致，node --check 可直接校验）。
+ *    纯逻辑模块（scan.mjs / associations.mjs / sweep.mjs）保留 .mjs 扩展名复制（lib/index.js
+ *    的相对 import 说明符 ./<name>.mjs 与文件名一致，node --check 可直接校验）。
  */
 import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import * as esbuild from "esbuild";
@@ -23,6 +23,34 @@ const footer = `return module.exports;
 } });`;
 
 mkdirSync(new URL("./lib", import.meta.url), { recursive: true });
+
+/* CSS 模板字面量完整性守卫（swap-cosmos-session-toggle-titlebar 回归）：`src/client.jsx`
+   的整站 CSS 是单个模板字面量，CSS 注释/规则里出现**裸反引号**会提前闭合它——esbuild
+   仍能编译（余下文本退化为合法的移位/模板表达式），但产物里的 CSS 常量变为数字 0，
+   整站样式静默失效（座位按钮变方、页面裸奔）。构建期直接失败，禁止静默产出。 */
+const clientSource = readFileSync(new URL("./src/client.jsx", import.meta.url), "utf8");
+const cssMarker = "const CSS = `";
+const cssOpenAt = clientSource.indexOf(cssMarker);
+if (cssOpenAt < 0) throw new Error("build: src/client.jsx 缺少 `const CSS = ` 模板字面量");
+let cssCloseAt = -1;
+for (let i = cssOpenAt + cssMarker.length; i < clientSource.length; i += 1) {
+  if (clientSource[i] === "\\") {
+    i += 1;
+    continue;
+  }
+  if (clientSource[i] === "`") {
+    cssCloseAt = i;
+    break;
+  }
+}
+if (cssCloseAt < 0) throw new Error("build: src/client.jsx 的 CSS 模板字面量未闭合");
+const cssTail = clientSource.slice(cssCloseAt, cssCloseAt + "`;\n\nfunction installStyles".length);
+if (cssTail !== "`;\n\nfunction installStyles") {
+  throw new Error(
+    "build: src/client.jsx 的 CSS 模板字面量内存在裸反引号（会提前闭合 → 整站样式失效）；" +
+    "请改用「」等非反引号字符，或转义为 \\`"
+  );
+}
 
 const result = await esbuild.build({
   entryPoints: ["src/client.jsx"],
@@ -54,7 +82,7 @@ console.log(`client bundle: ${kb(result.metafile.outputs["lib/client.js"].bytes)
 /* 宿主半区：纯 ESM 源码直出。入口复制为 lib/index.js（package main 不变），
    纯逻辑模块保留 .mjs 扩展名复制（相对 import 说明符与文件名一致）。 */
 copyFileSync(new URL("./src/index.mjs", import.meta.url), new URL("./lib/index.js", import.meta.url));
-const HOST_MODULE_FILES = ["scan.mjs", "associations.mjs"];
+const HOST_MODULE_FILES = ["scan.mjs", "associations.mjs", "sweep.mjs", "buttons.mjs", "const-buttons.mjs", "configstore.mjs"];
 for (const file of HOST_MODULE_FILES) {
   copyFileSync(new URL("./src/" + file, import.meta.url), new URL("./lib/" + file, import.meta.url));
 }

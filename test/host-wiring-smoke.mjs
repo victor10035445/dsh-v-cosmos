@@ -4,10 +4,10 @@
  * 运行：node test/host-wiring-smoke.mjs（含 ~3s 防抖等待）
  */
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { apply, storagePath, contextTextOf, lastActivityMsOf, idSetFingerprint } from "../src/index.mjs";
+import { apply, storagePath, configStoragePath, contextTextOf, lastActivityMsOf, idSetFingerprint } from "../src/index.mjs";
 
 /* ── 注册指纹纯函数（add-cosmos-add-workspace D3/1.1）：排序 join、集合等价 ── */
 assert.equal(idSetFingerprint(["b", "a"]), idSetFingerprint(["a", "b"]), "指纹顺序无关（集合等价）");
@@ -168,6 +168,157 @@ try {
     "剪除 → associations-changed 广播"
   );
 
+  /* ── 锚点 sessionId 入骨架指纹（add-cosmos-embryo-cards 2.1）：宿主读取第一跳透传 +
+        仅改 sessionId（锚点集合不变）→ 骨架指纹变化 → 增量广播（星胚重分组即时刷新） ── */
+  {
+    const ANCHOR_AT = 1700000000000;
+    const pendingDir = join(wsRoot, "openspec", "pending-changes");
+    mkdirSync(pendingDir, { recursive: true });
+    const anchorPath = join(pendingDir, "explore-one.json");
+    const anchorText = (sessionId) => JSON.stringify({ name: "explore-one", by: "cosmos-explore", at: ANCHOR_AT, sessionId });
+    writeFileSync(anchorPath, anchorText("sess-explore-1"), "utf8");
+    await sleep(3000); // 防抖窗口（watcher 可能已重扫；未触发则由下方 GET 的请求期指纹对账兜底）
+
+    const firstAnchorRes = captureJson();
+    await capturedHandler({ method: "GET", url: "/api/dsh-v-cosmos/scene" }, firstAnchorRes.res);
+    await drain();
+    const firstPending = firstAnchorRes.body.scene.workspaces.find((w) => w.id === "ws1").pending;
+    assert.deepEqual(
+      firstPending,
+      [{ name: "explore-one", by: "cosmos-explore", at: ANCHOR_AT, sessionId: "sess-explore-1" }],
+      "锚点 sessionId 入骨架（宿主 readPendingDir → scan 归一 → 骨架 三跳贯通）"
+    );
+
+    const framesBeforeRegroup = dataFrameCount();
+    writeFileSync(anchorPath, anchorText("sess-explore-2"), "utf8"); // 仅 sessionId 变化（锚点集合不变）
+    await sleep(3000);
+
+    const regroupRes = captureJson();
+    await capturedHandler({ method: "GET", url: "/api/dsh-v-cosmos/scene" }, regroupRes.res);
+    await drain();
+    const regroupPending = regroupRes.body.scene.workspaces.find((w) => w.id === "ws1").pending;
+    assert.equal(regroupPending[0].sessionId, "sess-explore-2", "仅 sessionId 变化 → 骨架反映新值");
+    assert.ok(
+      dataFrameCount() > framesBeforeRegroup,
+      "pending 条目整体序列化入 skeletonFingerprint → sessionId 值增改触发增量广播（不依赖客户端轮询）"
+    );
+  }
+
+  /* ── 动作按钮配置通道（add-cosmos-proposal-actions 2.3）：GET/PUT + CAS 语义 ── */
+  {
+    const configHome = configStoragePath();
+    assert.ok(configHome.startsWith(storageHome), "配置存储落在 $DSH_HOME 根（与关联存储独立）");
+    assert.ok(existsSync(configHome), "apply 幂等播种生成配置文件");
+
+    const initial = captureJson();
+    await capturedHandler({ method: "GET", url: "/api/dsh-v-cosmos/config" }, initial.res);
+    assert.equal(initial.status, 200);
+    assert.equal(initial.body.status, "ready");
+    assert.equal(initial.body.revision, 1, "播种 revision 1");
+    assert.equal(initial.body.user, null, "空视图播种 → user: null");
+    assert.deepEqual(initial.body.value.buttons, [], "无 buttons 节 → 生效值空列表");
+    assert.deepEqual(initial.body.base.buttons, [], "组合层（entry config）空");
+
+    const saveRes = captureJson();
+    await capturedHandler(
+      stubBodyReq("PUT", "/api/dsh-v-cosmos/config", {
+        baseRevision: 1,
+        sections: { buttons: [{ name: "审查", prompt: "请使用 /cosmos-review 审查本提案", autoSend: true }] }
+      }),
+      saveRes.res
+    );
+    assert.equal(saveRes.status, 200, "CAS 写入 200");
+    assert.equal(saveRes.body.revision, 2, "revision 递增");
+
+    const afterSave = captureJson();
+    await capturedHandler({ method: "GET", url: "/api/dsh-v-cosmos/config" }, afterSave.res);
+    assert.equal(afterSave.body.revision, 2);
+    assert.deepEqual(afterSave.body.value.buttons, [
+      { name: "审查", prompt: "请使用 /cosmos-review 审查本提案", autoSend: true, newSession: true }
+    ], "落盘归一化（newSession 恒 true）+ 视图生效");
+    assert.deepEqual(afterSave.body.user.buttons, afterSave.body.value.buttons, "user 层即写入内容");
+
+    const conflictRes = captureJson();
+    await capturedHandler(
+      stubBodyReq("PUT", "/api/dsh-v-cosmos/config", { baseRevision: 1, sections: { buttons: [] } }),
+      conflictRes.res
+    );
+    assert.equal(conflictRes.status, 409, "过期 revision → 409");
+    assert.equal(conflictRes.body.revision, 2, "409 携带服务端 revision");
+
+    const invalidRes = captureJson();
+    await capturedHandler(
+      stubBodyReq("PUT", "/api/dsh-v-cosmos/config", {
+        baseRevision: 2,
+        sections: { buttons: [{ name: "x", prompt: "p", newSession: false }] }
+      }),
+      invalidRes.res
+    );
+    assert.equal(invalidRes.status, 400, "newSession 非 true → 400");
+    assert.equal(invalidRes.body.error, "invalid");
+
+    const unsetRes = captureJson();
+    await capturedHandler(
+      stubBodyReq("PUT", "/api/dsh-v-cosmos/config", { baseRevision: 2, sections: { buttons: null } }),
+      unsetRes.res
+    );
+    assert.equal(unsetRes.status, 200);
+    const afterUnset = captureJson();
+    await capturedHandler({ method: "GET", url: "/api/dsh-v-cosmos/config" }, afterUnset.res);
+    assert.deepEqual(afterUnset.body.user, null, "unset → user: null（回组合层）");
+
+    /* ── 星座动作配置节（add-cosmos-constellation-actions 1.2）：独立节 + 互不读写 ── */
+    assert.deepEqual(afterUnset.body.value.constellationButtons, [], "无星座节 → 生效值空列表");
+    assert.deepEqual(afterUnset.body.base.constellationButtons, [], "组合层星座节空");
+
+    const constSave = captureJson();
+    await capturedHandler(
+      stubBodyReq("PUT", "/api/dsh-v-cosmos/config", {
+        baseRevision: 3,
+        sections: { constellationButtons: [{ name: "探索", prompt: "请使用 /cosmos-explore 探索新需求" }] }
+      }),
+      constSave.res
+    );
+    assert.equal(constSave.status, 200, "星座节 CAS 写入 200");
+    assert.equal(constSave.body.revision, 4, "revision 递增");
+
+    const afterConstSave = captureJson();
+    await capturedHandler({ method: "GET", url: "/api/dsh-v-cosmos/config" }, afterConstSave.res);
+    assert.deepEqual(afterConstSave.body.value.constellationButtons, [
+      { name: "探索", prompt: "请使用 /cosmos-explore 探索新需求", autoSend: false, newSession: true }
+    ], "星座节落盘归一化（newSession 恒 true、无 prepend 键）+ 视图生效");
+    assert.deepEqual(afterConstSave.body.user.constellationButtons, afterConstSave.body.value.constellationButtons, "user 层只有星座节");
+    assert.deepEqual(afterConstSave.body.value.buttons, [], "写入星座节不改写 buttons 节");
+
+    const constPrepend = captureJson();
+    await capturedHandler(
+      stubBodyReq("PUT", "/api/dsh-v-cosmos/config", {
+        baseRevision: 4,
+        sections: { constellationButtons: [{ name: "x", prompt: "p", prepend: true }] }
+      }),
+      constPrepend.res
+    );
+    assert.equal(constPrepend.status, 400, "星座按钮 prepend 键 → 400");
+    assert.equal(constPrepend.body.error, "invalid");
+
+    const proposalAfterConst = captureJson();
+    await capturedHandler(
+      stubBodyReq("PUT", "/api/dsh-v-cosmos/config", {
+        baseRevision: 4,
+        sections: { buttons: [{ name: "审查", prompt: "请使用 /cosmos-review 审查本提案", autoSend: true }] }
+      }),
+      proposalAfterConst.res
+    );
+    assert.equal(proposalAfterConst.status, 200);
+    const bothView = captureJson();
+    await capturedHandler({ method: "GET", url: "/api/dsh-v-cosmos/config" }, bothView.res);
+    assert.equal(bothView.body.revision, 5);
+    assert.deepEqual(bothView.body.value.constellationButtons, afterConstSave.body.value.constellationButtons, "写 buttons 不改写星座节");
+    assert.deepEqual(bothView.body.user.buttons, [
+      { name: "审查", prompt: "请使用 /cosmos-review 审查本提案", autoSend: true, newSession: true }
+    ], "两节并存各自独立");
+  }
+
   /* ── 未知路由 404 ── */
   const nfRes = captureJson();
   await capturedHandler({ method: "GET", url: "/api/dsh-v-cosmos/nope" }, nfRes.res);
@@ -211,6 +362,19 @@ function captureJson() {
     on() {}
   };
   return state;
+}
+
+/** 带 JSON 体的请求桩（handler 以 `for await (const chunk of req)` 读体）。 */
+function stubBodyReq(method, url, body) {
+  const text = JSON.stringify(body ?? {});
+  const chunks = [Buffer.from(text, "utf8")];
+  return {
+    method,
+    url,
+    async *[Symbol.asyncIterator]() {
+      for (const chunk of chunks) yield chunk;
+    }
+  };
 }
 
 function drain() {
