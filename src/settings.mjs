@@ -3,7 +3,9 @@
  * 皮肤偏好并入同一存储面，版本 v1 → v2；add-cosmos-zoom-focus-nav 1.3：缩放导航三键
  * 并入同一存储面，版本 v2 → v3；add-cosmos-session-list-panel 3.3：会话面板展开态
  * 版本 v3 → v4；add-cosmos-native-composer 1.1：星座动作「发送前编辑」呈现分支
- * 版本 v4 → v5）。
+ * 版本 v4 → v5；add-cosmos-drag-pan-toggle 1.1：右下角「拖拽平移」开关布尔键
+ * 版本 v5 → v6；add-cosmos-layout-tuning 1.1：界面尺寸 12 键（面板 / 按钮 / 动作条 /
+ * 搜索框 / 星座标题字号）版本 v6 → v7）。
  *
  * 独立模块——client.jsx 消费（store 装载/引擎注入）、test/engine-smoke.mjs /
  * test/settings-panel-smoke.mjs 冒烟直测。
@@ -11,7 +13,7 @@
  * （Node/隐私模式缺席 → 缺省），键 `dsh-v-cosmos:settings`（旧名 `dsh-cosmos:settings`
  * 存量读取回落迁移，写入恒走新键）。
  *
- * 设置面（version 5）：
+ * 设置面（version 7）：
  *  - panSpeed：WASD 基础平移速度（世界单位/秒），缺省 120；
  *  - panShiftBoost：Shift 加速倍率，缺省 3；
  *  - skin：内置皮肤 id（枚举 = `COSMOS_SKIN_IDS`），缺省 `rosepine`（design D2）；
@@ -25,7 +27,19 @@
  *    （枚举 `COSMOS_PREFLIGHT_MODES`：`float` = 浮窗输入器（增强：模型选择/语音转写），
  *    整页保持 / `native` = 关页跳转会话页由原生 composer 承载），缺省 `float`
  *    （rework：星空保持优先——用户裁决；曾试验的「浮动原生窗口」经宿主槽位核查为
- *    结构性死锁后拆除，native 语义归位「关页跳转」。执行器每次 run 现读，保存即时生效）。
+ *    结构性死锁后拆除，native 语义归位「关页跳转」。执行器每次 run 现读，保存即时生效）；
+ *  - dragPan：右下角「拖拽平移」开关（布尔，导航偏好），缺省 **false**——关闭时鼠标
+ *    拖拽 = 旋转视角（现状），开启时鼠标/笔尖拖拽 = 平移相机 target（触屏语义不受影响；
+ *    add-cosmos-drag-pan-toggle D4）。与 `zoomPointerFocus` 同构的布尔键净房；开关本体
+ *    （引擎内按钮）即设置入口，不另设设置页控件（对照 `sessionPanelOpen` 先例）；
+ *  - 界面尺寸 12 键（add-cosmos-layout-tuning D2；缺省 = 引入配置面之前的现值，
+ *    默认渲染零变化）：`sessionPanelWidth` / `sessionPanelHeight`（会话列表面板宽 /
+ *    高度上限，**0 = 自适应页面**）、`constPanelWidth` / `constPanelHeight`（星座面板
+ *    同款）、`addBtnSize`（左下新增按钮边长）、`hudBtnSize`（右下 HUD 按钮边长：
+ *    回到银河 + 拖拽平移共用）、`actionBtnWidth` / `actionBtnHeight`（动作条按钮宽 /
+ *    高）、`constActionHeight`（星座动作按钮高；宽恒等于面板内容宽）、`searchWidth` /
+ *    `searchHeight`（顶部中央搜索框宽 / 最小高度，0 = 自适应）、`wsTitleSize`（顶部
+ *    中央星座标题字号）。整页经 `cosmosLayoutTokensOf` 投影为 CSS 变量下发。
  * 后续设置 UI 直接调 `saveCosmosSettings`（写侧净房内置），引擎经 `engine.setTuning` /
  * `engine.setSkin` 热更新（无需重开整页）。
  */
@@ -36,8 +50,8 @@ const SETTINGS_KEY = "dsh-v-cosmos:settings";
 /** 品牌更名前的 localStorage 键（仅读取回落，SHALL NOT 写入）。 */
 const LEGACY_SETTINGS_KEY = "dsh-cosmos:settings";
 export const COSMOS_SETTINGS_KEY = SETTINGS_KEY;
-/** 设置面版本（v5 = add-cosmos-native-composer 新增星座动作发送前编辑分支；v1–v4 载荷读出补默认）。 */
-export const COSMOS_SETTINGS_VERSION = 5;
+/** 设置面版本（v7 = add-cosmos-layout-tuning 新增界面尺寸 12 键；v1–v6 载荷读出补默认）。 */
+export const COSMOS_SETTINGS_VERSION = 7;
 
 /**
  * 「发送前编辑」呈现分支枚举（add-cosmos-native-composer D1/D5；rework 语义重注）：
@@ -57,17 +71,47 @@ export const COSMOS_SETTINGS_DEFAULTS = Object.freeze({
   zoomFlyOutRatio: 25,
   zoomPointerFocus: true,
   sessionPanelOpen: true,
-  constPreflight: COSMOS_DEFAULT_PREFLIGHT
+  constPreflight: COSMOS_DEFAULT_PREFLIGHT,
+  /* 拖拽平移开关（add-cosmos-drag-pan-toggle D4）：缺省关闭 ⇒ 鼠标拖拽保持旋转语义
+     （「默认关闭」为 spec 明文；开启后鼠标/笔尖拖拽改为平移相机 target）。 */
+  dragPan: false,
+  /* ── 界面尺寸（add-cosmos-layout-tuning 1.1/D2）：缺省 = 引入配置面之前的现值 ⇒
+     默认渲染零变化；高度类键 `0` = 自适应页面高度（>0 = 高度上限，max-height 语义）。 ── */
+  sessionPanelWidth: 260,
+  sessionPanelHeight: 0,
+  constPanelWidth: 187,
+  constPanelHeight: 0,
+  addBtnSize: 44,
+  hudBtnSize: 44,
+  actionBtnWidth: 112,
+  actionBtnHeight: 40,
+  constActionHeight: 40,
+  searchWidth: 320,
+  searchHeight: 0,
+  wsTitleSize: 13
 });
 
 /** 界（写侧 400 的前置净房界；越界值落回界内端点，SHALL NOT 抛错）。
     保持纯数值 `[min,max]` 形状——枚举界（skin）以 `COSMOS_SKIN_IDS` 表达、布尔键
-    （zoomPointerFocus / sessionPanelOpen）以独立净化分支表达，不混入本表。 */
+    （zoomPointerFocus / sessionPanelOpen / dragPan）以独立净化分支表达，不混入本表。
+    界面尺寸键全部为数值界（含高度类 `0` 端点 = 自适应）。 */
 export const COSMOS_SETTINGS_BOUNDS = Object.freeze({
   panSpeed: [20, 600],
   panShiftBoost: [1, 10],
   zoomDiveRatio: [60, 140],
-  zoomFlyOutRatio: [10, 50]
+  zoomFlyOutRatio: [10, 50],
+  sessionPanelWidth: [200, 420],
+  sessionPanelHeight: [0, 2000],
+  constPanelWidth: [140, 360],
+  constPanelHeight: [0, 2000],
+  addBtnSize: [40, 64],
+  hudBtnSize: [40, 72],
+  actionBtnWidth: [80, 200],
+  actionBtnHeight: [40, 72],
+  constActionHeight: [40, 72],
+  searchWidth: [180, 640],
+  searchHeight: [0, 64],
+  wsTitleSize: [10, 24]
 });
 
 function clampTo(key, value, fallback) {
@@ -99,8 +143,8 @@ function skinOf(value) {
 }
 
 /**
- * 布尔键净房（zoomPointerFocus / sessionPanelOpen）：`typeof === "boolean"` 之外一律回落
- * 该键的出厂默认（独立净化分支，与 skin 枚举分支同构，SHALL NOT 抛错）。
+ * 布尔键净房（zoomPointerFocus / sessionPanelOpen / dragPan）：`typeof === "boolean"` 之外
+ * 一律回落该键的出厂默认（独立净化分支，与 skin 枚举分支同构，SHALL NOT 抛错）。
  * @param {unknown} value
  * @param {boolean} fallback 该键的出厂默认
  * @returns {boolean}
@@ -124,8 +168,9 @@ function preflightOf(value) {
 /**
  * 设置净房（纯函数）：未知键剥离、非法/越界值落回缺省或界内端点。
  * @param {unknown} raw 原始设置对象（v1 载荷无 `skin` 键、v2 载荷无缩放导航三键、
- *        v3 载荷无会话面板展开态、v4 载荷无 `constPreflight` → 逐键补默认）
- * @returns {{ panSpeed: number, panShiftBoost: number, skin: string, zoomDiveRatio: number, zoomFlyOutRatio: number, zoomPointerFocus: boolean, sessionPanelOpen: boolean, constPreflight: "native"|"float" }}
+ *        v3 载荷无会话面板展开态、v4 载荷无 `constPreflight`、v5 载荷无 `dragPan`、
+ *        v6 载荷无界面尺寸 12 键 → 逐键补默认）
+ * @returns {{ panSpeed: number, panShiftBoost: number, skin: string, zoomDiveRatio: number, zoomFlyOutRatio: number, zoomPointerFocus: boolean, sessionPanelOpen: boolean, constPreflight: "native"|"float", dragPan: boolean, sessionPanelWidth: number, sessionPanelHeight: number, constPanelWidth: number, constPanelHeight: number, addBtnSize: number, hudBtnSize: number, actionBtnWidth: number, actionBtnHeight: number, constActionHeight: number, searchWidth: number, searchHeight: number, wsTitleSize: number }}
  */
 export function sanitizeCosmosSettings(raw) {
   const source = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
@@ -137,7 +182,58 @@ export function sanitizeCosmosSettings(raw) {
     zoomFlyOutRatio: clampTo("zoomFlyOutRatio", source.zoomFlyOutRatio, COSMOS_SETTINGS_DEFAULTS.zoomFlyOutRatio),
     zoomPointerFocus: boolOf(source.zoomPointerFocus, COSMOS_SETTINGS_DEFAULTS.zoomPointerFocus),
     sessionPanelOpen: boolOf(source.sessionPanelOpen, COSMOS_SETTINGS_DEFAULTS.sessionPanelOpen),
-    constPreflight: preflightOf(source.constPreflight)
+    constPreflight: preflightOf(source.constPreflight),
+    /* 拖拽平移开关（add-cosmos-drag-pan-toggle 1.1/D4）：布尔键同构净房——字符串 "on" /
+       数字 1 等手工坏值一律回落缺省 false（SHALL NOT 抛错）。 */
+    dragPan: boolOf(source.dragPan, COSMOS_SETTINGS_DEFAULTS.dragPan),
+    /* 界面尺寸（add-cosmos-layout-tuning 1.1/D2）：逐键数值界净房（越界落端点、非数字
+       回落缺省）；高度类键 0 为合法值（= 自适应），MUST NOT 被 falsy 判定吞掉。 */
+    sessionPanelWidth: clampTo("sessionPanelWidth", source.sessionPanelWidth, COSMOS_SETTINGS_DEFAULTS.sessionPanelWidth),
+    sessionPanelHeight: clampTo("sessionPanelHeight", source.sessionPanelHeight, COSMOS_SETTINGS_DEFAULTS.sessionPanelHeight),
+    constPanelWidth: clampTo("constPanelWidth", source.constPanelWidth, COSMOS_SETTINGS_DEFAULTS.constPanelWidth),
+    constPanelHeight: clampTo("constPanelHeight", source.constPanelHeight, COSMOS_SETTINGS_DEFAULTS.constPanelHeight),
+    addBtnSize: clampTo("addBtnSize", source.addBtnSize, COSMOS_SETTINGS_DEFAULTS.addBtnSize),
+    hudBtnSize: clampTo("hudBtnSize", source.hudBtnSize, COSMOS_SETTINGS_DEFAULTS.hudBtnSize),
+    actionBtnWidth: clampTo("actionBtnWidth", source.actionBtnWidth, COSMOS_SETTINGS_DEFAULTS.actionBtnWidth),
+    actionBtnHeight: clampTo("actionBtnHeight", source.actionBtnHeight, COSMOS_SETTINGS_DEFAULTS.actionBtnHeight),
+    constActionHeight: clampTo("constActionHeight", source.constActionHeight, COSMOS_SETTINGS_DEFAULTS.constActionHeight),
+    searchWidth: clampTo("searchWidth", source.searchWidth, COSMOS_SETTINGS_DEFAULTS.searchWidth),
+    searchHeight: clampTo("searchHeight", source.searchHeight, COSMOS_SETTINGS_DEFAULTS.searchHeight),
+    wsTitleSize: clampTo("wsTitleSize", source.wsTitleSize, COSMOS_SETTINGS_DEFAULTS.wsTitleSize)
+  };
+}
+
+/**
+ * 布局令牌投影（add-cosmos-layout-tuning 1.2/D1，纯函数）：设置面 → 整页根容器的
+ * CSS 自定义属性表。缺省/非法一律回落现值字面量（与 CSS `var(--x, 现值)` 双保险，
+ * 令牌层不再引入第二套默认值语义）；高度类键 `0` = 自适应 →
+ * 面板 `max-height` 用 `none`、搜索框 `min-height` 用 `0px`。
+ * @param {object} [settings] 净房后的完整设置（缺键亦可：逐键回落现值）
+ * @returns {Record<string, string>} CSS 变量名 → 值（全部为字符串）
+ */
+export function cosmosLayoutTokensOf(settings) {
+  const px = function (key, fallback) {
+    const n = Number(settings?.[key]);
+    return Number.isFinite(n) && n >= 0 ? Math.round(n) + "px" : fallback;
+  };
+  /** 高度上限语义：>0 → `Npx`；其余（含 0 / 非法）→ `none`（不设上限 = 现状自适应填充）。 */
+  const cap = function (key) {
+    const n = Number(settings?.[key]);
+    return Number.isFinite(n) && n > 0 ? Math.round(n) + "px" : "none";
+  };
+  return {
+    "--cos-session-w": px("sessionPanelWidth", "260px"),
+    "--cos-session-h": cap("sessionPanelHeight"),
+    "--cos-const-panel-w": px("constPanelWidth", "187px"),
+    "--cos-const-panel-h": cap("constPanelHeight"),
+    "--cos-add-btn-size": px("addBtnSize", "44px"),
+    "--cos-hud-btn-size": px("hudBtnSize", "44px"),
+    "--cos-action-btn-w": px("actionBtnWidth", "112px"),
+    "--cos-action-btn-h": px("actionBtnHeight", "40px"),
+    "--cos-const-action-h": px("constActionHeight", "40px"),
+    "--cos-search-w": px("searchWidth", "320px"),
+    "--cos-search-h": px("searchHeight", "0px"),
+    "--cos-ws-title-size": px("wsTitleSize", "13px")
   };
 }
 

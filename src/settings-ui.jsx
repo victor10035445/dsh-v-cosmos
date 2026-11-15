@@ -4,6 +4,9 @@
  * add-cosmos-skin-themes 3.4/3.5 新增「皮肤」标签页——卡片网格 + 即时生效；
  * add-cosmos-zoom-focus-nav 3.1–3.3 新增「导航」标签页——缩放阈值与指针聚焦的轻量偏好
  * （两个数字输入 + 一个开关，即时生效，无保存钮）；
+ * add-cosmos-layout-tuning 5.1–5.2：「导航」页签更名为「界面」（导航阈值 + 界面尺寸
+ * 两组控件，slot/face id 仍为 `nav`）；尺寸组 12 个像素输入经同一 face 即时保存，
+ * 整页根容器的 CSS 变量随之热更新。
  * fix-cosmos-const-float-send-close 4.3：「快捷动作」按钮行增「执行后跳转」勾选框
  * （每按钮独立，缺省勾选；参与暂存-保存）——与固定语义的行内锁定「新增会话」是两个
  * 相互独立的设置（取消跳转 MUST NOT 影响新建会话；星座动作页签无跳转字段）。
@@ -200,6 +203,23 @@ export const COSMOS_SETTINGS_CSS = `
 .cs-navToggle:focus-within{outline:2px solid var(--dsw-alias-border-inverted);outline-offset:2px}
 .cs-navToggle input{margin:2px 0 0;cursor:pointer;accent-color:var(--dsw-alias-border-inverted)}
 .cs-navToggleText{display:flex;flex-direction:column;gap:2px;min-width:0}
+/* ── 「界面尺寸」组（add-cosmos-layout-tuning 5.2）：「界面」页签内 12 个像素值输入
+      （面板宽/高、按钮尺寸、动作条、搜索框、星座标题字号）。与导航组同款即时生效，
+      数字输入触控目标 ≥44px，label[htmlFor] 原生可达；高度类键标注「0 = 自适应」。 ── */
+.cs-sizeGroup{display:flex;flex-direction:column;gap:6px;margin-top:8px;padding-top:10px;
+  border-top:1px solid var(--dsw-alias-border-l2)}
+.cs-sizeTitle{font-size:13px;font-weight:600;line-height:18px;color:var(--dsw-alias-label-primary)}
+.cs-sizeHint{font-size:12px;line-height:16px;color:var(--dsw-alias-label-tertiary)}
+.cs-sizeGrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:4px 14px}
+.cs-sizeRow{display:flex;align-items:center;gap:8px;min-height:44px}
+.cs-sizeLabel{flex:1;min-width:0;font-size:13px;line-height:18px;color:var(--dsw-alias-label-primary);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cs-sizeInput{width:72px;box-sizing:border-box;min-height:44px;padding:6px 8px;border:1px solid var(--dsw-alias-border-l2);
+  border-radius:6px;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);font:inherit;font-size:13px;
+  line-height:18px;text-align:right;outline:none}
+.cs-sizeInput:focus{border-color:var(--dsw-alias-border-inverted)}
+.cs-sizeUnit{flex:none;width:20px;font-size:12px;color:var(--dsw-alias-label-tertiary)}
+.cs-sizeAuto{flex:none;font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary);white-space:nowrap}
 /* ── 「发送前编辑」轻量偏好（add-cosmos-native-composer 4.1）：星座动作页签顶部的
    即时保存开关（独立 face——不随按钮草稿保存/放弃，不受按钮 writable/saving 门控）。
    控件语言随既有行内控件（label + cs-select），触控目标 ≥44px。 ── */
@@ -630,15 +650,80 @@ export function CosmosActionsPanel(props) {
 }
 
 /**
- * 「导航」标签页（add-cosmos-zoom-focus-nav 3.1–3.3 / spec「缩放导航设置页签」）：
- *  - 「进入星座视图」数字输入（60–140，步长 5，单位 %）：星座放大到钻取参考尺寸的
- *    X% 时自动进入星座视图；
- *  - 「返回银河视图」数字输入（10–50，步长 5，单位 %）：星座缩小到屏幕短边的 X% 时
- *    自动返回银河视图；
- *  - 「指针聚焦缩放」开关（默认开）：缩放以指针位置为焦点逐步聚焦。
+ * 「界面尺寸」字段表（add-cosmos-layout-tuning 5.2 / spec「界面尺寸配置」）：
+ * key = settings 键；id = 输入框稳定 id（label[htmlFor] 原生可达）；label = 词典键；
+ * min/max/step = 界与粒度（与 settings.mjs `COSMOS_SETTINGS_BOUNDS` 同值，UI 侧硬编码
+ * 以保持「设置页不引净房实现」的既有分层）；auto = 高度类键（0 = 自适应，显示提示）。
+ */
+const COSMOS_SIZE_FIELDS = Object.freeze([
+  { key: "sessionPanelWidth", id: "cosmos-size-session-w", label: "sizeSessionW", min: 200, max: 420, step: 10, fallback: 260 },
+  { key: "sessionPanelHeight", id: "cosmos-size-session-h", label: "sizeSessionH", min: 0, max: 2000, step: 20, fallback: 0, auto: true },
+  { key: "constPanelWidth", id: "cosmos-size-const-w", label: "sizeConstW", min: 140, max: 360, step: 10, fallback: 187 },
+  { key: "constPanelHeight", id: "cosmos-size-const-h", label: "sizeConstH", min: 0, max: 2000, step: 20, fallback: 0, auto: true },
+  { key: "addBtnSize", id: "cosmos-size-add-btn", label: "sizeAddBtn", min: 40, max: 64, step: 2, fallback: 44 },
+  { key: "hudBtnSize", id: "cosmos-size-hud-btn", label: "sizeHudBtn", min: 40, max: 72, step: 2, fallback: 44 },
+  { key: "actionBtnWidth", id: "cosmos-size-action-w", label: "sizeActionW", min: 80, max: 200, step: 4, fallback: 112 },
+  { key: "actionBtnHeight", id: "cosmos-size-action-h", label: "sizeActionH", min: 40, max: 72, step: 2, fallback: 40 },
+  { key: "constActionHeight", id: "cosmos-size-const-action-h", label: "sizeConstActionH", min: 40, max: 72, step: 2, fallback: 40 },
+  { key: "searchWidth", id: "cosmos-size-search-w", label: "sizeSearchW", min: 180, max: 640, step: 20, fallback: 320 },
+  { key: "searchHeight", id: "cosmos-size-search-h", label: "sizeSearchH", min: 0, max: 64, step: 2, fallback: 0, auto: true },
+  { key: "wsTitleSize", id: "cosmos-size-ws-title", label: "sizeWsTitle", min: 10, max: 24, step: 1, fallback: 13 }
+]);
+
+/**
+ * 单个尺寸输入（add-cosmos-layout-tuning 5.2）：本地文本草稿承接键入（与导航页签数字
+ * 输入同款纪律——界内即时提交、清空/越界停留草稿并在失焦时夹取），避免受控输入在
+ * 键入中途被净房回写打断。`auto` 字段在值 0 时显示「0 = 自适应」提示。
+ */
+function CosmosSizeField(props) {
+  const { t, field, current, commit } = props;
+  const value = Number.isFinite(Number(current)) ? Number(current) : field.fallback;
+  const [text, setText] = useState(String(value));
+  useEffect(() => { setText(String(value)); }, [value]);
+  const range = field.min + "–" + field.max;
+  return (
+    <div className="cs-sizeRow" title={tr(t, "cosmos.settings.sizeRangeHint", "界 ") + range + " px"}>
+      <label className="cs-sizeLabel" htmlFor={field.id}>{tr(t, "cosmos.settings." + field.label, field.key)}</label>
+      <input
+        id={field.id}
+        className="cs-sizeInput"
+        type="number"
+        inputMode="numeric"
+        min={field.min}
+        max={field.max}
+        step={field.step}
+        value={text}
+        aria-describedby={field.auto ? field.id + "-auto" : undefined}
+        onChange={(event) => {
+          setText(event.target.value);
+          commit(field, event.target.value, value);
+        }}
+        onBlur={(event) => {
+          const n = Number(event.target.value);
+          const next = event.target.value.trim() !== "" && Number.isFinite(n)
+            ? Math.min(field.max, Math.max(field.min, Math.round(n)))
+            : value;
+          setText(String(next));
+          if (next !== value) commit(field, String(next), value);
+        }}
+      />
+      <span className="cs-sizeUnit" aria-hidden="true">px</span>
+      {field.auto ? <span className="cs-sizeAuto" id={field.id + "-auto"}>{tr(t, "cosmos.settings.sizeAuto", "0 = 自适应")}</span> : null}
+    </div>
+  );
+}
+
+/**
+ * 「界面」标签页（add-cosmos-zoom-focus-nav 3.1–3.3 / add-cosmos-layout-tuning 5.1–5.2 /
+ * spec「缩放导航设置页签」→「界面」页签）：
+ *  - 导航组：「进入星座视图」数字输入（60–140，步长 5，单位 %）、「返回银河视图」
+ *    （10–50，步长 5，单位 %）、「指针聚焦缩放」开关（默认开）；
+ *  - 界面尺寸组：`COSMOS_SIZE_FIELDS` 12 个像素输入（面板宽高 / 按钮边长 / 动作条 /
+ *    搜索框 / 星座标题字号；高度类 0 = 自适应）。
  * **即时生效**（无草稿-保存模式）：改动即 `face.set` → 写持久化偏好 × 已打开整页
- * 引擎 `setTuning` 热更；数字输入用本地文本草稿承接键入（界内即时提交，清空/越界
- * 停留草稿并在失焦时夹取），避免受控输入在键入中途被净房回写打断。
+ * 引擎 `setTuning` 热更 + 页根 CSS 令牌重渲染；数字输入用本地文本草稿承接键入
+ * （界内即时提交，清空/越界停留草稿并在失焦时夹取），避免受控输入在键入中途被净房
+ * 回写打断。
  */
 export function CosmosNavPanel(props) {
   const t = props.t;
@@ -678,11 +763,18 @@ export function CosmosNavPanel(props) {
     setText(String(value));
     if (value !== current) set({ [key]: value });
   };
+  /** 尺寸字段即时提交（与 nav 的 commit 同纪律：界内整数且与当前不同才写）。 */
+  const commitSize = (field, raw, current) => {
+    const n = Number(raw);
+    if (String(raw).trim() === "" || !Number.isFinite(n)) return;
+    const clamped = Math.min(field.max, Math.max(field.min, Math.round(n)));
+    if (clamped === n && clamped !== current) set({ [field.key]: clamped });
+  };
   /* face 缺失（宿主未注入 nav / 旧宿主）→ 降级占位，不渲染可交互却永不生效的控件（D4）。 */
   if (face === null) {
     return (
       <div className="dsh-cosmos-settings-panel" data-plugin-anchor="dsh-v-cosmos:settings-nav">
-        <div className="cs-hint" data-state="face-missing">{tr(t, "cosmos.settings.navUnavailable", "导航设置暂不可用：插件整页未就绪（刷新页面后重试）。")}</div>
+        <div className="cs-hint" data-state="face-missing">{tr(t, "cosmos.settings.navUnavailable", "界面设置暂不可用：插件整页未就绪（刷新页面后重试）。")}</div>
       </div>
     );
   }
@@ -691,7 +783,7 @@ export function CosmosNavPanel(props) {
       <div className="cs-hint">{tr(t, "cosmos.settings.navHint", "缩放即导航：银河态放大到阈值自动进入星座视图，钻取态缩小到阈值自动返回。两项阈值改动即时生效并持久化，下次打开保持。")}</div>
       {notApplied !== null ? (
         <div className="cs-error" role="status" data-failure-code={notApplied.code}>
-          {notAppliedText(t, "cosmos.settings.navNotApplied", "导航设置未生效：插件整页控制器缺失，请重试或刷新页面后重新调整。", notApplied)}
+          {notAppliedText(t, "cosmos.settings.navNotApplied", "界面设置未生效：插件整页控制器缺失，请重试或刷新页面后重新调整。", notApplied)}
         </div>
       ) : null}
       <div className="cs-nav">
@@ -755,6 +847,23 @@ export function CosmosNavPanel(props) {
             <span className="cs-navHint">{tr(t, "cosmos.settings.navFocusHint", "缩放以指针位置为焦点逐步聚焦（关闭后回落屏幕中心缩放）。")}</span>
           </span>
         </label>
+      </div>
+      {/* 界面尺寸组（add-cosmos-layout-tuning 5.2）：12 个像素输入，即时生效并持久化；
+          高度类字段 0 = 自适应页面高度（max-height 语义），见 design D2/D3。 */}
+      <div className="cs-sizeGroup">
+        <div className="cs-sizeTitle">{tr(t, "cosmos.settings.sizeGroup", "界面尺寸")}</div>
+        <div className="cs-sizeHint">{tr(t, "cosmos.settings.sizeGroupHint", "像素值，改动立即生效并保存；面板与搜索框的高度 0 = 自适应。")}</div>
+        <div className="cs-sizeGrid">
+          {COSMOS_SIZE_FIELDS.map((field) => (
+            <CosmosSizeField
+              key={field.key}
+              t={t}
+              field={field}
+              current={state === null || state === undefined ? undefined : state[field.key]}
+              commit={commitSize}
+            />
+          ))}
+        </div>
       </div>
       <div className="cs-meta">{tr(t, "cosmos.settings.navInstant", "改动立即生效并保存")}</div>
     </div>

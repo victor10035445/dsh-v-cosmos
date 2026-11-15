@@ -83,6 +83,39 @@
  *    补判一次自动 dive/flyOut（不静默丢失阈值导航）；
  *  - 触控板边界：3 指为 OS 级手势，浏览器不派发第三个 pointerdown → 天然触屏专属，
  *    引擎 MUST NOT 模拟合成三指事件；无惯性滑动、无单指/双击模式切换。
+ *
+ * add-cosmos-drag-pan-toggle（右下角「拖拽平移」开关）：
+ *  - `E.dragPanMode`（缺省 false = 关闭）：鼠标/笔尖（`pointerType` mouse|pen）单指针
+ *    按住拖拽的相机语义开关——关闭 = yaw/pitch 旋转（现状零变化），开启 = **平移相机
+ *    target**（复用三指平移同一纯函数 `panCameraTargetByDrag` 与同一系数口径）；
+ *  - **作用域收窄（D1）**：触屏单指在任何开关态下仍为旋转（三自由度手势契约零污染）；
+ *    双指捏合 / 三指平移 / 滚轮 / WASD 全部不受开关影响；
+ *  - 4px 阈值 / `E.dragging` / `cancelTween` 补间让位 / 抬指 `wasDrag` 不拾取等既有
+ *    纪律原样复用（分流只换「相机怎么动」一行）；手势中切换开关自下一个 move 事件
+ *    起生效（dx/dy 增量模型无绝对基准，无重锚跳变）；
+ *  - 右下 `.cos-dragpan-btn`（D5）：与「回到银河」**横向排列**（其左侧 8px 间隙、同一
+ *    `bottom:16` 基线——add-cosmos-layout-tuning D4 落位修正，永不被右缘提案面板覆盖），
+ *    边长与 home 共用 `--cos-hud-btn-size` 令牌（缺省 44，可经设置配置），风格 D 语言
+ *    复用；`aria-pressed` 表达两态，DOM 只建一次、不参与逐帧更新；
+ *    点击 = 本地翻转镜像 + 视觉切换 + 注入回调 `onDragPanToggle(enabled)`（写穿客户端
+ *    净房持久化链，再经 `setTuning` 热更回读——值恒等幂等）。
+ *
+ * polish-cosmos-tip-leader-line（浮签引线与避让间距）：
+ *  - 三族浮签避让（`TIP_GAP`，spec 只锁下限、实现集中校准）：chip 悬空 56px（≥40）、
+ *    恒星名牌星缘下 44px（≥28）、信息卡自「星中心旁 ±18px」改为**星缘外** 80px（≥40，
+ *    语义修正——引线起笔必须在星缘）；用户回访把三值整体抬高（44/34/48 → 56/44/80）；
+ *  - 引线画在 Canvas2D 场景层（零新 DOM/SVG，与浮签定位共用同一 `E.screens` 投影）：
+ *    `updateOverlay` 是本帧浮签定位/换算的**唯一计算点**，三族可见性/α 与信息卡
+ *    flip/cx/cy/盒尺寸在此写入逐帧缓存 `E.tipLines`；紧随其后的 `drawTipLines()` 只消费
+ *    同一组端点（D3 端点同源，MUST NOT 二次推导）；
+ *  - 线型：chip/名牌 = 竖直单段 + 起笔端短横 tick；信息卡 = 折线（**45° 斜出段**
+ *    ——横向跨距 = 纵向落差——+ 水平段止于卡近缘中点，最短 `TIP_LINE.tail`；钳制使
+ *    dy 超限时斜出段更陡）。α 上限 `TIP_LINE.alphaMax`(0.5)，取色走活跃皮肤
+ *    `palette.accent`（注册表自 `base.accent` 单点派生，与 HUD `--cos-accent` 同源）；
+ *  - 显隐同源：chip/名牌与 inline opacity 同一表达式求值，信息卡与 `.on` 布尔谓词同源
+ *    （摘除帧不画，无残影）；卡盒尺寸按内容签名（`dataset.sig`）变更时测量缓存，MUST NOT
+ *    逐帧强制布局；翻转阈值随「星缘 + 间距 + 卡宽」派生（卡体不越出右缘，见下）；
+ *    引线在拾取路径之外（MUST NOT 参与命中）。
  */
 
 /* 引擎 DOM 的样式（自 demo style-d-hud-galaxy.html 移植）。add-cosmos-skin-themes 2.1：
@@ -115,12 +148,15 @@ export const ENGINE_CSS = `
   font-size: 13px; color: var(--cos-accent-ink, #ffe3b8); letter-spacing: .5px; pointer-events: none; z-index: 20;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 @media (max-width: 520px) { .cos-badge { max-width: calc(100% - 40px); } }
-.cos-badge b { display: block; font-size: 13px; font-weight: 600; letter-spacing: 1px; text-shadow: 0 0 8px var(--cos-glow, rgba(255,210,140,.55)); }
+.cos-badge b { display: block; font-size: var(--cos-ws-title-size, 13px); font-weight: 600; letter-spacing: 1px; text-shadow: 0 0 8px var(--cos-glow, rgba(255,210,140,.55)); }
 .cos-badge span { display: block; margin-top: 2px; font-size: 10px; letter-spacing: 2px; opacity: .6; }
 /* 右下常驻「回到银河」方形按钮（D3/4.1）：风格 D HUD 语言（暖金描边 + 角标），
-   触屏点击目标 44px ≥ 40px；钻取态与银河根级均常驻（两态语义见 flyOut 早退分支）。 */
+   触屏点击目标 44px ≥ 40px；钻取态与银河根级均常驻（两态语义见 flyOut 早退分支）。
+   右缘控制簇自右向左横排：本按钮（right:16）←「拖拽平移」开关（间距 8px），同在
+   bottom:16 基线（add-cosmos-layout-tuning D4：横排后永不被右缘提案面板覆盖）；
+   边长经 --cos-hud-btn-size 令牌可配（缺省 44，见 add-cosmos-layout-tuning D2）。 */
 .cos-home-btn { position: absolute; right: 16px; bottom: 16px; z-index: 20; box-sizing: border-box;
-  width: 44px; height: 44px; padding: 0; display: inline-flex; align-items: center; justify-content: center;
+  width: var(--cos-hud-btn-size, 44px); height: var(--cos-hud-btn-size, 44px); padding: 0; display: inline-flex; align-items: center; justify-content: center;
   cursor: pointer; color: var(--cos-accent-ink, #ffe3b8); background: var(--cos-glass, rgba(8,8,16,.72)); border: 1px solid var(--cos-line, rgba(255,210,140,.35));
   font-family: inherit; pointer-events: auto; }
 .cos-home-btn::before, .cos-home-btn::after { content: ''; position: absolute; width: 8px; height: 8px; pointer-events: none; }
@@ -129,6 +165,28 @@ export const ENGINE_CSS = `
 .cos-home-btn:hover { border-color: rgb(var(--cos-accent-rgb, 255 210 140) / .85); background: var(--cos-hover, rgba(255,210,140,.12)); }
 .cos-home-btn:focus-visible { outline: 1px solid rgb(var(--cos-accent-rgb, 255 210 140) / .85); outline-offset: 2px; }
 .cos-home-btn svg { display: block; width: 22px; height: 22px; }
+/* 右下「拖拽平移」开关（add-cosmos-drag-pan-toggle D5；add-cosmos-layout-tuning D4 落位
+   修正）：与「回到银河」同规格同几何（边长经 --cos-hud-btn-size 令牌可配）、同在
+   bottom:16 基线**横向排列于其左侧**——right = 16 + 按钮边长 + 8（间隙），随尺寸键联动。
+   该基线位于右缘面板下缘（bottom = 动作条高 + 72）之下，故永不被提案列表面板覆盖。
+   常态 = 暗描边（同 home 常态）；开启态（aria-pressed="true"，由引擎在点击/热更时
+   切换） = 琥珀描边点亮 + 图标增辉 + 轻量光晕。触屏点击目标 ≥44px 档（缺省 44，
+   界 40–72：触屏 ≥40px 下限不变）。 */
+.cos-dragpan-btn { position: absolute; right: calc(16px + var(--cos-hud-btn-size, 44px) + 8px); bottom: 16px; z-index: 20; box-sizing: border-box;
+  width: var(--cos-hud-btn-size, 44px); height: var(--cos-hud-btn-size, 44px); padding: 0; display: inline-flex; align-items: center; justify-content: center;
+  cursor: pointer; color: var(--cos-accent-ink, #ffe3b8); background: var(--cos-glass, rgba(8,8,16,.72)); border: 1px solid var(--cos-line, rgba(255,210,140,.35));
+  font-family: inherit; pointer-events: auto; }
+.cos-dragpan-btn::before, .cos-dragpan-btn::after { content: ''; position: absolute; width: 8px; height: 8px; pointer-events: none; }
+.cos-dragpan-btn::before { top: -1px; left: -1px; border-top: 2px solid var(--cos-line-strong, #ffd28a); border-left: 2px solid var(--cos-line-strong, #ffd28a); }
+.cos-dragpan-btn::after { bottom: -1px; right: -1px; border-bottom: 2px solid var(--cos-line-strong, #ffd28a); border-right: 2px solid var(--cos-line-strong, #ffd28a); }
+.cos-dragpan-btn:hover { border-color: rgb(var(--cos-accent-rgb, 255 210 140) / .85); background: var(--cos-hover, rgba(255,210,140,.12)); }
+.cos-dragpan-btn:focus-visible { outline: 1px solid rgb(var(--cos-accent-rgb, 255 210 140) / .85); outline-offset: 2px; }
+.cos-dragpan-btn svg { display: block; width: 22px; height: 22px; }
+/* 开启态点亮（两态表达唯一依据 = aria-pressed；与 hover 共存时描边仍更亮——点亮优先） */
+.cos-dragpan-btn[aria-pressed="true"] { border-color: rgb(var(--cos-accent-rgb, 255 210 140) / .95);
+  color: var(--cos-accent-ink, #ffe9cf); background: var(--cos-hover, rgba(255,210,140,.12));
+  box-shadow: 0 0 10px rgb(var(--cos-accent-rgb, 255 210 140) / .28); }
+.cos-dragpan-btn[aria-pressed="true"] svg { filter: drop-shadow(0 0 5px rgb(var(--cos-accent-rgb, 255 210 140) / .75)); }
 .cos-chip { position: absolute; left: 0; top: 0; text-align: center; pointer-events: auto; cursor: pointer; opacity: 0; transition: opacity .25s; will-change: transform;
   color: var(--cos-accent-ink, #ffe3b8); padding: 4px 12px; border: 1px dashed rgb(var(--cos-accent-rgb, 255 210 140) / .4); background: var(--cos-chip-bg, rgba(10,10,20,.45)); }
 .cos-chip.on { opacity: 1; }
@@ -209,6 +267,16 @@ const TAU = Math.PI * 2;
 /* ---------- 小工具 ---------- */
 function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
 function lerp(a, b, t) { return a + (b - a) * t; }
+/** 坐标取整（0.1px ≈ DOM transform 的 `toFixed(1)` 粒度）：浮签 DOM 串与引线端点
+    共用同一取整值——端点同源（D3）因而是**字面同一组数**，冒烟可精确比对。 */
+function snap1(v) { return Math.round(v * 10) / 10; }
+/** hex → rgba() 字符串（Canvas 描线取色合成；α 三位小数避免跨帧字符串抖动）。
+    非法入参回落中性白（MUST NOT 硬编码金色字面量——2.4 口径：金色只走皮肤色板）。 */
+function rgbaOf(hex, a) {
+  const n = parseInt(String(hex).slice(1), 16);
+  if (!Number.isFinite(n)) return 'rgba(255,255,255,' + a + ')';
+  return 'rgba(' + ((n >> 16) & 255) + ',' + ((n >> 8) & 255) + ',' + (n & 255) + ',' + a + ')';
+}
 
 /** 文案注入净化（opts.labels）：只收非空字符串，非法键静默丢弃（回落下沉到 DEFAULT_LABELS）。 */
 function textRecordOf(source) {
@@ -289,6 +357,92 @@ export const FX_NOVA_PROTO_DUR = 0.8;
 /** 回归反向捕获补间时长（与成星捕获补间完全对称）；α 坡道 0.5s。 */
 const REGRESS_DUR = 1.4;
 const REGRESS_ALPHA_RAMP = 0.5;
+
+/* ---------- 浮签避让间距与引线几何（polish-cosmos-tip-leader-line D2/D3/D5） ----------
+
+   spec 只锁**下限**（chip ≥40 / 恒星名牌 ≥28 / 信息卡星缘外 ≥40），实际取值集中在本块
+   便于真机校准（星晕视觉半径 vs 关联感；校准数据见该 change 的 walkthrough.md）：
+   - 星晕 sprite 名义半径 = min(r×5.4, 70)、亮核约 1.6r（`drawGlow` 的 0.3 渐变色标）；
+     钻取态典型 r≈9px → 亮核≈15px、柔晕≈50px。三组 GAP 让浮签落在亮核外、柔晕内。
+   - 信息卡从「星中心旁 ±18px」改为「星缘外」是语义修正：引线起笔必须在星缘，
+     锚在星内则线不可见。
+   - 用户回访（2026-11-16）：「距离再远一点 + 连线角度开到 45° 左右」——三值整体抬高
+     （44/34/48 → 56/44/80），并把信息卡斜出段改成真正的 45°（横向跨度 = 纵向落差）。
+     chip/名牌仍是竖直直线（spec「浮签引线与避让间距」明文），45° 只作用于信息卡折线。 */
+export const TIP_GAP = Object.freeze({
+  chip: 56, // 星座投影中心 → chip 底缘（原 26；≥40）
+  slab: 44, // 恒星星缘 → 名牌顶缘（原 6；≥28）
+  card: 80  // 恒星星缘 → 信息卡近缘（原「中心旁 ±18」= 压星；≥40）
+});
+
+/** 引线几何与呈现常量（D5）：斜出段口径 / 起笔 tick / α 上限 / 卡盒兜底 / 翻转留白。 */
+export const TIP_LINE = Object.freeze({
+  tail: 16,             // 水平段**最短**长度：45° 斜出段吃掉其余横向距离（dy ≤ 间距−tail）
+  tick: 2,              // 竖直引线起笔端短横半跨（总宽 2×tick；锚点标记，弱化线头悬空感）
+  alphaMax: 0.5,        // α 上限：弱于浮签本体（标注感而非主角）
+  cardFallbackH: 96,    // 卡高测量不可用（Node 桩 / 未布局）时的兜底高度
+  cardFallbackW: 280,   // 卡宽兜底 = CSS max-width（最保守：翻转判定不因未测量而越界）
+  flipMargin: 8         // 翻转换算的视口右缘留白
+});
+
+/**
+ * 引线取色通道（D5）：活跃皮肤调色板的 **accent** 通道——`palette.accent` 由皮肤注册表
+ * 自注册规格 `base.accent` 单点派生（与 HUD `--cos-accent` 同源，杜绝 12 份手抄漂移）。
+ * 直接构造的皮肤实例（冒烟 / 外部注入 `style`）缺该通道 → 回落 `gold`（12 套皮肤共同
+ * 暴露的金域主调）→ 再回落执行态色板色。MUST NOT 读 CSS 变量（引擎不碰样式表）；
+ * 终值回落中性白而**不**硬编码金色（2.4 口径：金色系字面量只允许出现在 HUD 令牌 fallback）。
+ * @param {object} style 皮肤实例
+ * @returns {string} `#rrggbb` 取色（非法入参回落中性白）
+ */
+export function tipLineColorOf(style) {
+  const palette = style && style.palette;
+  const candidates = [
+    palette && palette.accent,
+    style && style.gold,
+    palette && palette.prop && palette.prop.executed
+  ];
+  for (const color of candidates) {
+    if (typeof color === 'string' && color.charAt(0) === '#') return color;
+  }
+  return '#ffffff';
+}
+
+/**
+ * 浮签引线折点（D2/D3/D5 几何纯函数；渲染与冒烟共用同一份坐标数学）：
+ *  - **chip / slab**：竖直单段（宿主锚点 → 浮签锚缘）+ 起笔端短横 tick（锚点标记）；
+ *  - **card**：两段折线——**45° 斜出段**（星缘 → 横向跨距 = 纵向落差 dy，故斜出段恒为
+ *    45°）+ 水平段（→ 卡近缘中点，最短 `TIP_LINE.tail`）。纵向钳制使 dy 超过「间距 −
+ *    tail」时斜出段横向跨度封顶（比 45° 更陡），水平段仍保持水平。
+ *
+ * 入参是 `updateOverlay` 写入逐帧缓存 `E.tipLines` 的同一组数（hx/hy 宿主锚点、x/y
+ * 浮签锚缘）——端点 MUST NOT 在此二次换算（翻转/钳制已在定位处完成）。
+ *
+ * @param {{kind?: string, hx: number, hy: number, x: number, y: number}} tip 引线条目
+ * @returns {{pts: Array<{x: number, y: number}>, tick: {x: number, y: number, x2: number, y2: number}|null}|null}
+ *          折点序列（首点 = 起笔）+ 起笔短横；非法入参 → null（不画）
+ */
+export function tipLeaderOf(tip) {
+  if (!tip) return null;
+  const kind = tip.kind;
+  const hx = Number(tip.hx), hy = Number(tip.hy), x = Number(tip.x), y = Number(tip.y);
+  if (![hx, hy, x, y].every(Number.isFinite)) return null;
+  if (kind === 'card') {
+    const dir = x >= hx ? 1 : -1;
+    const run = Math.abs(x - hx);
+    /* 45° 斜出段：横向跨度取纵向落差（dy），上界 = 间距 − 最短水平段。
+       dy 趋零 → 退化为纯水平线；间距被压到 tail 以内 → 直连（不产反向折点）。 */
+    const dx = Math.min(Math.abs(y - hy), Math.max(0, run - TIP_LINE.tail));
+    if (!(dx > 0.5)) return { pts: [{ x: hx, y: hy }, { x: x, y: y }], tick: null };
+    return {
+      pts: [{ x: hx, y: hy }, { x: hx + dir * dx, y: y }, { x: x, y: y }],
+      tick: null
+    };
+  }
+  return {
+    pts: [{ x: hx, y: hy }, { x: x, y: y }],
+    tick: { x: hx - TIP_LINE.tick, y: hy, x2: hx + TIP_LINE.tick, y2: hy }
+  };
+}
 
 /* ---------- 成星捕获补间（polish-cosmos-orbit-insertion；初值，spec 不锁数值） ---------- */
 
@@ -387,6 +541,19 @@ const HOME_ICON_SVG =
   '<ellipse cx="12" cy="12" rx="9.4" ry="4.1" transform="rotate(60 12 12)" opacity=".55"/>' +
   '<ellipse cx="12" cy="12" rx="9.4" ry="4.1" transform="rotate(120 12 12)" opacity=".55"/>' +
   '<circle cx="12" cy="12" r="2.1" fill="currentColor" stroke="none"/>' +
+  '</svg>';
+
+/** 右下「拖拽平移」开关图标（add-cosmos-drag-pan-toggle D5）：四向移动箭头（迷你十字
+    方向）——与「回到银河」的星系图标同笔画语言（currentColor 描边，尺寸由 CSS 归一）。
+    语义直给「拖 = 移动画面」，不做状态图形（状态由 `aria-pressed` 点亮样式表达）。 */
+const DRAG_PAN_ICON_SVG =
+  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2"' +
+  ' stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+  '<path d="M12 4v16M4 12h16"/>' +
+  '<path d="M12 4 9.7 6.3M12 4l2.3 2.3"/>' +
+  '<path d="M12 20 9.7 17.7M12 20l2.3-2.3"/>' +
+  '<path d="M4 12 6.3 9.7M4 12l2.3 2.3"/>' +
+  '<path d="M20 12 17.7 9.7M20 12l-2.3 2.3"/>' +
   '</svg>';
 
 /* ---------- 星座集合变化中心滑移（add-cosmos-add-workspace D5 / req 星座集合变化位置滑移） ---------- */
@@ -1384,6 +1551,13 @@ function inheritTrails(prevScene, nextScene) {
  *        信息卡「决策」按钮回调（cosmos-session-decide D6）：与 onOpenSession 同模式注入
  *        （客户端复用官方 openSession 链路：先关整页再切到系统会话页，决策面由 DSH 原生
  *        composer takeover 呈现）；未注入 → 静默 no-op（同既有守卫，无视觉副作用）。
+ * @param {(enabled: boolean) => void} [opts.onDragPanToggle]
+ *        「拖拽平移」开关回调（add-cosmos-drag-pan-toggle D4）：点击开关后引擎已本地翻转
+ *        `E.dragPanMode` 与视觉，再以目标态调用本回调（客户端链路 = 净房持久化 +
+ *        既有 `setTuning` 热更回读，值恒等幂等）；未注入 → 静默 no-op（只做本地切换）。
+ * @param {{dragPan?: boolean}} [opts.settings]
+ *        设置面初值（settings.mjs 净房产物）：`dragPan` 为拖拽平移开关缺省态
+ *        （非显式 `true` 一律按关闭 = 默认关闭；后续热更走 `setTuning`）。
  * @param {{decide?: object, vitality?: object}} [opts.labels]
  *        信息卡文案注入位（locale 同源，任务 5.4）：`decide` = 决策按钮 pendingKind 映射
  *        （键域 approval / plan-review / question + fallback），`vitality` = 活力状态行
@@ -1420,6 +1594,14 @@ export function createCosmosEngine(opts) {
        以 `kind:wsId:id` 键比较，键变才回调（含置空）；载荷命中 D7 `inspectSelection` 同形。 */
     onSelectChange: typeof opts.onSelectChange === "function" ? opts.onSelectChange : null,
     selectKey: "",
+    /* 拖拽平移开关回调（add-cosmos-drag-pan-toggle D4）：与 onOpenSession 同模式注入；
+       未注入 → 点击只做本地翻转（静默 no-op，不抛错）。回调只携带翻转后的布尔值，
+       持久化与热更回读由客户端链接管（引擎零依赖 settings.mjs）。 */
+    onDragPanToggle: typeof opts.onDragPanToggle === "function" ? opts.onDragPanToggle : null,
+    /* 拖拽平移开关镜像（D4/2.1）：引擎级状态，**不进 `E.tuning` / `getTuning()`**（不属于
+       平移调参面）；初始化读持久化设置——非显式 true 一律 false（「默认关闭」），
+       `setTuning` 热更时同步。 */
+    dragPanMode: opts.settings?.dragPan === true,
     cam: { target: [0, 0, 0], yaw: -0.7, pitch: 0.5, dist: 430, fov: 60 },
     tween: null,
     focusWs: null, focusMix: 0, diveSel: null, diveSelKind: null,
@@ -1451,6 +1633,11 @@ export function createCosmosEngine(opts) {
     wsBirth: new Map(), // wsId → t0（空星座 chip 出生高亮标记；D6/3.2，CSS 2s 渐熄后自动常态）
     bootT0: null, // 冷启动点亮序曲锚点（首帧场景注入 / start 场景已在；null = 未锚定不启用序曲）
     px: -1, py: -1, pointerIn: false, dragging: false,
+    /* 浮签引线逐帧缓存（polish-cosmos-tip-leader-line D3）：`updateOverlay` 每帧重写，
+       `drawTipLines` 紧随其后消费——端点同源的唯一实现载体（呈现层瞬态，不进 sceneData）。 */
+    tipLines: [],
+    tipCardH: TIP_LINE.cardFallbackH, // 信息卡高度缓存（内容签名变更时测量；D5）
+    tipCardW: TIP_LINE.cardFallbackW, // 信息卡宽度缓存（翻转判定与避让间距同源派生）
     pointers: new Map(), // pointerId → {x, y}（多指针追踪：pinch 基准指距与剩指重置，D2）
     gesture: false, // 多指手势激活中（pointerup 拾取 / chip click 抑制依据）
     pinch: null, // {d0, dist0}：捏合基准指距与基准镜头距离（张开 = 放大）
@@ -2718,6 +2905,19 @@ export function createCosmosEngine(opts) {
     return E.gesture === true || (performance.now() - E.gestureEndAt) < GESTURE_SUPPRESS_MS;
   }
 
+  /* ---------- 拖拽平移开关（add-cosmos-drag-pan-toggle D4/D5） ----------
+     状态唯一权威 = `E.dragPanMode`；视觉/a11y 恒由 `syncDragPanButton()` 从权威派生
+     （幂等、不逐帧）。写入位点仅三处：构造 `opts.settings.dragPan` 初值、`setTuning`
+     热更回读、开关按钮点击本地翻转——后者再经注入回调走客户端净房写穿链。 */
+
+  /** 开关视觉 + a11y 同步（幂等）：`aria-pressed` 是点亮样式的唯一依据（`[aria-pressed="true"]`），
+      同时也是读屏可判的开关态。DOM 未建时静默跳过（防御性：热更早于 ensureDom 的理论路径）。 */
+  function syncDragPanButton() {
+    const btn = E.el.dragPanBtn;
+    if (!btn) return;
+    btn.setAttribute('aria-pressed', E.dragPanMode === true ? 'true' : 'false');
+  }
+
   /* ---------- DOM 覆盖层（容器内挂载，去 document.body） ---------- */
 
   function ensureDom() {
@@ -2759,6 +2959,27 @@ export function createCosmosEngine(opts) {
     homeBtn.addEventListener('click', function () { flyOut(); });
     E.el.overlay.appendChild(homeBtn);
     E.el.homeBtn = homeBtn;
+
+    /* 右下「拖拽平移」开关（add-cosmos-drag-pan-toggle 3.1/D5）：与 home 同款「引擎自建、
+       零新 API 暴露」先例——功能纯引擎，设置写入经注入回调。DOM 只建一次且不参与逐帧
+       innerHTML 更新（否则一次 mousedown→mouseup 之间元素被换掉，click 永不派发）。
+       构建时按 `E.dragPanMode` 初值同步 `aria-pressed`（持久化 true 的用户冷启动即呈
+       开启态）；点击 = 本地翻转镜像 → 视觉切换 → 注入回调（写穿持久化，未注入静默）。 */
+    const dragPanBtn = document.createElement('button');
+    dragPanBtn.className = 'cos-dragpan-btn';
+    dragPanBtn.setAttribute('type', 'button');
+    dragPanBtn.setAttribute('aria-label', '拖拽平移');
+    dragPanBtn.setAttribute('title', '拖拽平移');
+    dragPanBtn.innerHTML = DRAG_PAN_ICON_SVG;
+    dragPanBtn.addEventListener('click', function () {
+      E.dragPanMode = E.dragPanMode !== true; // 本地翻转（拖拽进行中则自下一个 move 生效）
+      syncDragPanButton();
+      if (E.onDragPanToggle) E.onDragPanToggle(E.dragPanMode === true);
+    });
+    E.el.overlay.appendChild(dragPanBtn);
+    E.el.dragPanBtn = dragPanBtn;
+    syncDragPanButton(); // 初值视觉（持久化 true → 冷启动即点亮）
+
     E.el.card.addEventListener('click', function (ev) {
       /* 信息卡按钮分流（add-cosmos-session-archive-action D4；cosmos-session-decide D6）：
          - `data-action="open"` → 既有 onOpenSession（行为零变化：先关整页再导航）；
@@ -3020,6 +3241,10 @@ export function createCosmosEngine(opts) {
 
   function updateOverlay() {
     const W = E.W, H = E.H;
+    /* 引线逐帧缓存（D3 单一来源）：本函数是本帧浮签定位/换算的**唯一点**——三族可见性、
+       α 表达式与信息卡 flip/cx/cy/halfH 在此算出，DOM transform 串与引线端点两处消费
+       同一组数（`E.tipLines`）。MUST NOT 在描线处二次推导，否则钳制/翻转会漂移。 */
+    E.tipLines.length = 0;
     // 空态（任务 5.7）：无工作区 → 居中提示，隐藏 chip（右上提示行已随 HUD 精简移除）
     const hasWs = E.scene.ws.length > 0;
     E.el.empty.style.display = hasWs ? 'none' : 'block';
@@ -3051,8 +3276,20 @@ export function createCosmosEngine(opts) {
         return;
       }
       el.classList.add('on');
-      el.style.opacity = String(clamp(ws.alpha * (1 - E.focusMix * 1.6), 0, 1));
-      el.style.transform = 'translate(' + ws.proj.x.toFixed(1) + 'px,' + (ws.proj.y - 26).toFixed(1) + 'px) translate(-50%,-100%)';
+      const alpha = clamp(ws.alpha * (1 - E.focusMix * 1.6), 0, 1);
+      el.style.opacity = String(alpha);
+      /* 避让偏移（D2）：chip 悬空于星座投影中心上方 TIP_GAP.chip；
+         `translate(-50%,-100%)` 使定位点 = chip 底缘中点 → 该点即引线止点。 */
+      const chipX = snap1(ws.proj.x);
+      const chipY = snap1(ws.proj.y - TIP_GAP.chip);
+      el.style.transform = 'translate(' + chipX.toFixed(1) + 'px,' + chipY.toFixed(1) + 'px) translate(-50%,-100%)';
+      /* 竖直引线：起笔星座投影中心（`ws.proj` 是裸中心点，无半径字段；`ws.boundR` 契约
+         限定仅阈值判定消费 → MUST NOT 作锚点），止于 chip 底缘。线长 = 避让间距本身。 */
+      E.tipLines.push({
+        kind: 'chip', alpha: alpha,
+        hx: chipX, hy: snap1(ws.proj.y),
+        x: chipX, y: chipY
+      });
     });
 
     // 恒星名牌（钻取态显示 + hover/selected 焦点显示）
@@ -3087,8 +3324,19 @@ export function createCosmosEngine(opts) {
         slab.dataset.html = slabHtml;
       }
       slab.classList.add('on');
-      slab.style.opacity = String(focused ? 1 : clamp(ownerWs.alpha * 0.9, 0, 1));
-      slab.style.transform = 'translate(' + scr.x.toFixed(1) + 'px,' + (scr.y + scr.r + 6).toFixed(1) + 'px) translate(-50%,0)';
+      const slabAlpha = focused ? 1 : clamp(ownerWs.alpha * 0.9, 0, 1);
+      slab.style.opacity = String(slabAlpha);
+      /* 避让偏移（D2）：名牌顶缘落在星缘（屏幕半径 r 之外）下方 TIP_GAP.slab；
+         `translate(-50%,0)` 使定位点 = 名牌顶缘中点 → 该点即引线止点。 */
+      const slabX = snap1(scr.x);
+      const starEdgeY = snap1(scr.y + scr.r);
+      const slabY = snap1(scr.y + scr.r + TIP_GAP.slab);
+      slab.style.transform = 'translate(' + slabX.toFixed(1) + 'px,' + slabY.toFixed(1) + 'px) translate(-50%,0)';
+      E.tipLines.push({
+        kind: 'slab', alpha: slabAlpha,
+        hx: slabX, hy: starEdgeY,
+        x: slabX, y: slabY
+      });
     });
 
     // 信息卡
@@ -3109,12 +3357,75 @@ export function createCosmosEngine(opts) {
       E.el.card.innerHTML = cardHtml(ent);
       E.el.card.dataset.sig = sig;
       E.el.card.setAttribute('data-key', key2);
+      /* 卡盒测量（D5）：卡宽决定翻转阈值、卡高决定折线止点——均只在内容签名变更时
+         测一次并缓存。MUST NOT 每帧读 offsetWidth/offsetHeight（逐帧强制布局）。 */
+      measureCardBox();
     }
     E.el.card.classList.add('on');
-    const flip = scr2.x > W - 300;
-    const cx = flip ? scr2.x - 18 : scr2.x + 18;
-    const cy = clamp(scr2.y - 10, 70, H - 240);
+    /* 翻转阈值与避让间距同源（用户回访修订）：右侧可容纳 = 星缘 + 间距 + 卡宽 + 视口留白。
+       既有 `W−300` 正是「旧偏移 18 + max-width 280 + 2」的同一推导——间距抬高后必须同步
+       派生，否则卡体会越出右缘（旧阈值 + 新间距会把卡推出视口约 60px）。 */
+    const flip = scr2.x > W - (scr2.r + TIP_GAP.card + E.tipCardW + TIP_LINE.flipMargin);
+    /* 信息卡避让（D2 语义修正）：锚点自「星中心旁 ±18px」改为**星缘外** TIP_GAP.card
+       ——引线必须起笔于星缘，锚在星内则线不可见（原值 < 恒星屏幕半径，实际压星）。
+       翻转与纵向钳制口径保持既有（翻转阈值 W−300 / 纵向 70..H−240）。 */
+    const dir = flip ? -1 : 1;
+    const cx = snap1(scr2.x + dir * (scr2.r + TIP_GAP.card));
+    const cy = snap1(clamp(scr2.y - 10, 70, H - 240));
     E.el.card.style.transform = 'translate(' + cx.toFixed(1) + 'px,' + cy.toFixed(1) + 'px)' + (flip ? ' translateX(-100%)' : '');
+    /* 折线引线（D5）：起笔星缘侧点（高度对齐星心），止于卡近缘**中点**
+       （半高来自上面的缓存测量）。钳制生效时 cy 已钳后 → 线止于实际卡缘（D3）。 */
+    E.tipLines.push({
+      kind: 'card', alpha: 1,
+      hx: snap1(scr2.x + dir * scr2.r), hy: snap1(scr2.y),
+      x: cx, y: snap1(cy + E.tipCardH / 2)
+    });
+  }
+
+  /** 信息卡盒尺寸缓存测量（D5）：仅内容签名变更时调用；读不到有限正数 → 兜底值
+      （Node 桩 / 未布局 / 隐藏测量面）。宽度同时是翻转判定的输入。 */
+  function measureCardBox() {
+    const el = E.el.card;
+    const w = el && typeof el.offsetWidth === 'number' ? el.offsetWidth : 0;
+    const h = el && typeof el.offsetHeight === 'number' ? el.offsetHeight : 0;
+    E.tipCardW = Number.isFinite(w) && w > 0 ? w : TIP_LINE.cardFallbackW;
+    E.tipCardH = Number.isFinite(h) && h > 0 ? h : TIP_LINE.cardFallbackH;
+  }
+
+  /**
+   * 浮签引线描线（D1 帧内次序 + D3 消费同帧缓存）：`frame()` 内 `updateOverlay()` **之后**
+   * 立即执行，只读本帧写入的 `E.tipLines`（DOM transform 用的同一组端点），MUST NOT 重算
+   * 可见性/翻转换算。Canvas 层天然位于 DOM 浮签之下 → 引线永远被浮签压住（不穿字），
+   * 且不在拾取路径内（MUST NOT 参与指针命中）。α 上限 `TIP_LINE.alphaMax`。
+   */
+  function drawTipLines() {
+    const lines = E.tipLines;
+    if (!lines.length) return;
+    const ctx = E.ctx;
+    const color = tipLineColorOf(E.style);
+    let lastStyle = '';
+    ctx.save();
+    ctx.lineWidth = 1;
+    ctx.lineCap = 'butt';
+    ctx.setLineDash([]);
+    for (let i = 0; i < lines.length; i++) {
+      const geo = tipLeaderOf(lines[i]);
+      if (!geo) continue;
+      const alpha = clamp(lines[i].alpha, 0, 1) * TIP_LINE.alphaMax;
+      if (!(alpha > 0.01)) continue;
+      const style = rgbaOf(color, Number(alpha.toFixed(3)));
+      if (style !== lastStyle) { ctx.strokeStyle = style; lastStyle = style; }
+      /* 起笔短横与折线同一路径一次 stroke（每浮签一条线 = 一次描边调用） */
+      ctx.beginPath();
+      if (geo.tick) {
+        ctx.moveTo(geo.tick.x, geo.tick.y);
+        ctx.lineTo(geo.tick.x2, geo.tick.y2);
+      }
+      ctx.moveTo(geo.pts[0].x, geo.pts[0].y);
+      for (let k = 1; k < geo.pts.length; k++) ctx.lineTo(geo.pts[k].x, geo.pts[k].y);
+      ctx.stroke();
+    }
+    ctx.restore();
   }
 
   /* ---------- 输入（容器级绑定；坐标经 canvas 相对化，去 window 全屏假设） ---------- */
@@ -3324,8 +3635,18 @@ export function createCosmosEngine(opts) {
         if (E.dragging || Math.abs(dx) + Math.abs(dy) > 4) {
           E.dragging = true;
           cancelTween();
-          E.cam.yaw += dx * 0.005;
-          E.cam.pitch = clamp(E.cam.pitch + dy * 0.005, -1.35, 1.35);
+          /* 单指拖拽语义分流（add-cosmos-drag-pan-toggle D3）：**只换「相机怎么动」这一行**——
+             4px 阈值 / E.dragging 累积 / cancelTween 补间让位 / 抬指 wasDrag 抑制全部保持原样。
+             作用域收窄（D1）：开关只对鼠标与笔尖生效，触屏单指在任何开关态下仍是旋转
+             （三自由度手势契约零污染）。开关值按每个 move 事件的当下值判定 → 手势中途
+             翻转开关自下一 move 起生效（dx/dy 增量模型无绝对基准，无重锚跳变）。
+             平移数学复用三指平移同一纯函数（抓取式映射，换算随 dist 缩放）。 */
+          if (E.dragPanMode === true && (ev.pointerType === 'mouse' || ev.pointerType === 'pen')) {
+            panCameraTargetByDrag(E.cam, dx, dy, E.cam.dist, E.tuning);
+          } else {
+            E.cam.yaw += dx * 0.005;
+            E.cam.pitch = clamp(E.cam.pitch + dy * 0.005, -1.35, 1.35);
+          }
           sx = ev.clientX; sy = ev.clientY;
         }
       }
@@ -3673,6 +3994,9 @@ export function createCosmosEngine(opts) {
     E.el.canvas.style.cursor = E.hovered ? 'pointer' : (E.dragging ? 'grabbing' : 'grab');
 
     updateOverlay();
+    /* 浮签引线（D1）：必须在 updateOverlay 之后——三族可见性/α 与本帧 flip/cx/cy 都诞生
+       于该函数，前移只能复制判定或退用上一帧陈值（「同帧同源」不成立）。 */
+    drawTipLines();
     E.raf = requestAnimationFrame(frame);
   }
 
@@ -3946,6 +4270,17 @@ export function createCosmosEngine(opts) {
     /** 选中态观测面（D4 页面点击守卫消费 + 冒烟直测）：与 onSelectChange 载荷同形。 */
     inspectSelection() {
       return E.disposed ? null : selectionInfoOf(E.selected);
+    },
+    /**
+     * 浮签引线观测面（polish-cosmos-tip-leader-line 1.3/2.3 冒烟直测）：返回本帧
+     * `E.tipLines` 的只读快照——条目即 `updateOverlay` 写入 DOM transform 的同一组端点
+     * （chip/slab 竖直线、card 折线起笔）。空数组 = 本帧无可见浮签（无引线可画）。
+     * @returns {Array<{kind: string, alpha: number, hx: number, hy: number, x: number, y: number}>}
+     */
+    inspectTipLines() {
+      return E.disposed ? [] : E.tipLines.map(function (tip) {
+        return { kind: tip.kind, alpha: tip.alpha, hx: tip.hx, hy: tip.hy, x: tip.x, y: tip.y };
+      });
     },
     /** 钻取到指定星座（add-cosmos-add-workspace D4/3.1）：按 id 在场景查星座，命中 →
         复用既有 `dive(ws, null)`（tweenTo 1300ms，与 chip 点击同一语义；钻取态下替换
@@ -4407,7 +4742,7 @@ export function createCosmosEngine(opts) {
     },
     toast,
     /** 平移调参 + 缩放导航热更新（设置面持久化后调用，无需重开整页）：
-        `{ panSpeed, panShiftBoost, zoomDiveRatio, zoomFlyOutRatio, zoomPointerFocus }`
+        `{ panSpeed, panShiftBoost, zoomDiveRatio, zoomFlyOutRatio, zoomPointerFocus, dragPan }`
         （部分写语义：非法/缺席键保持原值）。 */
     setTuning(settings) {
       if (Number(settings?.panSpeed) > 0) E.tuning.speed = settings.panSpeed;
@@ -4415,6 +4750,13 @@ export function createCosmosEngine(opts) {
       if (positiveOr(settings?.zoomDiveRatio, 0) > 0) E.tuning.diveRatio = positiveOr(settings.zoomDiveRatio, E.tuning.diveRatio);
       if (positiveOr(settings?.zoomFlyOutRatio, 0) > 0) E.tuning.flyOutRatio = positiveOr(settings.zoomFlyOutRatio, E.tuning.flyOutRatio);
       if (typeof settings?.zoomPointerFocus === "boolean") E.tuning.pointerFocus = settings.zoomPointerFocus;
+      /* 拖拽平移开关镜像（add-cosmos-drag-pan-toggle 2.1/D4）：布尔入参才更新（部分写语义），
+         值与当前一致时幂等（不触达 DOM）——点击链回读即走这条恒等路径，无回环。
+         镜像不进 E.tuning（不属于平移调参面），视觉/a11y 由权威派生。 */
+      if (typeof settings?.dragPan === "boolean" && settings.dragPan !== E.dragPanMode) {
+        E.dragPanMode = settings.dragPan;
+        syncDragPanButton();
+      }
     },
     getTuning() {
       return {

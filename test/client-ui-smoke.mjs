@@ -197,8 +197,12 @@ const engineSource = readFileSync(new URL("../src/cosmos/engine.mjs", import.met
   assert.ok(engineSource.includes("isUiChromeTarget(document.activeElement)"), "WASD 劫持排除面板/动作条焦点");
   assert.ok(clientSource.includes("tabIndex={0}"), "面板列表可聚焦（键盘滚动）");
   assert.ok(clientSource.includes("touch-action:pan-y"), "面板内保留原生触摸滚动");
-  /* 布局：固定 187px（原 280px 收窄 1/3）、贴右缘、银河自顶起、钻取让位、窄屏避让搜索框、底部让位动作条 */
-  assert.ok(clientSource.includes(".dsh-cosmos-panel{position:absolute;right:0;top:12px;bottom:calc(var(--cos-actions-h,0px) + 72px);width:187px;z-index:42;"), "面板固定 187px（280×2/3）+ 贴右缘 + 底部让位动作条");
+  /* 布局：宽 187px（原 280px 收窄 1/3，add-cosmos-layout-tuning 起经令牌可配）、贴右缘、
+     银河自顶起、钻取让位、窄屏避让搜索框、底部让位动作条、高度上限令牌（0 = 自适应） */
+  assert.ok(
+    clientSource.includes(".dsh-cosmos-panel{position:absolute;right:0;top:12px;bottom:calc(var(--cos-actions-h,0px) + 72px);width:var(--cos-const-panel-w, 187px);max-height:var(--cos-const-panel-h, none);z-index:42;"),
+    "面板宽经 --cos-const-panel-w（fallback 187）+ 贴右缘 + 底部让位动作条 + 高度上限令牌"
+  );
   const panelRule = clientSource.slice(clientSource.indexOf(".dsh-cosmos-panel{"), clientSource.indexOf(".dsh-cosmos-panel::after"));
   assert.ok(panelRule.includes("border-right:none") && !panelRule.includes("border-left:none"), "面板描边镜像（贴右缘 → border-right:none，无残留左缘描边）");
   assert.ok(clientSource.includes(".dsh-cosmos-panel::after{content:'';position:absolute;left:-1px;top:-1px;"), "角标镜像到面板左上角（内缘，换边后与画布相邻侧）");
@@ -264,10 +268,10 @@ const engineSource = readFileSync(new URL("../src/cosmos/engine.mjs", import.met
   assert.ok(!clientSource.includes('className="dsh-cosmos-sessions-close"'), "展开态无面板头关闭钮（单一控制点 = 同一开合按钮）");
   assert.ok(!clientSource.includes(".dsh-cosmos-sessions-close"), "关闭钮 CSS 规则同步移除（无残留第二控件样式）");
 
-  /* overlay 落位：绝对定位 + 贴页面左缘 + 260px，MUST NOT 参与布局流（不挤压画布） */
+  /* overlay 落位：绝对定位 + 贴页面左缘 + 宽 260px（令牌可配），MUST NOT 参与布局流（不挤压画布） */
   assert.ok(
-    clientSource.includes(".dsh-cosmos-sessions{position:absolute;left:0;top:12px;bottom:calc(var(--cos-actions-h,0px) + 72px);width:260px;z-index:42;"),
-    "左缘 overlay 贴页面左缘（left:0、260px；不参与布局流）"
+    clientSource.includes(".dsh-cosmos-sessions{position:absolute;left:0;top:12px;bottom:calc(var(--cos-actions-h,0px) + 72px);width:var(--cos-session-w, 260px);max-height:var(--cos-session-h, none);z-index:42;"),
+    "左缘 overlay 贴页面左缘（left:0、宽经 --cos-session-w，fallback 260；不参与布局流；高度上限令牌）"
   );
   assert.ok(clientSource.includes("border:1px solid rgb(var(--cos-accent-rgb,255 210 140) / .28);border-left:none;pointer-events:auto}"), "浮层描边镜像（贴页面左缘 → border-left:none）");
   const sessionsRule = clientSource.slice(clientSource.indexOf(".dsh-cosmos-sessions{"), clientSource.indexOf(".dsh-cosmos-sessions::before"));
@@ -459,8 +463,12 @@ const engineSource = readFileSync(new URL("../src/cosmos/engine.mjs", import.met
   assert.ok(clientSource.includes('data-armed={enabled ? "true" : undefined}'), "选中后动作条点亮标记");
   assert.ok(clientSource.includes(".dsh-cosmos-actions[data-armed=true]{border-color:rgb(var(--cos-accent-rgb,255 210 140) / .55);box-shadow:"), "点亮态视觉（随肤主调描边 + 辉光，3.1 令牌化）");
   assert.ok(clientSource.includes(".dsh-cosmos-actions[data-armed=true] .dsh-cosmos-action{"), "点亮态按钮提亮");
-  assert.ok(clientSource.includes("min-height:40px"), "触屏目标 ≥40px");
-  assert.ok(clientSource.includes("width:min(calc(100% - 152px)"), "左右安全边距避开「＋」/「回到银河」");
+  assert.ok(clientSource.includes("min-height:var(--cos-action-btn-h, 40px)"), "按钮触屏目标 ≥40px（高度经 --cos-action-btn-h 令牌可配）");
+  assert.ok(
+    clientSource.includes("width:min(calc(100% - (2 * max(var(--cos-add-btn-size, 44px), calc(2 * var(--cos-hud-btn-size, 44px) + 8px)) + 56px)),"),
+    "左右安全边距按「＋ / 双 HUD 按钮横排」尺寸派生（add-cosmos-layout-tuning D4，取代写死 152px）"
+  );
+  assert.ok(clientSource.includes("var(--cos-action-btn-w, 112px)"), "动作条按钮宽经 --cos-action-btn-w 令牌可配");
   assert.ok(clientSource.includes("left:50%"), "水平居中");
   assert.ok(clientSource.includes("el.addEventListener(\"wheel\", onWheel, { passive: false });"), "动作条滚轮非被动监听");
   assert.ok(
@@ -606,11 +614,11 @@ const engineSource = readFileSync(new URL("../src/cosmos/engine.mjs", import.met
   assert.ok(clientSource.includes('data-cosmos-const-action={button.name}'), "按钮稳定钩子 data-cosmos-const-action");
   assert.ok(clientSource.includes('key={button.name + "-" + index}'), "按钮 key 稳定（内容差分零重写）");
   assert.ok(clientSource.includes("if (!Array.isArray(buttons) || buttons.length === 0) return null;"), "空列表零布局");
-  assert.ok(clientSource.includes("min-height:40px"), "触屏点击目标 ≥40px（星座条同基线）");
+  assert.ok(clientSource.includes("min-height:var(--cos-const-action-h, 40px)"), "触屏点击目标 ≥40px（星座条同基线，高度经令牌可配）");
   assert.ok(clientSource.includes(".dsh-cosmos-const-action{"), "按钮 CSS 类存在");
   assert.ok(clientSource.includes("color:var(--dsw-alias-label-primary,var(--cos-accent-ink,#ffe3b8))"), "动作条配色优先官方 token，其次 HUD 主调令牌（3.1）");
   assert.ok(clientSource.includes(".dsh-cosmos-const-actions::after{"), "HUD 角标装饰（风格 D 语言）");
-  assert.ok(clientSource.includes("flex:1 1 0;box-sizing:border-box;min-width:0;min-height:40px"), "等宽按钮（按行均分）");
+  assert.ok(clientSource.includes("flex:1 1 0;box-sizing:border-box;min-width:0;min-height:var(--cos-const-action-h, 40px)"), "等宽按钮（按行均分，宽 = 面板内容宽）");
   assert.ok(clientSource.includes("display:flex;flex-wrap:wrap;gap:5px"), "超出面板宽度自动换行");
   /* 三段结构 + 钻取态专属 + 恒可用（不依赖选中态） */
   assert.ok(clientSource.includes("const showConstActions = drilled && Array.isArray(constButtons) && constButtons.length > 0;"), "仅钻取态 + 空列表不渲染");
@@ -1298,8 +1306,8 @@ function goldLiteralsOutsideVarFallback(source) {
   assert.ok(badgeRule.includes("text-align: center"), "引擎 CSS：标牌文本居中");
   const limitM = /max-width: max\((\d+)px, min\((\d+)px, calc\(100% - (\d+)px\)\)\)/.exec(badgeRule);
   assert.ok(limitM, "引擎 CSS：标牌限宽口径可解析（下限 / 上限 / 避让预留）");
-  const panelM = /\.dsh-cosmos-panel\{[^}]*?width:(\d+)px/.exec(clientSource);
-  assert.ok(panelM, "客户端 CSS：面板固定宽度可解析");
+  const panelM = /\.dsh-cosmos-panel\{[^}]*?width:var\(--cos-const-panel-w, (\d+)px\)/.exec(clientSource);
+  assert.ok(panelM, "客户端 CSS：面板宽度（令牌 fallback，add-cosmos-layout-tuning 起可配）可解析");
   const floor = Number(limitM[1]);
   const cap = Number(limitM[2]);
   const reserve = Number(limitM[3]);
@@ -1451,6 +1459,58 @@ function goldLiteralsOutsideVarFallback(source) {
   /* 动作条目标 = 星胚组（selectedCard 由 findCard 投影取，星胚卡在 allCards 内可命中） */
   assert.ok(clientSource.includes("return findCard(projectPanel(scene), selectedKey);"), "动作条目标取 selectedKey 对应卡片（含星胚卡）");
   assert.ok(clientSource.includes("if (!selectedCard || selectedCard.lifecycle !== \"proto\") return null;"), "星胚动作按钮门控读卡片（旧锚点禁用提示沿用）");
+}
+
+/* ── 界面尺寸令牌下发链路（add-cosmos-layout-tuning 2.1/2.2 / D1）：设置面投影 → 模块
+   store → 整页根容器 CSS 变量；页签更名「界面」且内部 id 保持 nav ── */
+{
+  const settingsSource = readFileSync(new URL("../src/settings.mjs", import.meta.url), "utf8");
+  assert.ok(
+    settingsSource.includes("export function cosmosLayoutTokensOf(settings)"),
+    "纯函数投影入口（settings.mjs 导出，引擎/整页 CSS 共用同一变量表）"
+  );
+  for (const token of [
+    "--cos-session-w", "--cos-session-h", "--cos-const-panel-w", "--cos-const-panel-h",
+    "--cos-add-btn-size", "--cos-hud-btn-size", "--cos-action-btn-w", "--cos-action-btn-h",
+    "--cos-const-action-h", "--cos-search-w", "--cos-search-h", "--cos-ws-title-size"
+  ]) {
+    assert.ok(settingsSource.includes('"' + token + '"'), "投影覆盖令牌 " + token);
+  }
+  assert.ok(!/--cos-actions-h/.test(settingsSource), "投影不含动作条高度（仍由 DOM 测量注入，单一来源）");
+  /* 整页根容器：订阅「界面」store 并展开令牌（与 --cos-actions-h 同址） */
+  assert.ok(
+    clientSource.includes("const navPrefs = useSyncExternalStore(cosmosNavStore.subscribe, cosmosNavStore.getSnapshot);"),
+    "整页订阅界面 store（设置改动即时重渲染）"
+  );
+  assert.ok(clientSource.includes("const layoutTokens = cosmosLayoutTokensOf(navPrefs);"), "投影结果在页根计算");
+  assert.ok(clientSource.includes("...layoutTokens"), "令牌展开进页根 style（继承链下发到引擎与面板层）");
+  assert.ok(
+    clientSource.indexOf("import { COSMOS_SETTINGS_BOUNDS") >= 0 && clientSource.includes("cosmosLayoutTokensOf, loadCosmosSettings"),
+    "settings.mjs 导入投影函数（单一实现，不在 client 复制映射）"
+  );
+  /* 尺寸 CSS 消费点（替代字面量，全部带现值 fallback） */
+  const consumers = [
+    ["width:var(--cos-session-w, 260px)", "会话面板宽"],
+    ["max-height:var(--cos-session-h, none)", "会话面板高度上限"],
+    ["width:var(--cos-const-panel-w, 187px)", "星座面板宽"],
+    ["max-height:var(--cos-const-panel-h, none)", "星座面板高度上限"],
+    ["width:var(--cos-add-btn-size, 44px);height:var(--cos-add-btn-size, 44px)", "新增按钮边长"],
+    ["min-height:var(--cos-action-btn-h, 40px)", "动作条按钮高"],
+    ["min-height:var(--cos-const-action-h, 40px)", "星座动作按钮高"],
+    ["width:min(var(--cos-search-w, 320px), 34vw)", "搜索框宽（保留 34vw 视口上限，缺省行为不变）"],
+    ["min-height:var(--cos-search-h, 0)", "搜索框最小高（0 = 自适应）"]
+  ];
+  for (const [anchor, label] of consumers) assert.ok(clientSource.includes(anchor), label + " 走令牌");
+  /* 星座标题字号在引擎 CSS（.cos-badge b）侧消费 */
+  const engineSource = readFileSync(new URL("../src/cosmos/engine.mjs", import.meta.url), "utf8");
+  assert.ok(engineSource.includes("font-size: var(--cos-ws-title-size, 13px)"), "星座标题字号经令牌下发（引擎标牌）");
+  assert.ok(engineSource.includes("width: var(--cos-hud-btn-size, 44px); height: var(--cos-hud-btn-size, 44px)"), "HUD 按钮边长经令牌（home）");
+  /* 页签更名「界面」：可见文案换名，slot id / face 名保持 nav（内部契约零迁移） */
+  assert.ok(clientSource.includes('"cosmos.settings.tabInterface": "界面"'), "词典 zh：页签更名「界面」");
+  assert.ok(clientSource.includes('"cosmos.settings.tabInterface": "Interface"'), "词典 en：页签更名成对");
+  assert.ok(clientSource.includes('label: () => sectionT("cosmos.settings.tabInterface")'), "页签标签取更名后的词典键");
+  assert.ok(!clientSource.includes('"cosmos.settings.tabNav"'), "旧「导航」页签词典键已退役");
+  assert.ok(clientSource.includes('id: "nav",'), "slot id 仍为 nav（内部标识零迁移）");
 }
 
 console.log("client-ui-smoke: all assertions passed");

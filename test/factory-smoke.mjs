@@ -438,14 +438,15 @@ assert.equal(exportsShape.archiveRequestFailureNotice("500").tone, "error", "请
   assert.equal(navFailure?.code, "controller-missing", "nav 同原因码");
   assert.ok(!Object.is(navFailure, failureRef), "face 迁移产生新快照（状态迁移语义）");
 
-  /* 导航面板提示（2.3）+ face 缺失占位。 */
+  /* 界面面板提示（2.3）+ face 缺失占位（add-cosmos-layout-tuning 起页签更名「界面」）。 */
   const navTree = collectElements(fresh.CosmosNavPanel({ t: (key) => key, nav: navFace, selectHealth: navInjected.selectHealth }));
   const navNotice = navTree.find((el) => el.props.className === "cs-error");
-  assert.ok(navNotice && textOf(navNotice).includes("导航设置未生效"), "导航面板渲染「未生效」提示条");
-  assert.ok(textOf(navNotice).includes("controller-missing"), "导航提示含原因码后缀");
+  assert.ok(navNotice && textOf(navNotice).includes("界面设置未生效"), "界面面板渲染「未生效」提示条");
+  assert.ok(textOf(navNotice).includes("controller-missing"), "界面提示含原因码后缀");
   const navPlaceholder = collectElements(fresh.CosmosNavPanel({ t: (key) => key, nav: null }));
-  assert.ok(textOf(navPlaceholder).includes("导航设置暂不可用"), "nav face 缺失 → 降级占位文案");
+  assert.ok(textOf(navPlaceholder).includes("界面设置暂不可用"), "nav face 缺失 → 降级占位文案");
   assert.ok(!navPlaceholder.some((el) => el.props.className === "cs-navInput"), "占位不渲染数字输入控件");
+  assert.ok(!navPlaceholder.some((el) => el.props.className === "cs-sizeInput"), "占位不渲染尺寸输入控件");
 
   /* 「发送前编辑」face（add-cosmos-native-composer 4.1）：星座动作页签正交注入；
      死控制器同款——镜像不流转 + 落印 preflight 失败（不造假持久化）。 */

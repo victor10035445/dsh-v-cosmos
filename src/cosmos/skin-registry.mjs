@@ -266,6 +266,14 @@ const SKIN_SPECS = [
 /** 注册表项（实例 + 令牌表在模块初始化时一次备齐；皮肤构造期零 DOM 副作用）。 */
 export const COSMOS_SKINS = Object.freeze(SKIN_SPECS.map(function (spec) {
   const instance = spec.create();
+  /* 标注取色通道（polish-cosmos-tip-leader-line D5：浮签引线配色）：`palette.accent`
+     单一来源 = 本项注册规格的 `base.accent`（与 HUD `--cos-accent` 同源）——12 套皮肤
+     模块各自手抄一份必漂移，故在注册点统一派生。直接构造的皮肤实例（冒烟 / 外部注入
+     `style`）不经此路径，引擎侧回落 `gold`（见 engine `tipLineColorOf`）。 */
+  if (instance && instance.palette && typeof instance.palette === "object"
+    && typeof instance.palette.accent !== "string") {
+    instance.palette.accent = spec.base.accent;
+  }
   return Object.freeze({
     id: spec.id,
     name: spec.name,

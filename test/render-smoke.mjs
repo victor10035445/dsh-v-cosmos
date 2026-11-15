@@ -339,7 +339,7 @@ engine.dispose();
   assert.ok(source.includes('className="cos-add-btn"'), "整页左下角「新增」按钮 JSX 存在");
   assert.ok(source.includes('data-plugin-anchor="dsh-v-cosmos:add"'), "按钮插件锚点（DOM 断言入口）");
   assert.ok(source.includes(".cos-add-btn{position:absolute;left:16px;bottom:16px"), "按钮常驻左下角（absolute 16px）");
-  assert.ok(source.includes("width:44px;height:44px;padding:0"), "按钮方形 44×44 icon-only（触屏目标 ≥40px）");
+  assert.ok(source.includes("width:var(--cos-add-btn-size, 44px);height:var(--cos-add-btn-size, 44px);padding:0"), "按钮方形 icon-only（边长经 --cos-add-btn-size 令牌，缺省 44）");
   assert.ok(source.includes("justify-content:center"), "方形按钮内容居中（icon-only 定心）");
   assert.ok(!source.includes("cos-add-label"), "文字标签 span 已移除（只留 ＋ 图标）");
   assert.ok(source.includes('className="cos-add-plus"'), "`＋` 图标保留（icon-only 主体）");

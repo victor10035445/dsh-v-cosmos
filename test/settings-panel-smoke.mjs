@@ -573,7 +573,7 @@ const BUTTON = { name: "审查", prompt: "请使用 /cosmos-review 审查本提�
   const { COSMOS_DEFAULT_SKIN, COSMOS_SKINS, skinCardOf } = await import("../src/cosmos/skin-registry.mjs");
   const { COSMOS_SETTINGS_VERSION, loadCosmosSettings, sanitizeCosmosSettings, saveCosmosSettings } = await import("../src/settings.mjs");
 
-  assert.equal(COSMOS_SETTINGS_VERSION, 5, "设置面 v5（新增星座动作发送前编辑分支；跳转属按钮配置，不进偏好面）");
+  assert.equal(COSMOS_SETTINGS_VERSION, 7, "设置面 v7（新增界面尺寸 12 键；跳转属按钮配置，不进偏好面）");
   const cards = COSMOS_SKINS.map(skinCardOf);
   assert.equal(cards.length, 12, "12 张卡片");
   assert.deepEqual(cards.map((c) => c.id), COSMOS_SKINS.map((s) => s.id), "卡片顺序 = 注册表顺序");
@@ -617,7 +617,7 @@ const BUTTON = { name: "审查", prompt: "请使用 /cosmos-review 审查本提�
     saveCosmosSettings
   } = await import("../src/settings.mjs");
 
-  assert.equal(COSMOS_SETTINGS_VERSION, 5, "设置面 v5（新增星座动作发送前编辑分支）");
+  assert.equal(COSMOS_SETTINGS_VERSION, 7, "设置面 v7（界面尺寸 12 键并入同一存储面）");
   assert.deepEqual(
     [COSMOS_SETTINGS_DEFAULTS.zoomDiveRatio, COSMOS_SETTINGS_DEFAULTS.zoomFlyOutRatio, COSMOS_SETTINGS_DEFAULTS.zoomPointerFocus],
     [100, 25, true],
@@ -664,8 +664,8 @@ const BUTTON = { name: "审查", prompt: "请使用 /cosmos-review 审查本提�
 
   /* UI 锚点：面板组件 + 两输入一开关 + 触控/aria + 数字输入净化 */
   const ui = readFileSync(new URL("../src/settings-ui.jsx", import.meta.url), "utf8");
-  assert.ok(ui.includes("export function CosmosNavPanel"), "导航面板组件");
-  assert.ok(ui.includes('data-plugin-anchor="dsh-v-cosmos:settings-nav"'), "导航面板插件锚点");
+  assert.ok(ui.includes("export function CosmosNavPanel"), "界面面板组件");
+  assert.ok(ui.includes('data-plugin-anchor="dsh-v-cosmos:settings-nav"'), "界面面板插件锚点（内部 id 保持 nav）");
   assert.ok(ui.includes('id="cosmos-nav-dive"') && ui.includes('id="cosmos-nav-flyout"'), "两个数字输入稳定 id");
   assert.ok(ui.includes("min={60}") && ui.includes("max={140}") && ui.includes("step={5}"), "进入阈值 60–140 步长 5");
   assert.ok(ui.includes("min={10}") && ui.includes("max={50}"), "返回阈值 10–50 步长 5");
@@ -674,22 +674,49 @@ const BUTTON = { name: "审查", prompt: "请使用 /cosmos-review 审查本提�
   assert.ok(ui.includes("min-height:44px"), "输入/开关触控目标 ≥44px");
   assert.ok(ui.includes('aria-label={tr(t, "cosmos.settings.navDiveAria"'), "数字输入 aria 文案");
   assert.ok(ui.includes('aria-label={tr(t, "cosmos.settings.navFocusAria"'), "开关 aria 文案");
+  /* 界面尺寸组（add-cosmos-layout-tuning 5.2）：12 个字段 + 表格化渲染 + 高度键「0 = 自适应」 */
+  assert.ok(ui.includes("const COSMOS_SIZE_FIELDS = Object.freeze(["), "尺寸字段表（单一来源）");
+  for (const key of [
+    "sessionPanelWidth", "sessionPanelHeight", "constPanelWidth", "constPanelHeight",
+    "addBtnSize", "hudBtnSize", "actionBtnWidth", "actionBtnHeight",
+    "constActionHeight", "searchWidth", "searchHeight", "wsTitleSize"
+  ]) {
+    assert.ok(ui.includes('key: "' + key + '"'), "尺寸字段注册：" + key);
+  }
+  for (const id of [
+    "cosmos-size-session-w", "cosmos-size-session-h", "cosmos-size-const-w", "cosmos-size-const-h",
+    "cosmos-size-add-btn", "cosmos-size-hud-btn", "cosmos-size-action-w", "cosmos-size-action-h",
+    "cosmos-size-const-action-h", "cosmos-size-search-w", "cosmos-size-search-h", "cosmos-size-ws-title"
+  ]) {
+    assert.ok(ui.includes('id: "' + id + '"'), "尺寸输入稳定 id：" + id);
+  }
+  assert.ok(ui.includes("function CosmosSizeField(props)"), "尺寸输入子组件（本地文本草稿承接键入）");
+  assert.ok(ui.includes("min-height:44px") && ui.includes(".cs-sizeInput{"), "尺寸输入触控目标 ≥44px");
+  assert.ok(ui.includes('htmlFor={field.id}'), "尺寸输入 label[htmlFor] 原生可达");
+  assert.ok(ui.includes("COSMOS_SIZE_FIELDS.map((field) => ("), "尺寸组按字段表渲染（12 行）");
+  assert.ok(ui.includes('tr(t, "cosmos.settings.sizeAuto", "0 = 自适应")'), "高度类字段标注 0 = 自适应");
+  assert.ok(ui.includes("commit(field, event.target.value, value)"), "界内即时提交（与导航输入同纪律）");
   const navPanel = ui.slice(ui.indexOf("export function CosmosNavPanel"), ui.indexOf("export function CosmosSkinPanel"));
-  assert.ok(!/face\.save\(\)/.test(navPanel), "导航页签无「保存」按钮（即时生效语义）");
+  assert.ok(!/face\.save\(\)/.test(navPanel), "界面页签无「保存」按钮（即时生效语义）");
   assert.ok(navPanel.includes("face?.set?.(patch)"), "改动直接写 face（无草稿-保存）");
+  assert.ok(navPanel.includes('tr(t, "cosmos.settings.sizeGroup", "界面尺寸")'), "面板呈现「界面尺寸」分组标题");
 
-  /* 注册与词典（client.jsx 源码面）：order 3、nav face 注入、zh/en 成对 */
+  /* 注册与词典（client.jsx 源码面）：order 3、nav face 注入、zh/en 成对、页签更名「界面」 */
   const client = readFileSync(new URL("../src/client.jsx", import.meta.url), "utf8");
   assert.ok(client.includes("CosmosNavPanel"), "面板组件注册");
-  assert.ok(client.includes('id: "nav"'), "「导航」标签页注册");
-  assert.ok(client.includes('label: () => sectionT("cosmos.settings.tabNav")'), "标签文案走词典");
+  assert.ok(client.includes('id: "nav"'), "「界面」标签页注册（slot id 保持 nav）");
+  assert.ok(client.includes('label: () => sectionT("cosmos.settings.tabInterface")'), "标签文案走更名后的词典键");
   assert.ok(client.includes("inject: () => ({ nav: navFace, selectHealth: selectHealthFace })"), "注入 nav face（受控镜像 + 写入 + 失败观测面）");
   const navTab = client.slice(client.indexOf('id: "nav"'), client.indexOf("/* 4. hero 接力消费条目"));
   assert.ok(/order: 3,/.test(navTab), "排于「皮肤」(2) 之后");
-  assert.ok(client.includes('"cosmos.settings.tabNav": "导航"'), "词典 zh：页签名");
-  assert.ok(client.includes('"cosmos.settings.tabNav": "Navigation"'), "词典 en：页签名");
+  assert.ok(client.includes('"cosmos.settings.tabInterface": "界面"'), "词典 zh：页签名「界面」");
+  assert.ok(client.includes('"cosmos.settings.tabInterface": "Interface"'), "词典 en：页签名成对");
   assert.ok(client.includes('"cosmos.settings.navDiveLabel": "进入星座视图"'), "词典 zh：进入控件");
   assert.ok(client.includes('"cosmos.settings.navFocusHint": "Zoom gradually focuses'), "词典 en：开关说明");
+  assert.ok(client.includes('"cosmos.settings.sizeGroup": "界面尺寸"'), "词典 zh：尺寸组标题");
+  assert.ok(client.includes('"cosmos.settings.sizeGroup": "Layout sizes"'), "词典 en：尺寸组标题成对");
+  assert.ok(client.includes('"cosmos.settings.sizeWsTitle": "星座标题字号"'), "词典 zh：星座标题字号");
+  assert.ok(client.includes('"cosmos.settings.sizeWsTitle": "Constellation title size"'), "词典 en：星座标题字号成对");
   /* 即时生效数据链（客户端源码面）：saveNav → 净房持久化 → engine.setTuning 热更 → store */
   const saveNavSlice = client.slice(client.indexOf("saveNav(patch)"), client.indexOf("getTuning()"));
   assert.ok(saveNavSlice.includes("saveCosmosSettings(patch)"), "改动即净房持久化");
@@ -697,6 +724,164 @@ const BUTTON = { name: "审查", prompt: "请使用 /cosmos-review 审查本提�
   assert.ok(saveNavSlice.includes("cosmosNavStore.set(navPrefsOf(merged))"), "受控镜像同步（设置页回显）");
   assert.ok(client.includes("saveNav: actions.saveNav"), "控制器顶层暴露 saveNav（设置页 face 调用链）");
   assert.ok(client.includes("selectSkin: actions.selectSkin"), "控制器顶层暴露 selectSkin（皮肤页既有链路同款）");
+}
+
+/* ── 界面尺寸数据面（add-cosmos-layout-tuning 1.3 / D2–D3）：12 键缺省 = 现值、
+   合法值透传、越界夹取、非数字回落、v6 旧载荷补默认、高度 0 = 自适应、
+    令牌投影（cosmosLayoutTokensOf）逐键生效 ── */
+{
+  const {
+    COSMOS_SETTINGS_BOUNDS,
+    COSMOS_SETTINGS_DEFAULTS,
+    cosmosLayoutTokensOf,
+    loadCosmosSettings,
+    sanitizeCosmosSettings,
+    saveCosmosSettings
+  } = await import("../src/settings.mjs");
+
+  const sizes = {
+    sessionPanelWidth: 260, sessionPanelHeight: 0, constPanelWidth: 187, constPanelHeight: 0,
+    addBtnSize: 44, hudBtnSize: 44, actionBtnWidth: 112, actionBtnHeight: 40,
+    constActionHeight: 40, searchWidth: 320, searchHeight: 0, wsTitleSize: 13
+  };
+  assert.deepEqual(
+    Object.fromEntries(Object.keys(sizes).map((key) => [key, COSMOS_SETTINGS_DEFAULTS[key]])),
+    sizes,
+    "12 个尺寸键缺省 = 现值（默认渲染零变化）"
+  );
+
+  /* 界内端点透传 + 越界夹取 */
+  const maxes = {};
+  for (const key of Object.keys(sizes)) maxes[key] = COSMOS_SETTINGS_BOUNDS[key][1];
+  const overMax = {};
+  for (const key of Object.keys(sizes)) overMax[key] = COSMOS_SETTINGS_BOUNDS[key][1] + 999;
+  assert.deepEqual(
+    Object.fromEntries(Object.keys(sizes).map((key) => [key, sanitizeCosmosSettings(maxes)[key]])),
+    maxes,
+    "界内端点原样保留"
+  );
+  assert.deepEqual(
+    Object.fromEntries(Object.keys(sizes).map((key) => [key, sanitizeCosmosSettings(overMax)[key]])),
+    maxes,
+    "越界一律落界内端点"
+  );
+  assert.deepEqual(
+    Object.fromEntries(Object.keys(sizes).map((key) => [key, sanitizeCosmosSettings({ [key]: "x" })[key]])),
+    sizes,
+    "非数字回落缺省"
+  );
+  assert.equal(sanitizeCosmosSettings({ sessionPanelHeight: 0 }).sessionPanelHeight, 0, "高度 0 = 自适应（合法值，不被 falsy 吞掉）");
+  assert.equal(sanitizeCosmosSettings({ sessionPanelHeight: 640 }).sessionPanelHeight, 640, "高度 >0 透传（上限语义）");
+
+  /* v6 旧载荷（无尺寸键）→ 补默认；持久化往返 */
+  const store = new Map();
+  globalThis.localStorage = {
+    getItem: (key) => (store.has(key) ? store.get(key) : null),
+    setItem: (key, value) => store.set(key, String(value)),
+    removeItem: (key) => store.delete(key)
+  };
+  try {
+    store.set("dsh-v-cosmos:settings", JSON.stringify({ panSpeed: 120, dragPan: true }));
+    assert.equal(loadCosmosSettings().sessionPanelWidth, 260, "v6 旧载荷（无尺寸键）→ 读面补默认");
+    const applied = saveCosmosSettings({ sessionPanelWidth: 320, hudBtnSize: 56, searchWidth: 420, wsTitleSize: 16, sessionPanelHeight: 600, searchHeight: 36 });
+    assert.deepEqual(
+      [applied.sessionPanelWidth, applied.hudBtnSize, applied.searchWidth, applied.wsTitleSize, applied.sessionPanelHeight, applied.searchHeight],
+      [320, 56, 420, 16, 600, 36],
+      "尺寸写入即净房落盘"
+    );
+    assert.deepEqual(
+      [loadCosmosSettings().sessionPanelWidth, loadCosmosSettings().hudBtnSize],
+      [320, 56],
+      "重开读回（持久化）"
+    );
+    assert.equal(JSON.parse(store.get("dsh-v-cosmos:settings")).hudBtnSize, 56, "落盘载荷含尺寸键");
+    assert.equal(saveCosmosSettings({ hudBtnSize: 999 }).hudBtnSize, COSMOS_SETTINGS_BOUNDS.hudBtnSize[1], "非法写侧夹取");
+  } finally {
+    delete globalThis.localStorage;
+  }
+
+  /* 令牌投影（纯函数）：缺省 → 现值 + 高度 none；自定义逐键生效；0 → 自适应 */
+  const defaults = cosmosLayoutTokensOf(COSMOS_SETTINGS_DEFAULTS);
+  assert.equal(defaults["--cos-session-w"], "260px");
+  assert.equal(defaults["--cos-session-h"], "none", "面板高度 0 → none（自适应，现状）");
+  assert.equal(defaults["--cos-const-panel-h"], "none");
+  assert.equal(defaults["--cos-search-h"], "0px", "搜索框最小高 0 = 自适应");
+  assert.equal(defaults["--cos-ws-title-size"], "13px");
+  const custom = cosmosLayoutTokensOf({ ...COSMOS_SETTINGS_DEFAULTS, sessionPanelHeight: 600, constPanelWidth: 220, addBtnSize: 50, actionBtnHeight: 48, constActionHeight: 44 });
+  assert.deepEqual(
+    [custom["--cos-session-h"], custom["--cos-const-panel-w"], custom["--cos-add-btn-size"], custom["--cos-action-btn-h"], custom["--cos-const-action-h"]],
+    ["600px", "220px", "50px", "48px", "44px"],
+    "自定义值逐键投影"
+  );
+}
+
+/* ── 拖拽平移开关净房（add-cosmos-drag-pan-toggle 1.2 / D4）：v5 → v6 布尔键
+   `dragPan`，缺省 false（默认关闭）、合法 true 透传、手工坏值回落、v5 旧载荷补默认 ── */
+{
+  const {
+    COSMOS_SETTINGS_DEFAULTS,
+    COSMOS_SETTINGS_VERSION,
+    loadCosmosSettings,
+    sanitizeCosmosSettings,
+    saveCosmosSettings
+  } = await import("../src/settings.mjs");
+
+  assert.equal(COSMOS_SETTINGS_VERSION, 7, "设置面版本（拖拽平移键仍在册，尺寸键并入后 v7）");
+  assert.equal(COSMOS_SETTINGS_DEFAULTS.dragPan, false, "出厂默认关闭（鼠标拖拽保持旋转）");
+  assert.equal(sanitizeCosmosSettings({}).dragPan, false, "空载荷 → false");
+  assert.equal(sanitizeCosmosSettings({ dragPan: true }).dragPan, true, "合法 true 透传（开启态）");
+  assert.equal(sanitizeCosmosSettings({ dragPan: false }).dragPan, false, "显式 false 保留");
+  for (const bad of ["on", "true", "", 1, 0, null, undefined, {}, []]) {
+    assert.equal(sanitizeCosmosSettings({ dragPan: bad }).dragPan, false, "非布尔回落 false：" + String(bad));
+  }
+
+  /* v5 载荷（无 dragPan 键）→ 补默认 false（无迁移动作、无报错） */
+  const v5Payload = {
+    panSpeed: 120, panShiftBoost: 3, skin: "rosepine", zoomDiveRatio: 100,
+    zoomFlyOutRatio: 25, zoomPointerFocus: true, sessionPanelOpen: true, constPreflight: "float"
+  };
+  assert.equal(sanitizeCosmosSettings(v5Payload).dragPan, false, "v5 载荷读出补默认 false");
+
+  /* 净房键互相零影响（同批写入不干扰既有键） */
+  const mixed = sanitizeCosmosSettings({ ...COSMOS_SETTINGS_DEFAULTS, dragPan: true });
+  assert.deepEqual(
+    [mixed.constPreflight, mixed.skin, mixed.zoomPointerFocus],
+    ["float", "rosepine", true],
+    "dragPan 写入不扰动其余键"
+  );
+
+  /* 持久化读写（同一存储通道）：开启 → 读回开启；手工坏值 → 净化落缺省 */
+  const store = new Map();
+  globalThis.localStorage = {
+    getItem: (key) => (store.has(key) ? store.get(key) : null),
+    setItem: (key, value) => store.set(key, String(value)),
+    removeItem: (key) => store.delete(key)
+  };
+  try {
+    assert.equal(saveCosmosSettings({ dragPan: true }).dragPan, true, "开关开启写侧保留");
+    assert.equal(loadCosmosSettings().dragPan, true, "重开读回开启态（持久化）");
+    assert.equal(JSON.parse(store.get("dsh-v-cosmos:settings")).dragPan, true, "落盘载荷含 dragPan=true");
+    assert.equal(saveCosmosSettings({ dragPan: "on" }).dragPan, false, "非法写侧回落 false");
+    store.set("dsh-v-cosmos:settings", JSON.stringify({ ...v5Payload }));
+    assert.equal(loadCosmosSettings().dragPan, false, "磁盘 v5 载荷（无该键）→ 读面补默认");
+    store.set("dsh-v-cosmos:settings", JSON.stringify({ ...v5Payload, dragPan: 1 }));
+    assert.equal(loadCosmosSettings().dragPan, false, "磁盘手工坏值（数字）→ 净化落缺省（无报错）");
+  } finally {
+    delete globalThis.localStorage;
+  }
+
+  /* 写穿链路（add-cosmos-drag-pan-toggle 4.1；client.jsx 源码锚点——Controller 需 React
+     context 不可在 Node 直测，与 saveNav 同款静态面断言）：引擎点击 → 净房持久化 →
+     既有 setTuning 热更回读（值恒等幂等，无第二写入通道）。 */
+  const client = readFileSync(new URL("../src/client.jsx", import.meta.url), "utf8");
+  assert.equal((client.match(/onDragPanToggle:/g) ?? []).length, 1, "开关回调注入唯一（引擎创建 opts 单点）");
+  const toggleSlice = client.slice(client.indexOf("onDragPanToggle:"), client.indexOf("onDragPanToggle:") + 420);
+  assert.ok(toggleSlice.includes("saveCosmosSettings({ dragPan: enabled === true })"), "回调净房写盘（唯一持久化通道）");
+  assert.ok(toggleSlice.includes("engine?.setTuning(merged)"), "既有 setTuning 热更回读（无需重开整页）");
+  assert.ok(toggleSlice.includes("return merged"), "回传净房后的完整设置（观测值）");
+  const attachSlice = client.slice(client.indexOf("attach(container) {"), client.indexOf("detach() {"));
+  assert.ok(attachSlice.includes("settings, // 平移调参"), "引擎创建透传设置面（dragPan 初值同源，冷启动即开启态）");
+  assert.ok(!/cosmosNavStore\.set\([^)]*dragPan/.test(client), "开关不进导航 store（无设置页控件，对照 sessionPanelOpen 先例）");
 }
 
 /* ── 每按钮「执行后跳转」（fix-cosmos-const-float-send-close 4.1/4.2/4.4）：

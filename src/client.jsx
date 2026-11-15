@@ -40,7 +40,7 @@ import { createSkinD, SKIN_D_PALETTE } from "./cosmos/skin-d.mjs";
 import { COSMOS_DEFAULT_SKIN, COSMOS_SKIN_IDS, COSMOS_SKINS, applySkinTokens, createSkin, skinCardOf } from "./cosmos/skin-registry.mjs";
 import { createCosmosEngine, ENGINE_CSS, FX_PRIORITY, isUiChromeTarget, resolveBlastCoreOf } from "./cosmos/engine.mjs";
 import { cosmosStore } from "./store.mjs";
-import { COSMOS_SETTINGS_BOUNDS, COSMOS_SETTINGS_DEFAULTS, loadCosmosSettings, saveCosmosSettings } from "./settings.mjs";
+import { COSMOS_SETTINGS_BOUNDS, COSMOS_SETTINGS_DEFAULTS, cosmosLayoutTokensOf, loadCosmosSettings, saveCosmosSettings } from "./settings.mjs";
 import { actionButtonVisible, buttonsSectionOf } from "./buttons.mjs";
 import { constButtonsSectionOf, normalizeConstButtons } from "./const-buttons.mjs";
 import { findCard, isSelectionSurface, projectPanel, projectSessionPanel, proposalKeyOf, sessionKeyOf } from "./panel.mjs";
@@ -1083,7 +1083,16 @@ function createCosmosController(ctx, notifyToast, channels) {
         onDrillChange: (info) => drillStore.set(info),
         /* 引擎选中 → React 面板（add-cosmos-selection-linkage 3.1/D6）：同款幂等镜像通道，
            「视图里选中的恒星」据此映射回对应提案卡片。 */
-        onSelectChange: (info) => engineSelectStore.set(info)
+        onSelectChange: (info) => engineSelectStore.set(info),
+        /* 拖拽平移开关写穿（add-cosmos-drag-pan-toggle 4.1/D4）：开关本体（引擎内右下按钮）
+           即设置入口——引擎已本地翻转镜像与视觉，这里只负责持久化与热更回读的唯一链路：
+           净房写盘 → `setTuning` 回读（值恒等，幂等无回环）。与 saveNav 同构，但不触达
+           导航 store（该键无设置页控件，对照 sessionPanelOpen 先例）。 */
+        onDragPanToggle: (enabled) => {
+          const merged = saveCosmosSettings({ dragPan: enabled === true });
+          engine?.setTuning(merged);
+          return merged;
+        }
       });
       if (mergedScene) engine.setScene(mergedScene, "rebuild");
       if (filterQuery.trim()) syncFilter(); // 重挂载保持当前查询（引擎落位 + 坡道续接）
@@ -2355,18 +2364,33 @@ function currentSkinId() {
 }
 
 /**
- * 缩放导航偏好投影（add-cosmos-zoom-focus-nav 3.2）：模块级 store——设置页「导航」页签
- * 的受控镜像；写入唯一链路 = 控制器 `saveNav`（saveCosmosSettings → engine.setTuning →
- * 本 store），冷启动值取持久化偏好（净房已钳制）。与皮肤 store 同构（设置页不依赖整页）。
+ * 缩放导航 + 界面尺寸偏好投影（add-cosmos-zoom-focus-nav 3.2；add-cosmos-layout-tuning
+ * 2.1 扩尺寸 12 键）：模块级 store——设置页「界面」页签的受控镜像；写入唯一链路 =
+ * 控制器 `saveNav`（saveCosmosSettings → engine.setTuning → 本 store），冷启动值取持久化
+ * 偏好（净房已钳制）。与皮肤 store 同构（设置页不依赖整页）；整页根容器订阅本 store
+ * 把尺寸投影成 CSS 变量（`cosmosLayoutTokensOf`）→ 改动即时生效。
  */
 const cosmosNavStore = createSnapshotStore(navPrefsOf(loadCosmosSettings()));
 
-/** 完整设置 → 导航三键投影（store 载荷最小形）。 */
+/** 完整设置 → 「界面」页签载荷投影（导航三键 + 界面尺寸 12 键；最小形）。 */
 function navPrefsOf(settings) {
   return {
     zoomDiveRatio: settings.zoomDiveRatio,
     zoomFlyOutRatio: settings.zoomFlyOutRatio,
-    zoomPointerFocus: settings.zoomPointerFocus
+    zoomPointerFocus: settings.zoomPointerFocus,
+    /* 界面尺寸（add-cosmos-layout-tuning D1/D2）：同页签受控镜像，页根令牌表由其派生。 */
+    sessionPanelWidth: settings.sessionPanelWidth,
+    sessionPanelHeight: settings.sessionPanelHeight,
+    constPanelWidth: settings.constPanelWidth,
+    constPanelHeight: settings.constPanelHeight,
+    addBtnSize: settings.addBtnSize,
+    hudBtnSize: settings.hudBtnSize,
+    actionBtnWidth: settings.actionBtnWidth,
+    actionBtnHeight: settings.actionBtnHeight,
+    constActionHeight: settings.constActionHeight,
+    searchWidth: settings.searchWidth,
+    searchHeight: settings.searchHeight,
+    wsTitleSize: settings.wsTitleSize
   };
 }
 
@@ -2769,6 +2793,13 @@ function CosmosPage(props) {
     applySkinTokens(frameRef.current, skinId);
   }, [skinId]);
 
+  /* 界面尺寸令牌（add-cosmos-layout-tuning 2.1/D1）：与皮肤令牌同址（整页根容器），
+     数据源 = 「界面」页签受控镜像（cosmosNavStore）——设置里改尺寸 → 本组件重渲染 →
+     内联 CSS 变量更新 → 引擎 CSS 与整页 CSS 同一帧生效（无需重开/刷新）。
+     纯函数 `cosmosLayoutTokensOf` 负责设置值 → 变量表（含 0 = 自适应语义）。 */
+  const navPrefs = useSyncExternalStore(cosmosNavStore.subscribe, cosmosNavStore.getSnapshot);
+  const layoutTokens = cosmosLayoutTokensOf(navPrefs);
+
   /* 引擎挂载：页开即建，页关即毁（Canvas 尺寸随 overlay 容器）。 */
   useEffect(() => {
     const controller = controllerRef.current;
@@ -2865,7 +2896,11 @@ function CosmosPage(props) {
            --cos-actions-h → 面板底部让位（面板不与动作条重叠）；
            --cos-toast-bottom → 引擎 toast 上移到动作条上缘之上（MUST NOT 被遮挡）。 */
         "--cos-actions-h": actionsHeight + "px",
-        "--cos-toast-bottom": (actionsHeight > 0 ? actionsHeight + 32 : 24) + "px"
+        "--cos-toast-bottom": (actionsHeight > 0 ? actionsHeight + 32 : 24) + "px",
+        /* 界面尺寸令牌（add-cosmos-layout-tuning D1）：12 个 `--cos-*` 变量，含默认
+           fallback 双保险（令牌缺席时引擎/整页 CSS 回落现值）。展开在最后 → 尺寸键
+           覆盖同名前缀冲突（本组前缀均不与既有令牌重名）。 */
+        ...layoutTokens
       }}
       data-plugin-anchor="dsh-v-cosmos:page"
       onClick={(event) => {
@@ -3059,7 +3094,7 @@ ${ENGINE_CSS}
       风格 D 现值，令牌缺失不裸奔）；令牌由整页根容器 applySkinTokens 单点下发。
       z 序高于引擎覆盖层（.cos-overlay z=10 / toast z=30）与搜索带（z=40）；钻取态不隐藏。 ── */
 .cos-add-btn{position:absolute;left:16px;bottom:16px;z-index:45;box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;gap:0;
-  width:44px;height:44px;padding:0;cursor:pointer;color:var(--cos-accent-ink,#ffe3b8);background:var(--cos-glass,rgba(8,8,16,.72));border:1px solid var(--cos-line,rgba(255,210,140,.35));
+  width:var(--cos-add-btn-size, 44px);height:var(--cos-add-btn-size, 44px);padding:0;cursor:pointer;color:var(--cos-accent-ink,#ffe3b8);background:var(--cos-glass,rgba(8,8,16,.72));border:1px solid var(--cos-line,rgba(255,210,140,.35));
   font-family:inherit;font-size:12px;letter-spacing:2px;line-height:1.2;pointer-events:auto}
 .cos-add-btn::before,.cos-add-btn::after{content:'';position:absolute;width:8px;height:8px;pointer-events:none}
 .cos-add-btn::before{top:-1px;left:-1px;border-top:2px solid var(--cos-line-strong,#ffd28a);border-left:2px solid var(--cos-line-strong,#ffd28a)}
@@ -3071,7 +3106,7 @@ ${ENGINE_CSS}
 /* ── 搜索过滤（add-cosmos-search-filter 3.5）：风格 D HUD 语言（暖金描边/角标）；
       3.1：同上令牌化（fallback = 风格 D 现值）。 ── */
 .cos-search{position:absolute;top:12px;left:50%;transform:translateX(-50%);z-index:40;box-sizing:border-box;display:flex;align-items:center;gap:6px;
-  width:min(320px,34vw);min-width:180px;padding:3px 6px 3px 10px;background:var(--cos-glass,rgba(8,8,16,.72));border:1px solid var(--cos-line,rgba(255,210,140,.35));pointer-events:auto}
+  width:min(var(--cos-search-w, 320px), 34vw);min-width:180px;min-height:var(--cos-search-h, 0);padding:3px 6px 3px 10px;background:var(--cos-glass,rgba(8,8,16,.72));border:1px solid var(--cos-line,rgba(255,210,140,.35));pointer-events:auto}
 .cos-search::before,.cos-search::after{content:'';position:absolute;width:8px;height:8px;pointer-events:none}
 .cos-search::before{top:-1px;left:-1px;border-top:2px solid var(--cos-line-strong,#ffd28a);border-left:2px solid var(--cos-line-strong,#ffd28a)}
 .cos-search::after{bottom:-1px;right:-1px;border-bottom:2px solid var(--cos-line-strong,#ffd28a);border-right:2px solid var(--cos-line-strong,#ffd28a)}
@@ -3092,7 +3127,7 @@ ${ENGINE_CSS}
       与搜索框的避让：面板左缘 = 页宽 - 188px、搜索带右缘 = 50% + min(160px,17vw)，视口
       <~570px 开始相交（与左缘口径镜像对称，断点取值不变）→ 取 640px 为断点整体下移到
       搜索带之下（留 70px 余量）。 ── */
-.dsh-cosmos-panel{position:absolute;right:0;top:12px;bottom:calc(var(--cos-actions-h,0px) + 72px);width:187px;z-index:42;
+.dsh-cosmos-panel{position:absolute;right:0;top:12px;bottom:calc(var(--cos-actions-h,0px) + 72px);width:var(--cos-const-panel-w, 187px);max-height:var(--cos-const-panel-h, none);z-index:42;
   box-sizing:border-box;display:flex;flex-direction:column;color:var(--cos-ink,#ffe9cf);background:var(--cos-panel-soft,rgba(8,8,16,.62));
   border:1px solid rgb(var(--cos-accent-rgb,255 210 140) / .28);border-right:none;pointer-events:auto}
 .dsh-cosmos-panel[data-drill=true]{top:64px}
@@ -3153,7 +3188,7 @@ ${ENGINE_CSS}
       状态色两级级联：宿主语义 alias 优先（--dsw-alias-state-warn-primary / -success-primary，
       spike 实证清单名），皮肤令牌兜底（--cos-waiting / --cos-done，随当前皮肤）。loader
       色走 accent 系令牌。 ── */
-.dsh-cosmos-sessions{position:absolute;left:0;top:12px;bottom:calc(var(--cos-actions-h,0px) + 72px);width:260px;z-index:42;
+.dsh-cosmos-sessions{position:absolute;left:0;top:12px;bottom:calc(var(--cos-actions-h,0px) + 72px);width:var(--cos-session-w, 260px);max-height:var(--cos-session-h, none);z-index:42;
   box-sizing:border-box;display:flex;flex-direction:column;color:var(--cos-ink,#ffe9cf);background:var(--cos-panel-soft,rgba(8,8,16,.62));
   border:1px solid rgb(var(--cos-accent-rgb,255 210 140) / .28);border-left:none;pointer-events:auto}
 /* 折叠态 = 贴左缘竖向窄条（约 48px、整列高度；用户图像修订）：标题/计数隐藏，
@@ -3251,7 +3286,7 @@ ${ENGINE_CSS}
   padding:6px 8px;border-top:1px solid rgb(var(--cos-accent-rgb,255 210 140) / .28);background:var(--cos-card-bg,rgba(10,10,20,.55))}
 .dsh-cosmos-const-actions::after{content:'';position:absolute;left:-1px;bottom:-1px;width:8px;height:8px;
   border-bottom:2px solid var(--cos-line-strong,#ffd28a);border-left:2px solid var(--cos-line-strong,#ffd28a);pointer-events:none}
-.dsh-cosmos-const-action{flex:1 1 0;box-sizing:border-box;min-width:0;min-height:40px;padding:4px 6px;
+.dsh-cosmos-const-action{flex:1 1 0;box-sizing:border-box;min-width:0;min-height:var(--cos-const-action-h, 40px);padding:4px 6px;
   display:flex;align-items:center;justify-content:center;font:inherit;font-size:11px;letter-spacing:.5px;
   color:var(--dsw-alias-label-primary,var(--cos-accent-ink,#ffe3b8));
   background:var(--dsw-alias-interactive-bg-hover,rgb(var(--cos-accent-rgb,255 210 140) / .08));
@@ -3321,14 +3356,17 @@ ${ENGINE_CSS}
 .dsh-cosmos-const-float-send:hover{filter:brightness(1.08)}
 .dsh-cosmos-const-float-send:focus-visible,.dsh-cosmos-const-float-close:focus-visible{outline:1px solid rgb(var(--cos-accent-rgb,255 210 140) / .85);outline-offset:2px}
 /* ── 动作按钮条（4.1）：正下方居中、一行 8 个等宽、自动换行（≤4 行）；左右安全边距
-      避开左下「＋」与右下「回到银河」；触屏目标 ≥40px。滚轮缩放由页面 ref 转发。 ── */
+      避开左下「＋」与右下 HUD 按钮（add-cosmos-layout-tuning D4：右缘为「回到银河 +
+      拖拽平移」双按钮横排，边距按两簇较宽者与尺寸键派生——不再是只够单列的写死值）；
+      触屏目标 ≥40px。滚轮缩放由页面 ref 转发。 ── */
 .dsh-cosmos-actions{position:absolute;left:50%;bottom:16px;transform:translateX(-50%);z-index:43;box-sizing:border-box;
   display:grid;grid-template-columns:repeat(var(--cos-cols,8),minmax(0,1fr));gap:6px;
-  width:min(calc(100% - 152px),calc((var(--cos-cols,8)) * 112px + (var(--cos-cols,8) - 1) * 6px));
+  width:min(calc(100% - (2 * max(var(--cos-add-btn-size, 44px), calc(2 * var(--cos-hud-btn-size, 44px) + 8px)) + 56px)),
+    calc((var(--cos-cols,8)) * var(--cos-action-btn-w, 112px) + (var(--cos-cols,8) - 1) * 6px));
   padding:6px 8px;background:var(--cos-panel-soft,rgba(8,8,16,.62));border:1px solid rgb(var(--cos-accent-rgb,255 210 140) / .28);pointer-events:auto}
 .dsh-cosmos-actions::before{content:'';position:absolute;left:-1px;bottom:-1px;width:8px;height:8px;
   border-bottom:2px solid var(--cos-line-strong,#ffd28a);border-left:2px solid var(--cos-line-strong,#ffd28a);pointer-events:none}
-.dsh-cosmos-action{box-sizing:border-box;min-height:40px;padding:6px 8px;display:flex;align-items:center;justify-content:center;
+.dsh-cosmos-action{box-sizing:border-box;min-height:var(--cos-action-btn-h, 40px);padding:6px 8px;display:flex;align-items:center;justify-content:center;
   font:inherit;font-size:12px;letter-spacing:.5px;color:var(--cos-accent-ink,#ffe3b8);background:rgb(var(--cos-accent-rgb,255 210 140) / .08);
   border:1px solid rgb(var(--cos-accent-rgb,255 210 140) / .4);cursor:pointer;transition:background .15s,border-color .15s,opacity .15s}
 .dsh-cosmos-action:hover:not(:disabled){background:rgb(var(--cos-accent-rgb,255 210 140) / .2);border-color:rgb(var(--cos-accent-rgb,255 210 140) / .85)}
@@ -3858,7 +3896,7 @@ export function apply(ctx) {
         name: SETTINGS_TAB_SLOT,
         id: "nav",
         order: 3,
-        label: () => sectionT("cosmos.settings.tabNav"),
+        label: () => sectionT("cosmos.settings.tabInterface"),
         locale: NS,
         inject: () => ({ nav: navFace, selectHealth: selectHealthFace })
       },
@@ -4020,7 +4058,7 @@ const DICT = {
     "cosmos.settings.tabActions": "快捷动作",
     "cosmos.settings.tabConstActions": "星座动作",
     "cosmos.settings.tabSkins": "皮肤",
-    "cosmos.settings.tabNav": "导航",
+    "cosmos.settings.tabInterface": "界面",
     "cosmos.settings.title": "Cosmos",
     "cosmos.settings.intro": "两套动作按钮：提案动作在 Cosmos 整页选中提案后，一键把「提示词 + @提案目录」发进该提案所属工作区的新会话；星座动作在钻取某星座时，把纯提示词（不含 @引用）发进当前星座对应工作区的新会话——勾选自动发送则点击即发；未勾选时按「发送前编辑」设置分流：浮窗补写（缺省，星空保持），或跳转会话页由原生输入区承载。",
     "cosmos.settings.tabsAria": "Cosmos 设置分区",
@@ -4103,10 +4141,25 @@ const DICT = {
     "cosmos.settings.navFocusAria": "指针聚焦缩放开关",
     "cosmos.settings.navFocusHint": "缩放以指针位置为焦点逐步聚焦（关闭后回落屏幕中心缩放）。",
     "cosmos.settings.navInstant": "改动立即生效并保存",
+    "cosmos.settings.sizeGroup": "界面尺寸",
+    "cosmos.settings.sizeGroupHint": "像素值，改动立即生效并保存；面板与搜索框的高度 0 = 自适应。",
+    "cosmos.settings.sizeSessionW": "会话列表宽",
+    "cosmos.settings.sizeSessionH": "会话列表高",
+    "cosmos.settings.sizeConstW": "星座列表宽",
+    "cosmos.settings.sizeConstH": "星座列表高",
+    "cosmos.settings.sizeAddBtn": "新增按钮边长",
+    "cosmos.settings.sizeHudBtn": "右下按钮边长",
+    "cosmos.settings.sizeActionW": "动作条按钮宽",
+    "cosmos.settings.sizeActionH": "动作条按钮高",
+    "cosmos.settings.sizeConstActionH": "星座动作按钮高",
+    "cosmos.settings.sizeSearchW": "搜索框宽",
+    "cosmos.settings.sizeSearchH": "搜索框高",
+    "cosmos.settings.sizeWsTitle": "星座标题字号",
+    "cosmos.settings.sizeAuto": "0 = 自适应",
     "cosmos.settings.skinUnavailable": "皮肤选择暂不可用：插件整页未就绪（刷新页面后重试）。",
-    "cosmos.settings.navUnavailable": "导航设置暂不可用：插件整页未就绪（刷新页面后重试）。",
+    "cosmos.settings.navUnavailable": "界面设置暂不可用：插件整页未就绪（刷新页面后重试）。",
     "cosmos.settings.skinNotApplied": "皮肤选择未生效：插件整页控制器缺失，请重试或刷新页面后重新选择。",
-    "cosmos.settings.navNotApplied": "导航设置未生效：插件整页控制器缺失，请重试或刷新页面后重新调整。",
+    "cosmos.settings.navNotApplied": "界面设置未生效：插件整页控制器缺失，请重试或刷新页面后重新调整。",
     "cosmos.skin.deepspace.name": "深空银河",
     "cosmos.skin.deepspace.ref": "现风格 D（视觉回归基线）",
     "cosmos.skin.rosepine.name": "星图玫瑰松",
@@ -4215,7 +4268,7 @@ const DICT = {
     "cosmos.settings.tabActions": "Quick actions",
     "cosmos.settings.tabConstActions": "Constellation actions",
     "cosmos.settings.tabSkins": "Skins",
-    "cosmos.settings.tabNav": "Navigation",
+    "cosmos.settings.tabInterface": "Interface",
     "cosmos.settings.title": "Cosmos",
     "cosmos.settings.intro": "Two action families: proposal actions send \"prompt + @proposal directory\" into a new session of the selected proposal's workspace; constellation actions send a plain prompt (no @references) into the current constellation's workspace — with auto-send the click fires immediately; otherwise \"pre-send editing\" decides: a floating native composer window (default; the galaxy stays visible), or the legacy floating composer for edits.",
     "cosmos.settings.tabsAria": "Cosmos settings tabs",
@@ -4298,10 +4351,25 @@ const DICT = {
     "cosmos.settings.navFocusAria": "Pointer-focused zoom toggle",
     "cosmos.settings.navFocusHint": "Zoom gradually focuses on the pointer position (turn off to zoom around the screen center).",
     "cosmos.settings.navInstant": "Applies and saves immediately",
+    "cosmos.settings.sizeGroup": "Layout sizes",
+    "cosmos.settings.sizeGroupHint": "Pixel values; apply and save immediately. Height 0 = auto for panels and the search box.",
+    "cosmos.settings.sizeSessionW": "Session list width",
+    "cosmos.settings.sizeSessionH": "Session list height",
+    "cosmos.settings.sizeConstW": "Constellation list width",
+    "cosmos.settings.sizeConstH": "Constellation list height",
+    "cosmos.settings.sizeAddBtn": "Add button size",
+    "cosmos.settings.sizeHudBtn": "Bottom-right button size",
+    "cosmos.settings.sizeActionW": "Action button width",
+    "cosmos.settings.sizeActionH": "Action button height",
+    "cosmos.settings.sizeConstActionH": "Constellation action height",
+    "cosmos.settings.sizeSearchW": "Search box width",
+    "cosmos.settings.sizeSearchH": "Search box height",
+    "cosmos.settings.sizeWsTitle": "Constellation title size",
+    "cosmos.settings.sizeAuto": "0 = auto",
     "cosmos.settings.skinUnavailable": "Skin selection is unavailable: the plugin page is not ready (reload the page and retry).",
-    "cosmos.settings.navUnavailable": "Navigation settings are unavailable: the plugin page is not ready (reload the page and retry).",
+    "cosmos.settings.navUnavailable": "Interface settings are unavailable: the plugin page is not ready (reload the page and retry).",
     "cosmos.settings.skinNotApplied": "Skin selection did not apply: the plugin page controller is missing. Retry, or reload the page and select again.",
-    "cosmos.settings.navNotApplied": "Navigation change did not apply: the plugin page controller is missing. Retry, or reload the page and adjust again.",
+    "cosmos.settings.navNotApplied": "Interface change did not apply: the plugin page controller is missing. Retry, or reload the page and adjust again.",
     "cosmos.skin.deepspace.name": "Deep Space",
     "cosmos.skin.deepspace.ref": "Current style D (visual regression baseline)",
     "cosmos.skin.rosepine.name": "Rosé Pine",

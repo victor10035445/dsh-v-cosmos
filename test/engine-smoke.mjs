@@ -5,10 +5,10 @@
  */
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { createCosmosEngine, ENGINE_CSS, panBasis, panCameraTarget, panCameraTargetByDrag, PAN_SPEED, PAN_SHIFT_BOOST, PAN_DRAG_FACTOR, SESSION_OPEN_KEY, makeNova, stepNovae, buildScenePure, FX_PRIORITY, FX_NOVA_DUR, FX_NOVA_PROTO_DUR, BOOT_DUR, isEditableTarget, boundingSphereOf, fitCameraOf, FILTER_RAMP_DUR, FILTER_SHIFT_DUR, FILTER_FIT_DUR, FILTER_FIT_MARGIN, WS_SHIFT_DUR, WS_BIRTH_HL_DUR, GESTURE_SUPPRESS_MS, zoomSwitchVerdict, zoomFocusTargetOf, canvasPointOf, constellationBoundROf, DIVE_REF, SWITCH_COOLDOWN_MS, CENTER_GATE_RATIO, DIVE_SAFE_MARGIN, FLYOUT_DIST_FLOOR_MULT, COMET_WANDER_R, STAR_FOCUS_DIST, STAR_FOCUS_DUR, SHOCK_SPEED, SHOCK_HOLD_MIN, SHOCK_HOLD_MAX, SHOCK_KICK_DUR, SHOCK_GLIDE_DUR, SHOCK_TOTAL_MAX, shockHitOf, shockEjectionAt, shockTotalDurOf, adoptTrailAcrossKinds, resolveBlastCoreOf, CAPTURE_DUR, COMET_WANDER_AMP, COMET_WANDER_FREQ, cometHeadingAt, orbitPointAt, orbitTangentAt, captureRingPointAt, capturePoseAt } from "../src/cosmos/engine.mjs";
+import { createCosmosEngine, ENGINE_CSS, panBasis, panCameraTarget, panCameraTargetByDrag, PAN_SPEED, PAN_SHIFT_BOOST, PAN_DRAG_FACTOR, SESSION_OPEN_KEY, makeNova, stepNovae, buildScenePure, FX_PRIORITY, FX_NOVA_DUR, FX_NOVA_PROTO_DUR, BOOT_DUR, isEditableTarget, boundingSphereOf, fitCameraOf, FILTER_RAMP_DUR, FILTER_SHIFT_DUR, FILTER_FIT_DUR, FILTER_FIT_MARGIN, WS_SHIFT_DUR, WS_BIRTH_HL_DUR, GESTURE_SUPPRESS_MS, zoomSwitchVerdict, zoomFocusTargetOf, canvasPointOf, constellationBoundROf, DIVE_REF, SWITCH_COOLDOWN_MS, CENTER_GATE_RATIO, DIVE_SAFE_MARGIN, FLYOUT_DIST_FLOOR_MULT, COMET_WANDER_R, STAR_FOCUS_DIST, STAR_FOCUS_DUR, SHOCK_SPEED, SHOCK_HOLD_MIN, SHOCK_HOLD_MAX, SHOCK_KICK_DUR, SHOCK_GLIDE_DUR, SHOCK_TOTAL_MAX, shockHitOf, shockEjectionAt, shockTotalDurOf, adoptTrailAcrossKinds, resolveBlastCoreOf, CAPTURE_DUR, COMET_WANDER_AMP, COMET_WANDER_FREQ, cometHeadingAt, orbitPointAt, orbitTangentAt, captureRingPointAt, capturePoseAt, TIP_GAP, TIP_LINE, tipLeaderOf, tipLineColorOf } from "../src/cosmos/engine.mjs";
 import { createSkinD, createSkinDeepspace, SKIN_D_PALETTE } from "../src/cosmos/skin-d.mjs";
-import { COSMOS_SKIN_IDS, createSkin } from "../src/cosmos/skin-registry.mjs";
-import { COSMOS_SETTINGS_DEFAULTS, COSMOS_SETTINGS_BOUNDS, COSMOS_SETTINGS_VERSION, sanitizeCosmosSettings, loadCosmosSettings, saveCosmosSettings } from "../src/settings.mjs";
+import { COSMOS_SKINS, COSMOS_SKIN_IDS, createSkin } from "../src/cosmos/skin-registry.mjs";
+import { COSMOS_SETTINGS_DEFAULTS, COSMOS_SETTINGS_BOUNDS, COSMOS_SETTINGS_VERSION, sanitizeCosmosSettings, loadCosmosSettings, saveCosmosSettings, cosmosLayoutTokensOf } from "../src/settings.mjs";
 
 /* import 时不允许触碰 document/window（引擎/皮肤均为挂载期才用 DOM）。 */
 assert.equal(typeof createCosmosEngine, "function", "engine 工厂导出");
@@ -93,10 +93,17 @@ const near = (v, w, eps = 1e-9) => Math.abs(v - w) < eps;
   /* 设置净房：缺省合并、越界落界内端点、未知键剥离 */
   assert.deepEqual(
     COSMOS_SETTINGS_DEFAULTS,
-    { panSpeed: 120, panShiftBoost: 3, skin: "rosepine", zoomDiveRatio: 100, zoomFlyOutRatio: 25, zoomPointerFocus: true, sessionPanelOpen: true, constPreflight: "float" },
-    "出厂默认（含默认皮肤 rosepine、缩放导航三键、会话面板展开态与发送前编辑分支 float——rework 星空保持优先）"
+    {
+      panSpeed: 120, panShiftBoost: 3, skin: "rosepine", zoomDiveRatio: 100, zoomFlyOutRatio: 25,
+      zoomPointerFocus: true, sessionPanelOpen: true, constPreflight: "float", dragPan: false,
+      /* 界面尺寸 12 键（add-cosmos-layout-tuning D2）：缺省 = 引入配置面之前的现值。 */
+      sessionPanelWidth: 260, sessionPanelHeight: 0, constPanelWidth: 187, constPanelHeight: 0,
+      addBtnSize: 44, hudBtnSize: 44, actionBtnWidth: 112, actionBtnHeight: 40,
+      constActionHeight: 40, searchWidth: 320, searchHeight: 0, wsTitleSize: 13
+    },
+    "出厂默认（含默认皮肤、缩放导航三键、会话面板展开态、发送前编辑分支 float、拖拽平移关闭、界面尺寸 12 键 = 现值）"
   );
-  assert.equal(COSMOS_SETTINGS_VERSION, 5, "设置面 v5（新增星座动作发送前编辑分支）");
+  assert.equal(COSMOS_SETTINGS_VERSION, 7, "设置面 v7（新增界面尺寸 12 键）");
   assert.deepEqual(sanitizeCosmosSettings({}), COSMOS_SETTINGS_DEFAULTS, "空配置 → 默认");
   assert.deepEqual(
     sanitizeCosmosSettings({ panSpeed: 999, panShiftBoost: 0, hacker: 1 }),
@@ -108,13 +115,17 @@ const near = (v, w, eps = 1e-9) => Math.abs(v - w) < eps;
       zoomFlyOutRatio: 25,
       zoomPointerFocus: true,
       sessionPanelOpen: true,
-      constPreflight: "float"
+      constPreflight: "float",
+      dragPan: false,
+      sessionPanelWidth: 260, sessionPanelHeight: 0, constPanelWidth: 187, constPanelHeight: 0,
+      addBtnSize: 44, hudBtnSize: 44, actionBtnWidth: 112, actionBtnHeight: 40,
+      constActionHeight: 40, searchWidth: 320, searchHeight: 0, wsTitleSize: 13
     },
     "越界落端点 + 未知键剥离"
   );
   assert.deepEqual(
     sanitizeCosmosSettings({ panSpeed: "not-a-number" }),
-    { panSpeed: 120, panShiftBoost: 3, skin: "rosepine", zoomDiveRatio: 100, zoomFlyOutRatio: 25, zoomPointerFocus: true, sessionPanelOpen: true, constPreflight: "float" },
+    { ...COSMOS_SETTINGS_DEFAULTS, panSpeed: 120 },
     "非法值 → 默认"
   );
   /* 页面偏好面 MUST NOT 含「跳转/新建会话」键（二者属按钮配置，见 buttons-schema 冒烟） */
@@ -127,8 +138,13 @@ const near = (v, w, eps = 1e-9) => Math.abs(v - w) < eps;
 {
   assert.deepEqual(
     Object.keys(COSMOS_SETTINGS_BOUNDS).sort(),
-    ["panShiftBoost", "panSpeed", "zoomDiveRatio", "zoomFlyOutRatio"],
-    "BOUNDS 保持纯数值形状（不混入枚举/布尔键）"
+    [
+      "actionBtnHeight", "actionBtnWidth", "addBtnSize", "constActionHeight",
+      "constPanelHeight", "constPanelWidth", "hudBtnSize", "panShiftBoost",
+      "panSpeed", "searchHeight", "searchWidth", "sessionPanelHeight",
+      "sessionPanelWidth", "wsTitleSize", "zoomDiveRatio", "zoomFlyOutRatio"
+    ],
+    "BOUNDS 保持纯数值形状（不混入枚举/布尔键；界面尺寸 12 键全为数值界）"
   );
   assert.equal(COSMOS_SKIN_IDS.length, 12, "枚举来源 = 注册表 12 套");
   /* 合法 id 透传（逐枚） */
@@ -168,10 +184,96 @@ const near = (v, w, eps = 1e-9) => Math.abs(v - w) < eps;
   }
 }
 
+/* ── 界面尺寸净房 + 布局令牌投影（add-cosmos-layout-tuning 1.3 / D1–D3）：
+   缺省 = 现值 / 合法值透传 / 越界夹取 / 非数字回落 / v6 载荷补默认 / 0 = 自适应 ── */
+{
+  const sizeKeys = [
+    "sessionPanelWidth", "sessionPanelHeight", "constPanelWidth", "constPanelHeight",
+    "addBtnSize", "hudBtnSize", "actionBtnWidth", "actionBtnHeight",
+    "constActionHeight", "searchWidth", "searchHeight", "wsTitleSize"
+  ];
+  const defaults = {
+    sessionPanelWidth: 260, sessionPanelHeight: 0, constPanelWidth: 187, constPanelHeight: 0,
+    addBtnSize: 44, hudBtnSize: 44, actionBtnWidth: 112, actionBtnHeight: 40,
+    constActionHeight: 40, searchWidth: 320, searchHeight: 0, wsTitleSize: 13
+  };
+  for (const key of sizeKeys) {
+    assert.equal(COSMOS_SETTINGS_DEFAULTS[key], defaults[key], key + " 缺省 = 现值");
+    assert.ok(Array.isArray(COSMOS_SETTINGS_BOUNDS[key]) && COSMOS_SETTINGS_BOUNDS[key].length === 2, key + " 界为纯数值 [min,max]");
+  }
+
+  /* 合法值透传（逐键取界内端点） */
+  const atMax = {};
+  for (const key of sizeKeys) atMax[key] = COSMOS_SETTINGS_BOUNDS[key][1];
+  const accepted = sanitizeCosmosSettings(atMax);
+  for (const key of sizeKeys) assert.equal(accepted[key], atMax[key], key + " 界内端点透传");
+
+  /* 越界落端点 / 非数值回落缺省（含空串、对象、null——SHALL NOT 抛错） */
+  const over = {};
+  for (const key of sizeKeys) over[key] = COSMOS_SETTINGS_BOUNDS[key][1] + 1000;
+  const clamped = sanitizeCosmosSettings(over);
+  for (const key of sizeKeys) assert.equal(clamped[key], COSMOS_SETTINGS_BOUNDS[key][1], key + " 越界落上端");
+  const bad = {};
+  for (const key of sizeKeys) bad[key] = "not-a-number";
+  assert.deepEqual(
+    sizeKeys.map((key) => sanitizeCosmosSettings(bad)[key]),
+    sizeKeys.map((key) => defaults[key]),
+    "非数字一律回落缺省（12 键）"
+  );
+
+  /* v6 旧载荷（无尺寸键）→ 逐键补默认 */
+  const v6 = {
+    panSpeed: 120, panShiftBoost: 3, skin: "rosepine", zoomDiveRatio: 100, zoomFlyOutRatio: 25,
+    zoomPointerFocus: true, sessionPanelOpen: true, constPreflight: "float", dragPan: false
+  };
+  const migrated = sanitizeCosmosSettings(v6);
+  for (const key of sizeKeys) assert.equal(migrated[key], defaults[key], key + " v6 载荷补默认");
+
+  /* 高度键 0 是合法值（= 自适应），MUST NOT 被 falsy 判定吞掉 */
+  assert.equal(sanitizeCosmosSettings({ sessionPanelHeight: 0, searchHeight: 0 }).sessionPanelHeight, 0, "高度 0 透传（自适应）");
+
+  /* 令牌投影（cosmosLayoutTokensOf，纯函数）：缺省 → 现值 px + 高度 none */
+  const tokens = cosmosLayoutTokensOf(COSMOS_SETTINGS_DEFAULTS);
+  assert.deepEqual(
+    tokens,
+    {
+      "--cos-session-w": "260px",
+      "--cos-session-h": "none",
+      "--cos-const-panel-w": "187px",
+      "--cos-const-panel-h": "none",
+      "--cos-add-btn-size": "44px",
+      "--cos-hud-btn-size": "44px",
+      "--cos-action-btn-w": "112px",
+      "--cos-action-btn-h": "40px",
+      "--cos-const-action-h": "40px",
+      "--cos-search-w": "320px",
+      "--cos-search-h": "0px",
+      "--cos-ws-title-size": "13px"
+    },
+    "缺省投影 = 现值字面量（高度 none = 不设上限）"
+  );
+  const custom = cosmosLayoutTokensOf({
+    ...COSMOS_SETTINGS_DEFAULTS,
+    sessionPanelWidth: 320, sessionPanelHeight: 600, constPanelWidth: 220,
+    hudBtnSize: 56, searchWidth: 420, searchHeight: 36, wsTitleSize: 16
+  });
+  assert.deepEqual(
+    [custom["--cos-session-w"], custom["--cos-session-h"], custom["--cos-const-panel-w"], custom["--cos-hud-btn-size"], custom["--cos-search-w"], custom["--cos-search-h"], custom["--cos-ws-title-size"]],
+    ["320px", "600px", "220px", "56px", "420px", "36px", "16px"],
+    "自定义投影逐键生效（高度 >0 → Npx）"
+  );
+  /* 缺键/非法 → 逐键回落现值（令牌层不引入第二套默认值语义） */
+  const partial = cosmosLayoutTokensOf({});
+  assert.equal(partial["--cos-session-w"], "260px", "缺键回落现值");
+  assert.equal(partial["--cos-action-btn-w"], "112px", "缺键回落现值（动作条）");
+  assert.equal(cosmosLayoutTokensOf({ wsTitleSize: "x" })["--cos-ws-title-size"], "13px", "非法值回落现值");
+}
+
 /* ── 缩放导航纯函数（add-cosmos-zoom-focus-nav 1.1/1.2/2.7）：阈值口径 / 闸门 /
    滞回下限 / 模式隔离 / 守卫 / 聚焦 target 数学 ── */
 {
   const base = { minViewportPx: 600 };
+
   /* 进入：视距等价式（ratio 100 → vz ≤ 155；60 → 258.33；140 → 110.71），方向自洽 */
   assert.equal(DIVE_REF, 155, "钻取参考视距常量");
   assert.equal(SWITCH_COOLDOWN_MS, 800, "切换冷却窗常量");
@@ -420,6 +522,8 @@ function stubCtx2d() {
     }
   });
 }
+/* canvas 2d 上下文工厂（缺省 = 桩 ctx）：引线冒烟临时换成记录型 ctx，直接数描边调用。 */
+let ctxFactory = stubCtx2d;
 function stubEl(tag) {
   const el = {
     tag, style: {}, dataset: {}, className: "", innerHTML: "", textContent: "", width: 0, height: 0,
@@ -430,7 +534,7 @@ function stubEl(tag) {
     querySelector(sel) {
       if (!el._by[sel]) {
         const child = stubEl(sel === ".cos-canvas" ? "canvas" : "div");
-        if (child.tag === "canvas") child.getContext = () => stubCtx2d();
+        if (child.tag === "canvas") child.getContext = () => ctxFactory();
         el._by[sel] = child;
       }
       return el._by[sel];
@@ -444,6 +548,24 @@ function stubEl(tag) {
   };
   return el;
 }
+/* 记录型 ctx（引线描线断言）：在桩 ctx 之上记录 stroke() 时生效的 strokeStyle，
+   其余方法与桩同形（缺省即惰性 no-op）。 */
+function recordingCtx() {
+  const rec = { strokes: [] };
+  return new Proxy({ __rec: rec }, {
+    get(target, prop) {
+      if (prop === "createLinearGradient" || prop === "createRadialGradient") return () => ({ addColorStop() {} });
+      if (prop === "__rec") return rec;
+      if (prop === "stroke") return () => rec.strokes.push(target.strokeStyle ?? null);
+      if (!(prop in target)) target[prop] = () => undefined;
+      return target[prop];
+    },
+    set(target, prop, value) {
+      target[prop] = value;
+      return true;
+    }
+  });
+}
 /* window 监听面记录（add-cosmos-search-filter 2.8：WASD 守卫需要真实派发 keydown）。 */
 const windowListeners = { keydown: [], keyup: [], blur: [], resize: [] };
 globalThis.window = {
@@ -456,7 +578,7 @@ const createdEls = [];
 globalThis.document = {
   createElement: (t) => {
     const el = stubEl(t);
-    if (t === "canvas") el.getContext = () => stubCtx2d(); // 皮肤 glowSprite 直建 canvas
+    if (t === "canvas") el.getContext = () => ctxFactory(); // 皮肤 glowSprite 直建 canvas
     createdEls.push(el);
     return el;
   },
@@ -1835,7 +1957,10 @@ const EXPECTED_FIT_DIST = FILTER_FIT_MARGIN / Math.tan(Math.PI / 6) * 1.1;
   assert.equal(homeBtn.attrs["aria-label"], "回到银河", "按钮 aria-label 提供");
   assert.equal(homeBtn.attrs.title, "回到银河", "按钮 title 提供");
   assert.ok(String(homeBtn.innerHTML).includes("<svg"), "内嵌迷你星系 SVG 图标");
-  assert.ok(/\.cos-home-btn \{[^}]*width: 44px; height: 44px/.test(ENGINE_CSS), "按钮方形 44×44（触屏目标 ≥40px）");
+  assert.ok(
+    /\.cos-home-btn \{[^}]*width: var\(--cos-hud-btn-size, 44px\); height: var\(--cos-hud-btn-size, 44px\)/.test(ENGINE_CSS),
+    "按钮方形且边长经 --cos-hud-btn-size 令牌可配（缺省 44，add-cosmos-layout-tuning D2）"
+  );
   assert.ok(ENGINE_CSS.includes(".cos-home-btn::before"), "风格 D 暖金角标伪元素保留");
 
   /* 缩放死区修复（D1）：wheel 在覆盖元素（chip）上派发 → 容器级监听同样触发 */
@@ -2202,6 +2327,241 @@ const EXPECTED_FIT_DIST = FILTER_FIT_MARGIN / Math.tan(Math.PI / 6) * 1.1;
   assert.equal(eng.inspectFilter().tween, null, "平移接管 → 在途补间立即让位");
   up(33); up(32); up(31);
   assert.equal(eng.inspectInput().gesture, false, "收尾清手势");
+
+  eng.stop();
+  eng.dispose();
+}
+
+/* ── 右下「拖拽平移」开关（add-cosmos-drag-pan-toggle 2.1–2.3 / 3.1–3.3）：
+   按钮几何与 a11y / 默认关闭且旋转不变 / 开启后鼠标平移（yaw·pitch 不变）/
+   touch 仍旋转 / 笔尖同鼠标 / 补间让位 / setTuning 镜像 / 点击回调参数 /
+   aria-pressed 翻转 / 手势中切换下一 move 生效 / DOM 只建一次 ── */
+{
+  const before = createdEls.length;
+  const keydownBefore = windowListeners.keydown.length;
+  const keyupBefore = windowListeners.keyup.length;
+  const toggles = [];
+  const eng = createCosmosEngine({
+    container: stubEl("div"),
+    style: createSkinD(),
+    onDragPanToggle: (enabled) => toggles.push(enabled)
+  });
+  eng.setScene(miniScene(), "rebuild");
+  rafQ.length = 0;
+  eng.start();
+  let tNow = 90000;
+  const step = (n = 1) => { for (let i = 0; i < n; i++) { tNow += 50; stepFrame(tNow); } };
+  step(27); // 过冷启动序曲
+
+  const mine = createdEls.slice(before);
+  const rootEl = mine.find((el) => el.className === "cos-root");
+  const overlayEl = rootEl._by[".cos-overlay"];
+  const canvasEl = rootEl._by[".cos-canvas"];
+  const dragBtn = mine.find((el) => el.className === "cos-dragpan-btn");
+  const homeBtn = mine.find((el) => el.className === "cos-home-btn");
+  const fire = (el, type, ev) => { for (const fn of el.listeners[type] ?? []) fn(ev); };
+  const cam = () => eng.inspectFilter().camera;
+  const dragMouse = (from, to, pointerType = "mouse", id = 21) => {
+    fire(rootEl, "pointerdown", { pointerId: id, button: 0, clientX: from.x, clientY: from.y, pointerType, target: canvasEl, preventDefault() {} });
+    fire(rootEl, "pointermove", { pointerId: id, clientX: to.x, clientY: to.y, buttons: 1, pointerType, target: canvasEl });
+    fire(rootEl, "pointerup", { pointerId: id, button: 0, clientX: to.x, clientY: to.y, pointerType, target: canvasEl });
+  };
+  /* 期望 target：同一纯函数（三指平移）同一系数口径 */
+  const expectedPan = (snapshot, dx, dy) => {
+    const expected = { target: snapshot.target.slice(), yaw: snapshot.yaw, pitch: snapshot.pitch };
+    panCameraTargetByDrag(expected, dx, dy, snapshot.dist);
+    return expected.target;
+  };
+
+  /* 3.1/3.2 按钮形态：与 home 并存、挂在覆盖层、边长令牌、与 home 横向排列（左侧）、
+     风格 D 角标（add-cosmos-layout-tuning D4 落位修正：不再堆叠于上方） */
+  assert.ok(dragBtn && homeBtn, "拖拽平移开关与回到银河按钮并存");
+  assert.ok(overlayEl.children.indexOf(dragBtn) >= 0, "开关挂在覆盖层（与 home 同一容器）");
+  assert.equal(dragBtn.attrs["aria-label"], "拖拽平移", "aria-label 提供");
+  assert.equal(dragBtn.attrs.title, "拖拽平移", "title 提供");
+  assert.equal(dragBtn.attrs["aria-pressed"], "false", "默认关闭（aria-pressed=false）");
+  assert.ok(String(dragBtn.innerHTML).includes("<svg"), "内联四向移动图标");
+  assert.ok(
+    /\.cos-dragpan-btn \{[^}]*width: var\(--cos-hud-btn-size, 44px\); height: var\(--cos-hud-btn-size, 44px\)/.test(ENGINE_CSS),
+    "按钮方形且边长经 --cos-hud-btn-size 令牌可配（与 home 共用）"
+  );
+  assert.ok(
+    /\.cos-dragpan-btn \{[^}]*right: calc\(16px \+ var\(--cos-hud-btn-size, 44px\) \+ 8px\); bottom: 16px/.test(ENGINE_CSS),
+    "横向排列于 home 左侧（right = 16 + 边长 + 8）且同 bottom:16 基线"
+  );
+  assert.ok(!/\.cos-dragpan-btn \{[^}]*bottom: 68px/.test(ENGINE_CSS), "旧「堆叠于 home 上方」（bottom:68）落位已移除");
+  assert.ok(/\.cos-home-btn \{[^}]*right: 16px; bottom: 16px/.test(ENGINE_CSS), "home 仍在右缘最外（right:16 / bottom:16）");
+  assert.ok(ENGINE_CSS.includes(".cos-dragpan-btn::before"), "风格 D 暖金角标伪元素复用");
+  assert.ok(ENGINE_CSS.includes(".cos-dragpan-btn:hover"), "hover 态样式");
+  assert.ok(ENGINE_CSS.includes(".cos-dragpan-btn:focus-visible"), "focus-visible 态样式");
+  assert.ok(ENGINE_CSS.includes('.cos-dragpan-btn[aria-pressed="true"]'), "开启态点亮样式（aria-pressed 驱动）");
+
+  /* 2.3 关闭态（缺省）：鼠标拖拽 = yaw/pitch 旋转，target 不动（现状零变化） */
+  const camOff = cam();
+  dragMouse({ x: 400, y: 300 }, { x: 460, y: 330 });
+  assert.notEqual(cam().yaw, camOff.yaw, "关闭态鼠标拖拽旋转 yaw");
+  assert.notEqual(cam().pitch, camOff.pitch, "关闭态鼠标拖拽旋转 pitch");
+  assert.deepEqual(cam().target, camOff.target, "关闭态 target 不动（仍是旋转语义）");
+
+  /* 3.1/3.3 点击开启：回调参数 true + aria-pressed 翻转（DOM 不重建） */
+  fire(dragBtn, "click", {});
+  assert.deepEqual(toggles, [true], "点击回调携带目标态 enabled=true");
+  assert.equal(dragBtn.attrs["aria-pressed"], "true", "开启态 aria-pressed=true（点亮样式依据）");
+
+  /* 2.2/2.3 开启态：鼠标拖拽 = 平移（抓取式映射），yaw/pitch 不变，target 与纯函数逐位一致 */
+  const camOn = cam();
+  dragMouse({ x: 300, y: 250 }, { x: 340, y: 280 }, "mouse", 22);
+  assert.equal(cam().yaw, camOn.yaw, "开启态鼠标拖拽 MUST NOT 改 yaw");
+  assert.equal(cam().pitch, camOn.pitch, "开启态鼠标拖拽 MUST NOT 改 pitch");
+  const expectedMouse = expectedPan(camOn, 40, 30);
+  assert.ok(
+    near(cam().target[0], expectedMouse[0]) && near(cam().target[1], expectedMouse[1]) && near(cam().target[2], expectedMouse[2]),
+    "鼠标位移按三指平移同一纯函数/同一系数映射（星空随手移动）"
+  );
+
+  /* 逐位等于「与三指平移同一函数同一系数口径」：把同一位移喂给三指手势，target 增量一致 */
+  const camBeforeThree = cam();
+  fire(rootEl, "pointerdown", { pointerId: 31, button: 0, clientX: 100, clientY: 300, target: canvasEl, preventDefault() {} });
+  fire(rootEl, "pointerdown", { pointerId: 32, button: 0, clientX: 200, clientY: 300, target: canvasEl, preventDefault() {} });
+  fire(rootEl, "pointerdown", { pointerId: 33, button: 0, clientX: 300, clientY: 300, target: canvasEl, preventDefault() {} });
+  fire(rootEl, "pointermove", { pointerId: 33, clientX: 340, clientY: 330, buttons: 1, target: canvasEl });
+  const expectedThree = expectedPan(camBeforeThree, 40 / 3, 30 / 3);
+  assert.ok(
+    near(cam().target[0], expectedThree[0]) && near(cam().target[1], expectedThree[1]),
+    "三指平移与鼠标平移共用 panCameraTargetByDrag（系数口径同源，无第二套数学）"
+  );
+  fire(rootEl, "pointerup", { pointerId: 33, button: 0, target: canvasEl });
+  fire(rootEl, "pointerup", { pointerId: 32, button: 0, target: canvasEl });
+  fire(rootEl, "pointerup", { pointerId: 31, button: 0, target: canvasEl });
+  fakeNow += GESTURE_SUPPRESS_MS + 1; // 离开手势抑制窗
+
+  /* 触屏语义不受开关影响（D1）：开关开启时 touch 单指仍旋转，target 不动 */
+  const camTouch = cam();
+  dragMouse({ x: 300, y: 250 }, { x: 360, y: 280 }, "touch", 23);
+  assert.notEqual(cam().yaw, camTouch.yaw, "开启态触屏单指仍旋转 yaw");
+  assert.deepEqual(cam().target, camTouch.target, "开启态触屏单指 MUST NOT 平移 target");
+
+  /* 笔尖同鼠标（作用域 mouse|pen） */
+  const camPen = cam();
+  dragMouse({ x: 300, y: 250 }, { x: 320, y: 260 }, "pen", 24);
+  assert.equal(cam().yaw, camPen.yaw, "开启态笔尖拖拽不改 yaw");
+  assert.deepEqual(cam().target, expectedPan(camPen, 20, 10), "笔尖拖拽 = 平移（与鼠标同分支）");
+
+  /* 2.3 位移返回 true → 补间让位：在途补间立即被平移输入接管 */
+  assert.equal(eng.diveToWs("ws1"), true, "启动钻取补间");
+  assert.ok(eng.inspectFilter().tween, "补间在途");
+  fire(rootEl, "pointerdown", { pointerId: 25, button: 0, clientX: 300, clientY: 300, pointerType: "mouse", target: canvasEl, preventDefault() {} });
+  fire(rootEl, "pointermove", { pointerId: 25, clientX: 340, clientY: 300, buttons: 1, pointerType: "mouse", target: canvasEl });
+  assert.equal(eng.inspectFilter().tween, null, "平移拖拽接管 → 在途补间立即让位（与旋转/WASD/滚轮同语义）");
+  fire(rootEl, "pointerup", { pointerId: 25, button: 0, clientX: 340, clientY: 300, pointerType: "mouse", target: canvasEl });
+  fakeNow += 1400;
+  step(1);
+
+  /* 抬指不拾取（wasDrag 抑制）：越过阈值后抬指不触发 dive */
+  const camPick = cam();
+  const dives0 = eng.inspectInput().dives;
+  dragMouse({ x: 400, y: 300 }, { x: 460, y: 340 }, "mouse", 26);
+  assert.equal(eng.inspectInput().dives, dives0, "平移拖拽越阈抬指不拾取（wasDrag 抑制，无新增误触面）");
+  assert.equal(cam().yaw, camPick.yaw, "拖拽期间无旋转副作用");
+
+  /* 手势中切换开关：自下一个 move 事件起生效（增量模型无基准重锚） */
+  fire(rootEl, "pointerdown", { pointerId: 27, button: 0, clientX: 300, clientY: 300, pointerType: "mouse", target: canvasEl, preventDefault() {} });
+  fire(rootEl, "pointermove", { pointerId: 27, clientX: 340, clientY: 300, buttons: 1, pointerType: "mouse", target: canvasEl }); // 仍平移
+  const camMid = cam();
+  fire(dragBtn, "click", {}); // 手势进行中翻转为关闭
+  assert.deepEqual(toggles, [true, false], "手势中点击 → 回调携带目标态 false");
+  assert.equal(dragBtn.attrs["aria-pressed"], "false", "视觉随翻转回落未点亮");
+  fire(rootEl, "pointermove", { pointerId: 27, clientX: 380, clientY: 300, buttons: 1, pointerType: "mouse", target: canvasEl });
+  assert.notEqual(cam().yaw, camMid.yaw, "翻转关闭后自下一个 move 起回到旋转（无跳变、无重锚）");
+  assert.deepEqual(cam().target, camMid.target, "旋转分支不改 target（开关值按每 move 当下值判定）");
+  fire(rootEl, "pointerup", { pointerId: 27, button: 0, clientX: 380, clientY: 300, pointerType: "mouse", target: canvasEl });
+
+  /* 2.1/4.1 setTuning 镜像（部分写 + 幂等）：布尔才更新，恒等不触达；视觉跟随权威 */
+  eng.setTuning({ dragPan: true });
+  assert.equal(dragBtn.attrs["aria-pressed"], "true", "setTuning 热更 → 镜像与视觉同步点亮");
+  const camTuned = cam();
+  dragMouse({ x: 300, y: 250 }, { x: 330, y: 265 }, "mouse", 28);
+  assert.deepEqual(cam().target, expectedPan(camTuned, 30, 15), "热更后鼠标拖拽即平移（无需重开整页）");
+  eng.setTuning({ dragPan: true }); // 幂等：值未变
+  assert.equal(dragBtn.attrs["aria-pressed"], "true", "同值热更幂等（状态不抖）");
+  eng.setTuning({ dragPan: "yes" }); // 非布尔 → 部分写忽略
+  assert.equal(dragBtn.attrs["aria-pressed"], "true", "非布尔入参不更新镜像（非法值不降级）");
+  assert.equal(eng.getTuning().dragPan, undefined, "开关镜像是引擎级状态：MUST NOT 进 getTuning 返回值");
+
+  /* 4.2 既有导航通道零回归（开关**开启态**下逐通道验证 spec「既有导航通道零回归」）：
+     开关只分叉「鼠标/笔尖单指拖拽」一条路径，其余通道数学与入口均未被触碰。 */
+  const distWheel = cam().dist;
+  fire(rootEl, "wheel", { preventDefault() {}, deltaY: 120, clientX: 400, clientY: 300, target: canvasEl });
+  assert.ok(cam().dist > distWheel, "开启态滚轮缩放照常（含指针聚焦路径）");
+
+  const distPinch = cam().dist;
+  fire(rootEl, "pointerdown", { pointerId: 51, button: 0, clientX: 200, clientY: 300, pointerType: "touch", target: canvasEl, preventDefault() {} });
+  fire(rootEl, "pointerdown", { pointerId: 52, button: 0, clientX: 300, clientY: 300, pointerType: "touch", target: canvasEl, preventDefault() {} });
+  fire(rootEl, "pointermove", { pointerId: 52, clientX: 400, clientY: 300, buttons: 1, pointerType: "touch", target: canvasEl });
+  assert.ok(cam().dist < distPinch, "开启态双指捏合照常（指距张开 → 放大）");
+  fire(rootEl, "pointerup", { pointerId: 52, button: 0, target: canvasEl });
+  fire(rootEl, "pointerup", { pointerId: 51, button: 0, target: canvasEl });
+  fakeNow += GESTURE_SUPPRESS_MS + 1;
+
+  const camW = cam();
+  for (const fn of windowListeners.keydown.slice(keydownBefore)) {
+    fn({ code: "KeyW", ctrlKey: false, metaKey: false, altKey: false, isComposing: false, preventDefault() {} });
+  }
+  step(2);
+  for (const fn of windowListeners.keyup.slice(keyupBefore)) fn({ code: "KeyW" });
+  assert.notDeepEqual(cam().target, camW.target, "开启态 WASD 平移照常（窗口键面与帧积分零改动）");
+  assert.equal(cam().yaw, camW.yaw, "WASD 平移不改 yaw（既有语义）");
+
+  /* 3.3 DOM 只建一次：钻取往返 / 场景重建后仍是同一实例（未参与逐帧重建） */
+  eng.setScene(miniScene(), "rebuild");
+  step(1);
+  eng.diveToWs("ws1");
+  fakeNow += 1400;
+  step(1);
+  eng.consumeEscape();
+  fakeNow += 1400;
+  step(1);
+  const dragBtnsAgain = createdEls.slice(before).filter((el) => el.className === "cos-dragpan-btn");
+  assert.equal(dragBtnsAgain.length, 1, "开关 DOM 全程只建一次（场景重建/钻取往返不重建）");
+  assert.equal(dragBtnsAgain[0], dragBtn, "同一实例（click 派发不被吞）");
+
+  eng.stop();
+  eng.dispose();
+}
+
+/* ── 拖拽平移开关：创建 opts 初值（持久化 true 冷启动即开启）/ 未注入回调静默 ── */
+{
+  const before = createdEls.length;
+  const eng = createCosmosEngine({
+    container: stubEl("div"),
+    style: createSkinD(),
+    settings: { dragPan: true }
+  });
+  eng.setScene(miniScene(), "rebuild");
+  rafQ.length = 0;
+  eng.start();
+  let tNow = 120000;
+  const step = (n = 1) => { for (let i = 0; i < n; i++) { tNow += 50; stepFrame(tNow); } };
+  step(27);
+
+  const mine = createdEls.slice(before);
+  const rootEl = mine.find((el) => el.className === "cos-root");
+  const canvasEl = rootEl._by[".cos-canvas"];
+  const dragBtn = mine.find((el) => el.className === "cos-dragpan-btn");
+  const fire = (el, type, ev) => { for (const fn of el.listeners[type] ?? []) fn(ev); };
+  const cam = () => eng.inspectFilter().camera;
+
+  assert.equal(dragBtn.attrs["aria-pressed"], "true", "持久化 true → 冷启动按钮即呈开启态（构建期同步 aria）");
+  const camOn = cam();
+  fire(rootEl, "pointerdown", { pointerId: 41, button: 0, clientX: 300, clientY: 250, pointerType: "mouse", target: canvasEl, preventDefault() {} });
+  fire(rootEl, "pointermove", { pointerId: 41, clientX: 330, clientY: 265, buttons: 1, pointerType: "mouse", target: canvasEl });
+  assert.equal(cam().yaw, camOn.yaw, "冷启动开启态：鼠标拖拽即平移（不改 yaw）");
+  assert.notDeepEqual(cam().target, camOn.target, "冷启动开启态：target 随拖拽移动");
+  fire(rootEl, "pointerup", { pointerId: 41, button: 0, clientX: 330, clientY: 265, pointerType: "mouse", target: canvasEl });
+
+  /* 未注入回调：点击只做本地翻转（静默 no-op，不抛错） */
+  fire(dragBtn, "click", {});
+  assert.equal(dragBtn.attrs["aria-pressed"], "false", "未注入回调仍本地翻转（不抛错）");
 
   eng.stop();
   eng.dispose();
@@ -3387,6 +3747,316 @@ function goldLiteralsOutsideVarFallback(source) {
     for (const fn of bareCard.listeners.click ?? []) fn({ target: decideBtn });
   }, "回调未注入 → 静默 no-op（同 onOpenSession 守卫）");
   bareEng.dispose();
+}
+
+/* ── 浮签引线与避让间距（polish-cosmos-tip-leader-line 1.1–1.3 / 2.1–2.3） ──
+   覆盖：避让常量下限与集中化（1.1）、引线几何纯函数（翻转/钳制/退化）、端点同源
+   （D3 唯一硬红线：DOM transform 串与引线端点 = 字面同一组数）、显隐同源（α / .on
+   谓词）、取色通道（palette.accent → 热切换随动）、卫星无引线、引线不参与拾取。 */
+
+/* A. 常量 / 几何 / 取色（纯函数级，无 DOM） */
+{
+  /* 常量块：spec 锁下限，实现集中定义便于真机校准 */
+  assert.ok(TIP_GAP.chip >= 40, "星座 chip 避让间距 ≥40（spec 下限）");
+  assert.ok(TIP_GAP.slab >= 28, "恒星名牌避让间距 ≥28（spec 下限）");
+  assert.ok(TIP_GAP.card >= 40, "信息卡避让间距（星缘起算）≥40（spec 下限）");
+  assert.ok(Object.isFrozen(TIP_GAP) && Object.isFrozen(TIP_LINE), "避让/引线常量为冻结常量块（单点校准入口）");
+  assert.ok(TIP_LINE.alphaMax > 0 && TIP_LINE.alphaMax <= 0.5, "引线 α 上限 ≤0.5（弱于浮签本体）");
+  assert.ok(TIP_LINE.tail > 0 && TIP_LINE.tail < TIP_GAP.card, "水平段最短长度 < 避让间距（45° 斜出段有横向余量）");
+  assert.ok(TIP_LINE.tick > 0 && TIP_LINE.cardFallbackH > 0 && TIP_LINE.cardFallbackW > 0, "起笔短横与卡盒兜底为正");
+  assert.ok(TIP_GAP.chip > 40 && TIP_GAP.card > 40, "用户回访：三族间距整体抬高（严格大于 spec 下限）");
+
+  /* chip：竖直单段 + 起笔短横 */
+  const chipLine = tipLeaderOf({ kind: "chip", hx: 300, hy: 200, x: 300, y: 156 });
+  assert.equal(chipLine.pts.length, 2, "chip 引线 = 单段竖直线");
+  assert.deepEqual(chipLine.pts[0], { x: 300, y: 200 }, "chip 起笔 = 星座投影中心");
+  assert.deepEqual(chipLine.pts[1], { x: 300, y: 156 }, "chip 止点 = chip 底缘");
+  assert.equal(chipLine.pts[0].x, chipLine.pts[1].x, "chip 引线竖直（x 不变）");
+  assert.deepEqual(
+    chipLine.tick,
+    { x: 300 - TIP_LINE.tick, y: 200, x2: 300 + TIP_LINE.tick, y2: 200 },
+    "起笔端短横 = 锚点处 2×tick 横线（锚点标记）"
+  );
+
+  /* slab：同形竖直线，但起笔在星缘、止于名牌顶缘 */
+  const slabLineGeo = tipLeaderOf({ kind: "slab", hx: 420, hy: 310, x: 420, y: 344 });
+  assert.equal(slabLineGeo.pts.length, 2, "名牌引线 = 单段竖直线");
+  assert.equal(slabLineGeo.pts[0].y, 310, "名牌引线起笔 = 星缘下缘点");
+  assert.equal(slabLineGeo.pts[1].y, 344, "名牌引线止点 = 名牌顶缘");
+  assert.ok(slabLineGeo.tick, "名牌引线带起笔短横");
+
+  /* card：两段折线（45° 斜出 + 水平），无 tick */
+  const cardRight = tipLeaderOf({ kind: "card", hx: 520, hy: 300, x: 600, y: 330 });
+  assert.equal(cardRight.pts.length, 3, "信息卡引线 = 两段折线");
+  assert.deepEqual(cardRight.pts[0], { x: 520, y: 300 }, "折线起笔 = 星缘侧点（高度对齐星心）");
+  assert.equal(cardRight.pts[1].x, 520 + 30, "45° 斜出段：横向跨距 = 纵向落差（dy=30）");
+  assert.equal(cardRight.pts[1].y, 330, "斜出段 y 收到卡近缘中点高度");
+  assert.equal(
+    Math.abs(cardRight.pts[1].x - cardRight.pts[0].x),
+    Math.abs(cardRight.pts[1].y - cardRight.pts[0].y),
+    "斜出段为 45°（|dx| === |dy|）"
+  );
+  assert.equal(cardRight.pts[2].y, cardRight.pts[1].y, "水平段保持水平");
+  assert.equal(cardRight.pts[2].x, 600, "水平段止于卡近缘");
+  assert.ok(cardRight.pts[2].x - cardRight.pts[1].x >= TIP_LINE.tail - 1e-9, "水平段不短于 TIP_LINE.tail");
+  assert.equal(cardRight.tick, null, "折线无起笔 tick（线头方向已由折点表达）");
+  /* 翻转镜像：卡在星左侧 → 折线与水平段整体向左（同样 45°） */
+  const cardFlip = tipLeaderOf({ kind: "card", hx: 280, hy: 300, x: 200, y: 330 });
+  assert.equal(cardFlip.pts[1].x, 280 - 30, "翻转侧：45° 斜出段向左");
+  assert.ok(cardFlip.pts[2].x < cardFlip.pts[1].x, "翻转侧：水平段向左止于卡近缘");
+  /* 纵向钳制：dy 超过「间距 − tail」→ 斜出段横向跨度封顶（更陡），水平段仍水平且不短于 tail */
+  const cardClamp = tipLeaderOf({ kind: "card", hx: 520, hy: 80, x: 600, y: 200 });
+  assert.equal(cardClamp.pts[1].y, 200, "钳制侧：斜出段 y 收到（钳后）卡中点");
+  assert.equal(cardClamp.pts[1].x - cardClamp.pts[0].x, 80 - TIP_LINE.tail, "钳制侧：横向跨度封顶 = 间距 − tail");
+  assert.equal(cardClamp.pts[2].y, cardClamp.pts[1].y, "钳制侧：水平段不受 dy 影响");
+  /* 退化与防御：dy≈0 → 纯水平；间距 ≤ tail → 直连；非法坐标 → null（不画） */
+  assert.equal(tipLeaderOf({ kind: "card", hx: 300, hy: 200, x: 380, y: 200 }).pts.length, 2, "dy≈0 → 纯水平线（无折点）");
+  assert.equal(tipLeaderOf({ kind: "card", hx: 300, hy: 200, x: 308, y: 260 }).pts.length, 2, "间距 ≤ tail → 退化直连（无反向折点）");
+  assert.equal(tipLeaderOf(null), null, "空入参 → null");
+  assert.equal(tipLeaderOf({ kind: "chip", hx: NaN, hy: 0, x: 0, y: 1 }), null, "非有限坐标 → null");
+
+  /* 取色通道（D5）：12 套皮肤 accent 自注册规格单点派生，引线取色与之逐肤一致 */
+  for (const entry of COSMOS_SKINS) {
+    assert.equal(entry.instance.palette.accent, entry.base.accent, entry.id + "：palette.accent = 注册规格 base.accent（单点派生）");
+    assert.equal(tipLineColorOf(entry.instance), entry.base.accent, entry.id + "：引线取色 = 该皮肤 accent");
+  }
+  assert.equal(tipLineColorOf({ palette: { accent: "#123456" }, gold: "#ffffff" }), "#123456", "accent 优先于 gold");
+  assert.equal(tipLineColorOf({ palette: {}, gold: "#0f0f0f" }), "#0f0f0f", "缺 accent → 回落 gold（直接构造的皮肤实例）");
+  assert.equal(tipLineColorOf({ palette: { prop: { executed: "#abcdef" } } }), "#abcdef", "缺 accent/gold → 回落执行态色板色");
+  assert.equal(tipLineColorOf(null), "#ffffff", "无皮肤色板 → 中性白（MUST NOT 硬编码金色字面量）");
+  assert.equal(tipLineColorOf({ palette: { accent: "not-a-hex" }, gold: 7 }), "#ffffff", "非法取色 → 中性白");
+}
+
+/* B. 引擎集成：端点同源 / 避让间距 / 显隐同源 / 配色随动 / 拾取隔离 */
+{
+  const ctxRec = recordingCtx();
+  ctxFactory = () => ctxRec;
+  const rec = ctxRec.__rec;
+  const resetRec = () => { rec.strokes.length = 0; };
+  /* 桩皮肤：drawBody/background 零描边 → 本帧 stroke() 只可能来自引线描线 */
+  const stubStyle = (accent) => ({
+    skin: "stub-leader", useBand: false,
+    palette: {
+      prop: { proto: "#8a9bc0", created: "#9fd8ff", reviewed: "#cfe8ff", executed: "#ffe27a" },
+      sess: { idle: "#a8b8d8", busy: "#54c8ff", waiting: "#ffaa4a", "done-unread": "#5affc0", free: "#cfeaff" },
+      accent: accent
+    },
+    gold: "#ff00ff", // 与 accent 刻意不同色：证明取色走 accent 通道而非兜底
+    background() {},
+    drawBody() {}
+  });
+  const container = stubEl("div");
+  const eng = createCosmosEngine({ container, style: stubStyle("#00ff88") });
+  try {
+    const rootEl = container.children[0];
+    const overlayEl = rootEl._by[".cos-overlay"];
+    const canvasEl = rootEl._by[".cos-canvas"];
+    const cardEl = rootEl._by[".cos-card"];
+    const fire = (el, type, ev) => { for (const fn of el.listeners[type] ?? []) fn(ev); };
+    /** DOM transform 串里第一组 translate(x,y)（chip/slab/card 的定位数）。 */
+    const parseTranslate = (value) => {
+      const m = /translate\(\s*(-?[\d.]+)px,\s*(-?[\d.]+)px\s*\)/.exec(String(value));
+      return m ? { x: Number(m[1]), y: Number(m[2]) } : null;
+    };
+    /** 世界坐标 → 屏幕点（与引擎 project 同式：fov 60 / 视口 800×600 桩）。 */
+    const screenPoint = (world) => {
+      const cam = eng.getCamera();
+      const W = 800, H = 600;
+      let v = [world[0] - cam.target[0], world[1] - cam.target[1], world[2] - cam.target[2]];
+      const cy = Math.cos(-cam.yaw), sy = Math.sin(-cam.yaw);
+      v = [v[0] * cy + v[2] * sy, v[1], -v[0] * sy + v[2] * cy];
+      const cx = Math.cos(-cam.pitch), sx = Math.sin(-cam.pitch);
+      v = [v[0], v[1] * cx - v[2] * sx, v[1] * sx + v[2] * cx];
+      const f = (H * 1.1) / (2 * Math.tan(60 * Math.PI / 360));
+      const s = f / (v[2] + cam.dist);
+      return { x: W / 2 + v[0] * s, y: H / 2 - v[1] * s };
+    };
+    const tips = () => eng.inspectTipLines();
+    /* 卡盒测量口径（D5：MUST NOT 逐帧强制布局）：桩元素用计数 getter 表达真实
+       `offsetWidth/Height`（240×147 ≈ 真机恒星卡实测盒），断言只在内容签名变更时读一次。
+       卡宽同时是翻转阈值（「星缘 + 间距 + 卡宽 + 留白」）的输入。 */
+    const CARD_H = 147;
+    const CARD_HALF = CARD_H / 2;
+    const CARD_W = 240;
+    let cardHReads = 0;
+    Object.defineProperty(cardEl, "offsetHeight", {
+      configurable: true,
+      get() { cardHReads += 1; return CARD_H; }
+    });
+    Object.defineProperty(cardEl, "offsetWidth", {
+      configurable: true,
+      get() { cardHReads += 1; return CARD_W; }
+    });
+    const hoverWorld = (world, pointerId = 61) => {
+      const p = screenPoint(world);
+      fire(rootEl, "pointermove", { pointerId: pointerId, clientX: p.x, clientY: p.y, buttons: 0, target: canvasEl });
+      return p;
+    };
+    const strokeAlpha = (style) => Number(String(style).match(/,([\d.]+)\)$/)?.[1] ?? NaN);
+
+    const scene = miniScene();
+    scene.workspaces[0].planets[0].satellites = [{ id: "sat-a", state: "busy", title: "sat a" }];
+    eng.setScene(scene, "rebuild");
+    rafQ.length = 0;
+    eng.start();
+    let tNow = 60000;
+    const step1 = (n = 1) => { for (let i = 0; i < n; i++) { tNow += 50; stepFrame(tNow); } };
+    step1(27); // 过冷启动序曲
+
+    /* ① 银河态 chip：一条竖直引线，端点 = DOM transform 的同一组数（D3 硬红线） */
+    const chipEl = overlayEl.children.find((el) => String(el.className).startsWith("cos-chip"));
+    assert.ok(chipEl, "chip 已创建");
+    resetRec();
+    step1(1);
+    let lines = tips();
+    assert.equal(lines.length, 1, "银河态唯一可见浮签 = chip → 唯一引线");
+    assert.equal(lines[0].kind, "chip");
+    assert.deepEqual({ x: lines[0].x, y: lines[0].y }, parseTranslate(chipEl.style.transform), "chip 引线止点 = DOM translate 的同一组数（端点同源）");
+    assert.equal(lines[0].hx, lines[0].x, "chip 引线竖直");
+    assert.ok(Math.abs((lines[0].hy - lines[0].y) - TIP_GAP.chip) <= 0.15, "chip 避让间距 = TIP_GAP.chip（线长即间距本身）");
+    assert.equal(lines[0].alpha, Number(chipEl.style.opacity), "chip 引线 α = 同帧 inline opacity（同一表达式）");
+    assert.equal(rec.strokes.length, 1, "每可见浮签一次描边（起笔短横与竖线同路径）");
+    assert.ok(String(rec.strokes[0]).startsWith("rgba(0,255,136,"), "引线取色 = 活跃皮肤 accent（Canvas 取色通道）");
+    assert.ok(strokeAlpha(rec.strokes[0]) <= TIP_LINE.alphaMax + 1e-9, "引线 α ≤ 上限（弱于浮签本体）");
+
+    /* ② 钻取态名牌：chip 引线随浮签隐藏、名牌引线出现；端点/α 同源 */
+    assert.equal(eng.diveToWs("ws1"), true, "钻取目标星座");
+    fakeNow += 1300;
+    step1(2);
+    const slabEl = overlayEl.children.find((el) => el.className === "cos-slab");
+    lines = tips();
+    const slabLine = lines.find((line) => line.kind === "slab");
+    assert.ok(slabLine, "钻取态：恒星名牌引线出现");
+    assert.ok(lines.every((line) => line.kind !== "chip"), "chip 浮签隐藏的同一帧其引线不再产出（无残影窗口）");
+    assert.deepEqual({ x: slabLine.x, y: slabLine.y }, parseTranslate(slabEl.style.transform), "名牌引线止点 = DOM translate 同组件数");
+    assert.ok(Math.abs((slabLine.y - slabLine.hy) - TIP_GAP.slab) <= 0.15, "名牌避让间距 = TIP_GAP.slab（自星缘起算）");
+    assert.equal(slabLine.alpha, Number(slabEl.style.opacity), "名牌引线 α 与 inline opacity 同源");
+
+    /* ③ 退出钻取：名牌引线同帧消失、chip 引线恢复 */
+    assert.equal(eng.consumeEscape(), true, "Esc 飞回银河");
+    fakeNow += 1300;
+    step1(2);
+    lines = tips();
+    assert.deepEqual(lines.map((line) => line.kind), ["chip"], "退出钻取：名牌引线摘除、chip 引线恢复");
+
+    /* ④ 信息卡：hover 恒星 → 折线引线；止点 = 卡近缘中点；α 跟随 .on 谓词 */
+    cardEl.dataset.sig = "";
+    let hit = null;
+    for (let gx = 364; gx <= 440 && !hit; gx += 4) {
+      for (let gy = 264; gy <= 340 && !hit; gy += 4) {
+        fire(rootEl, "pointermove", { pointerId: 60, clientX: gx, clientY: gy, buttons: 0, target: canvasEl });
+        step1(1);
+        if (String(cardEl.dataset.sig).startsWith("star:")) hit = { x: gx, y: gy };
+      }
+    }
+    assert.ok(hit, "找到恒星 hover 命中点（拾取面自检）");
+    resetRec();
+    step1(1);
+    lines = tips();
+    const cardLine = lines.find((line) => line.kind === "card");
+    const cardAt = parseTranslate(cardEl.style.transform);
+    assert.ok(cardLine, "hover 恒星 → 信息卡折线引线");
+    assert.equal(cardLine.x, cardAt.x, "信息卡引线止点 x = DOM translate 同源");
+    assert.equal(cardLine.y, cardAt.y + CARD_HALF, "折线止于卡近缘中点（半高取自内容签名缓存测量）");
+    assert.equal(cardLine.alpha, 1, "信息卡引线 α 跟随 .on 布尔可见性谓词（与浮签同源）");
+    assert.ok(Math.abs(Math.abs(cardLine.x - cardLine.hx) - TIP_GAP.card) <= 0.15, "信息卡避让间距 = TIP_GAP.card（自星缘起算）");
+    assert.ok(cardLine.x > cardLine.hx, "卡在星右侧：折线向右发散（east 侧水平段）");
+    assert.equal(rec.strokes.length, lines.length, "同帧描边数 = 引线条目数（每浮签一条线）");
+    /* 折线为 45° 斜出段（横向跨距 = 纵向落差）+ 不短于 tail 的水平段 */
+    const cardGeo = tipLeaderOf(cardLine);
+    assert.equal(cardGeo.pts.length, 3, "信息卡引线 = 两段折线（45° 斜出 + 水平）");
+    assert.equal(
+      Math.abs(cardGeo.pts[1].x - cardGeo.pts[0].x),
+      Math.abs(cardGeo.pts[1].y - cardGeo.pts[0].y),
+      "斜出段 45°：|dx| === |dy|（缓存端点的几何换算）"
+    );
+    assert.ok(cardGeo.pts[2].x - cardGeo.pts[1].x >= TIP_LINE.tail - 1e-9, "水平段不短于 TIP_LINE.tail");
+    /* 卡体不越出右缘（翻转阈值随「星缘 + 间距 + 卡宽」派生） */
+    assert.ok(cardAt.x + CARD_W <= 800, "非翻转帧：卡右缘不越出视口（阈值与卡宽同源）");
+
+    /* ④b 卡端测量口径（D5）：内容签名变更时才读 offsetHeight，稳态零强制布局 */
+    const readsIdle = cardHReads;
+    step1(6);
+    assert.equal(cardHReads, readsIdle, "稳态帧 MUST NOT 重复读取卡高（无逐帧强制布局）");
+    const actScene = miniScene();
+    actScene.workspaces[0].stars[0].act = 5; // sig 追加 act → 内容签名变更 → 重测一次
+    eng.setScene(actScene, "patch");
+    step1(2);
+    assert.ok(cardHReads > readsIdle, "内容签名变更 → 重新测量（act 翻转；patched 场景可能跨帧换 sig）");
+
+    /* ⑤ 翻转：星移到右缘（x > W−300）→ 卡翻左侧，折线随之向左（端点用翻转后坐标） */
+    const rightScene = miniScene();
+    rightScene.workspaces[0].stars[0].off = [150, 0, 0];
+    rightScene.workspaces[0].planets = [];
+    rightScene.workspaces[0].comets = [];
+    eng.setScene(rightScene, "rebuild");
+    step1(2);
+    hoverWorld(eng.inspectEntities("ws1").stars[0].wp, 62);
+    step1(3);
+    lines = tips();
+    const flipLine = lines.find((line) => line.kind === "card");
+    assert.ok(flipLine, "右缘星 hover → 信息卡引线");
+    assert.ok(String(cardEl.style.transform).includes("translateX(-100%)"), "翻转阈值（星缘+间距+卡宽派生）生效（卡翻至星左侧）");
+    assert.ok(flipLine.x < flipLine.hx, "翻转侧：引线自星右缘折向卡片左近缘（端点用翻转后坐标）");
+    assert.equal(flipLine.x, parseTranslate(cardEl.style.transform).x, "翻转帧端点仍与 DOM transform 同源");
+    assert.ok(parseTranslate(cardEl.style.transform).x - CARD_W >= 0, "翻转帧：卡左缘不越出视口（同一派生的镜像侧）");
+
+    /* ⑥ 钳制：星贴近上缘 → 卡纵向钳在 70，引线止于钳后卡缘（MUST NOT 悬空） */
+    const topScene = miniScene();
+    topScene.workspaces[0].stars[0].off = [0, 180, 0];
+    topScene.workspaces[0].planets = [];
+    topScene.workspaces[0].comets = [];
+    eng.setScene(topScene, "rebuild");
+    step1(2);
+    hoverWorld(eng.inspectEntities("ws1").stars[0].wp, 63);
+    step1(3);
+    lines = tips();
+    const clampLine = lines.find((line) => line.kind === "card");
+    const clampAt = parseTranslate(cardEl.style.transform);
+    assert.ok(clampLine, "近上缘星 hover → 信息卡引线");
+    assert.equal(clampAt.y, 70, "纵向钳制生效（70..H−240 下界）");
+    assert.equal(clampLine.y, 70 + CARD_HALF, "钳制时引线止于钳后卡缘（MUST NOT 指向钳前虚拟位）");
+    assert.equal(clampLine.y, clampAt.y + CARD_HALF, "钳制帧端点仍与 DOM transform 同源");
+
+    /* ⑦ 卫星无引线：行星挂卫星的星座里，引线族仍只有 chip/slab/card */
+    const satScene = miniScene();
+    satScene.workspaces[0].planets[0].satellites = [
+      { id: "sat-a", state: "busy", title: "sat a" },
+      { id: "sat-b", state: "waiting", title: "sat b" }
+    ];
+    eng.setScene(satScene, "rebuild");
+    step1(2);
+    assert.equal(eng.inspectEntities("ws1").planets[0].sats.length, 2, "夹具确认：行星挂 2 颗卫星");
+    hoverWorld(eng.worldPosOf("planet", "p1"), 64);
+    step1(3);
+    const satKinds = [...new Set(tips().map((line) => line.kind))].sort();
+    assert.deepEqual(satKinds, ["card", "chip"], "引线族仅 chip/slab/card——卫星无浮签故无引线");
+    assert.ok(tips().some((line) => line.kind === "card"), "行星 hover → 信息卡引线仍在");
+
+    /* ⑧ 皮肤热切换：引线取色即时随动（accent 通道），逐帧描边数仍等于引线数 */
+    eng.setSkin(stubStyle("#123456"));
+    resetRec();
+    step1(1);
+    lines = tips();
+    assert.equal(rec.strokes.length, lines.length, "换肤帧：描边数 = 引线条目数");
+    assert.ok(String(rec.strokes[0]).startsWith("rgba(18,52,86,"), "皮肤热切换 → 引线取新皮肤 accent（#123456）");
+    assert.ok(!String(rec.strokes[0]).includes("255,0,255"), "MUST NOT 回落 gold（accent 通道优先）");
+
+    /* ⑨ 引线不参与拾取：点击引线段不触发 dive / 选中 */
+    const chipLineNow = tips().find((line) => line.kind === "chip") ?? tips()[0];
+    assert.ok(chipLineNow, "存在可见引线（拾取隔离断言前置）");
+    const lineMid = { x: chipLineNow.hx, y: (chipLineNow.hy + chipLineNow.y) / 2 };
+    const divesBefore = eng.inspectInput().dives;
+    fire(rootEl, "pointerdown", { pointerId: 65, button: 0, clientX: lineMid.x, clientY: lineMid.y, target: canvasEl, preventDefault() {} });
+    fire(rootEl, "pointerup", { pointerId: 65, button: 0, clientX: lineMid.x, clientY: lineMid.y, target: canvasEl });
+    step1(1);
+    assert.equal(eng.inspectInput().dives, divesBefore, "点击引线段不触发 dive（Canvas 层不在命中集合内）");
+    assert.equal(eng.inspectSelection(), null, "点击引线段不产生选中（引线不参与指针拾取）");
+  } finally {
+    eng.stop();
+    eng.dispose();
+    ctxFactory = stubCtx2d;
+  }
 }
 
 console.log("engine-smoke: all assertions passed");
