@@ -10,7 +10,7 @@ metadata:
   contractVersion: "1"
 ---
 
-使用 /openspec-apply-change 技能，执行这个提案。
+使用 C:\project\dsh-plugin-v\dsh-v-skill-links\.trae\skills\openspec-apply-change\SKILL.md 技能，执行这个提案。
 
 然后按以下流程调整提案状态：
 **状态步骤：apply 回填（CONTRACT §4 回填规则）**
@@ -33,6 +33,27 @@ metadata:
 
 **效果**：任务全部完成时恒星转为纯金色「已执行」（无独立转场，属性换色、金章环
 随态消失）。
+
+## 关联绑定（收尾执行：tasks 全勾回填之后、自改名之前；可选，依赖 cosmos 插件）
+
+声明本会话的提案工作面（星图关联，不写任何 openspec 工件）：
+
+- 端点：`POST <base>/api/dsh-v-cosmos/bind-session`
+  （base = 当前 DSH Web loopback 地址，如 `http://127.0.0.1:3080`；端口以实际部署为准）；
+- 请求：`{ "sessionId": $env:DSH_SESSION_ID, "proposals": ["<name>", ...] }`
+  （请求体须为 UTF-8 字节）——清单 = 本提案 + 本次流程中新建的全部提案，**一次绑定全量**；
+- 语义：**替换**（该会话的关联恰为本清单；重复绑定同清单幂等）。收尾一次声明，
+  MUST NOT 在流程中途反复重绑（中途误连由收尾替换自动清除）。
+
+```powershell
+$body = [Text.Encoding]::UTF8.GetBytes((ConvertTo-Json @{ sessionId = $env:DSH_SESSION_ID; proposals = @("<name>") } -Compress))
+Invoke-RestMethod -Method Post -Uri "$base/api/dsh-v-cosmos/bind-session" `
+  -ContentType "application/json; charset=utf-8" -Body $body
+```
+
+**降级（MUST NOT 阻断状态步骤）**：端点不可达（404 / 连接拒绝 / 超时）或返回失败 =
+插件未安装或未升级 → 跳过绑定并在回复中**注明**（关联退回启发式推断，星图可能过度
+关联；不影响任务勾选与状态回填），MUST NOT 报错或回滚。绑定失败不改变自改名与状态回填。
 
 最后**自改名**：`POST <base>/api/dsh-v-cosmos/rename-session`，请求
    `{ "sessionId": $env:DSH_SESSION_ID, "prefix": "已执行-<name>" }`。原题为空 →

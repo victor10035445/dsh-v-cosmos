@@ -30,17 +30,40 @@
  *    ctx.uiWorkspace.pickDirectory + ctx.workspaces.create（官方服务组合，与宿主
  *    「添加工作区」同源）→ 留在银河、引擎 dive-in 新星座（MUST NOT 打开会话/关整页）；
  *    取消静默、幂等重选 toast、失败 toast、busy 防重入；
+ *  - 独立窗口（add-cosmos-standalone-window D1/D3/D5/D6）：入口按设置面 `launchMode`
+ *    （缺省 embedded，零变化）分流——`window.open(origin + "/?cosmos=window")`；本页检测到
+ *    该查询参数即进入 standalone 态：注入无壳样式（standalone.mjs 集中定义）、自动开整页
+ *    铺满视口、页面级 SSE 连接带 `role=cosmos-window` 登记占位、占位计数帧驱动作位禁用与
+ *    双窗提示；关页路径（关闭按钮 / Esc 末层）收敛为关窗（被拒 → 保持整页 + 手动关窗
+ *    提示，MUST NOT 静默关整页）；会话导航（信息卡按钮 / 空格 / 面板行 / 决策 / 动作
+ *    跳转尾巴）在链路入口短路；星座动作 native 分支强制 float；
+ *    桌面形态（`file://`）降级为内嵌（忽略 window 配置，配置项禁用 + 说明）。
  *  - 全部官方动词经注入服务使用，不修改任何官方包。
  */
 import { Component, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
-import { fetchScene, subscribeCosmosEvents } from "./api.mjs";
+import { fetchScene, subscribeCosmosEvents, bindSession } from "./api.mjs";
+/* 独立窗口纯逻辑（add-cosmos-standalone-window）：检测 / URL / 启动分流 / 桌面降级 /
+   关页裁决 / 无壳样式全部收敛在 standalone.mjs；本文件的 DOM 与窗口 API 调用只做编排。 */
+import {
+  STANDALONE_CSS,
+  closeDecisionOf,
+  effectiveLaunchModeOf,
+  isDesktopProtocol,
+  isStandalonePage,
+  isStandaloneSearch,
+  otherWindowHintOf,
+  seatLockOf,
+  standaloneUrlOf
+} from "./standalone.mjs";
+/* 占位角色常量（与宿主半区同一来源）：standalone 态 SSE 连接携带 `role=cosmos-window`。 */
+import { COSMOS_WINDOW_ROLE } from "./presence.mjs";
 import { mergeScene, sceneDiffLevel, planetStateOf, relativeTime, matchWorkspaces, filteredPositions, findRegisteredWorkspace, normalizeWorkspacePath, isWindowsPlatform } from "./merge.mjs";
 import { createSkinD, SKIN_D_PALETTE } from "./cosmos/skin-d.mjs";
 import { COSMOS_DEFAULT_SKIN, COSMOS_SKIN_IDS, COSMOS_SKINS, applySkinTokens, createSkin, skinCardOf } from "./cosmos/skin-registry.mjs";
-import { createCosmosEngine, ENGINE_CSS, FX_PRIORITY, isUiChromeTarget, resolveBlastCoreOf } from "./cosmos/engine.mjs";
+import { createCosmosEngine, ENGINE_CSS, FX_PRIORITY, isEditableTarget, isUiChromeTarget, resolveBlastCoreOf } from "./cosmos/engine.mjs";
 import { cosmosStore } from "./store.mjs";
-import { COSMOS_SETTINGS_BOUNDS, COSMOS_SETTINGS_DEFAULTS, cosmosLayoutTokensOf, loadCosmosSettings, saveCosmosSettings } from "./settings.mjs";
+import { COSMOS_SETTINGS_BOUNDS, COSMOS_SETTINGS_DEFAULTS, cosmosLayoutTokensOf, loadCosmosSettings, saveCosmosSettings, settingsFromStorageEvent } from "./settings.mjs";
 import { actionButtonVisible, buttonsSectionOf } from "./buttons.mjs";
 import { constButtonsSectionOf, normalizeConstButtons } from "./const-buttons.mjs";
 import { findCard, isSelectionSurface, projectPanel, projectSessionPanel, proposalKeyOf, sessionKeyOf } from "./panel.mjs";
@@ -58,13 +81,80 @@ import {
   createSnapshotStore
 } from "./settings-seam.mjs";
 import { CONSTELLATION_PROFILE, constButtonDraftOf, constButtonIssue, createButtonSettingsController } from "./button-settings.mjs";
-import { COSMOS_SETTINGS_CSS, CosmosActionsPanel, CosmosNavPanel, CosmosSkinPanel, CosmosSettingsSection, SETTINGS_TAB_SLOT } from "./settings-ui.jsx";
+import { COSMOS_SETTINGS_CSS, CosmosActionsPanel, CosmosGeneralPanel, CosmosNavPanel, CosmosShortcutsPanel, CosmosSkinPanel, CosmosSettingsSection, SETTINGS_TAB_SLOT } from "./settings-ui.jsx";
+/* 快捷键纯逻辑（add-cosmos-shortcuts）：键位池/规范形/匹配器/净房/跨域查重单一来源——
+   外壳分发（关闭链 + 按钮键 + 浮窗语音）与设置面全部经此模块，不散落硬编码。 */
+import {
+  SHORTCUT_BUTTON_KEYS,
+  SHORTCUT_DEFAULTS,
+  SHORTCUT_FIELDS,
+  SHORTCUT_GLOBAL_KEYS,
+  SHORTCUT_UI_ORDER,
+  canonicalOfEvent,
+  isButtonShortcut,
+  shortcutConflictOf,
+  shortcutConflictOnFieldOf,
+  shortcutConflictOnRowOf,
+  shortcutLabelOf,
+  shortcutMatches,
+  shortcutsIssue,
+  shortcutsOf
+} from "./shortcuts.mjs";
 
 const PLUGIN_ID = "dsh-v-cosmos";
 const NS = "dsh-v-cosmos";
 /** 自有批量归档端点（宿主半区 cosmos-archive-sweep 契约）：浏览器半区以单元素数组
  *  消费——信息卡「归档会话」是它的第二个 UI 面（首个是归档技能的扫尾流程）。 */
 const ARCHIVE_SESSIONS_PATH = "/api/dsh-v-cosmos/archive-sessions";
+/** 星胚移除端点（add-cosmos-embryo-dismiss D5）：画布星胚卡「移除星胚」两击确认后的
+ *  唯一出口——dsh-v-cosmos 作为一等清理方的服务端动词（CONTRACT §6.3）。 */
+const DISMISS_EMBRYO_PATH = "/api/dsh-v-cosmos/dismiss-embryo";
+
+/** 星胚移除 notice 组装（add-cosmos-embryo-dismiss D9）：`tone` 只供冒烟/调用方区分，
+ *  引擎 toast 仅有文本通道；`outcome` 回填宿主原值（未知值原样透传，便于诊断）。 */
+function dismissNotice(outcome, tone, text) {
+  return { outcome, tone, text };
+}
+
+/* ------------------------------------------------------------------ *
+ * 独立窗口态判定（add-cosmos-standalone-window D1/D5）
+ *
+ * 检测点在插件 client 模块根（一次性判定；URL 查询参数是页面生命周期内不变量）：
+ *  - 命中 `?cosmos=window` 且非 `file://` 形态 → standalone；桌面形态（无 HTTP origin）
+ *    降级为普通内嵌形态（design D7，页面零副作用）；
+ *  - 判定纯逻辑在 `standalone.mjs`（可冒烟直测），此处只读取浏览器事实。
+ * ------------------------------------------------------------------ */
+
+/** 当前页面协议（Node/旧宿主缺席 → 空串，按非桌面处理）。 */
+function pageProtocol() {
+  try {
+    return typeof location !== "undefined" && typeof location.protocol === "string" ? location.protocol : "";
+  } catch {
+    return "";
+  }
+}
+
+/** 当前页面 origin（独立窗口 URL 基址；缺席 → 空串，`window.open` 按相对根解析）。 */
+function pageOrigin() {
+  try {
+    return typeof location !== "undefined" && typeof location.origin === "string" ? location.origin : "";
+  } catch {
+    return "";
+  }
+}
+
+/** 桌面形态判据（design D7：`location.protocol === "file:"`，取浏览器侧可观察事实）。 */
+const DESKTOP_PROTOCOL = isDesktopProtocol(pageProtocol());
+
+/** 独立窗口态标记（模块级常量；各分支消费，MUST NOT 逐次重读 URL）。 */
+const STANDALONE = (function detectStandalone() {
+  try {
+    if (typeof window === "undefined") return false;
+    return isStandalonePage({ search: typeof location !== "undefined" ? location.search : "", protocol: pageProtocol() });
+  } catch {
+    return false;
+  }
+})();
 
 /* ------------------------------------------------------------------ *
  * 页面开合 store（模块级微观察者，hive hiveOpenStore 同款）
@@ -98,6 +188,102 @@ function useCosmosOpen() {
     (listener) => cosmosOpenStore.subscribe(listener),
     () => cosmosOpenStore.getSnapshot()
   );
+}
+
+/* ------------------------------------------------------------------ *
+ * 独立窗口 presence 与呈现面 store（add-cosmos-standalone-window D2/D4/D5）
+ *
+ *  - `cosmosPresenceStore`：宿主 `cosmos-presence-changed` 帧的受控镜像（`{count}`）；
+ *    唯一写者 = 控制器 SSE 订阅（页面级连接，随页面存活）。座位按钮与独立窗口页内提示
+ *    同源消费（入口互斥 + 双窗提示同一判据）。
+ *  - `cosmosLaunchStore`：`launchMode` 的受控镜像（「通用」页签 face + 座位文案）；
+ *    唯一写者 = `applyLaunchMode`（设置页写入）与 `storage` 事件桥（他窗写入）。
+ *  - `cosmosStandaloneStore`：独立窗口态的呈现提示（`{closeHint}`——脚本关窗被拒后
+ *    显示「请手动关闭本窗口以释放占位」，D5）。
+ * ------------------------------------------------------------------ */
+
+const cosmosPresenceStore = createSnapshotStore({ count: 0 });
+const cosmosLaunchStore = createSnapshotStore({ launchMode: loadCosmosSettings().launchMode });
+const cosmosStandaloneStore = createSnapshotStore({ closeHint: false });
+
+/**
+ * 启动方式写入（唯一写者链路）：「配置-Cosmos·通用」face.set → 净房持久化 → 受控镜像。
+ * 无引擎热更需求（入口按钮点击时现读配置），故不经控制器，也不受整页存活门控。
+ * @param {unknown} mode `embedded` | `window`（非法值净房回落缺省）
+ * @returns {{launchMode: "embedded"|"window"}}
+ */
+function applyLaunchMode(mode) {
+  const merged = saveCosmosSettings({ launchMode: mode });
+  cosmosLaunchStore.set({ launchMode: merged.launchMode });
+  return cosmosLaunchStore.getSnapshot();
+}
+
+/** 关窗探测延迟（ms）：`window.close()` 被浏览器丢弃后据此呈现手动关窗提示。 */
+const STANDALONE_CLOSE_PROBE_MS = 240;
+
+/**
+ * 整页关闭写点的**唯一收口**（add-cosmos-standalone-window D5）：内嵌态 = 关整页
+ * （现状）；独立窗口态 = 尝试 `window.close()`——script-opened 窗口合法；被浏览器拒绝
+ * （直输 URL 无 opener）时**保持整页**并浮出「请手动关闭本窗口以释放占位」提示，
+ * SHALL NOT 报错、MUST NOT 静默关整页（页面级 SSE 随页面存活，静默关整页会留下持续
+ * 持有占位的无壳空窗）。
+ * @returns {"close-page"|"close-window"} 实际发起的分支（冒烟观测面）
+ */
+function requestPageClose() {
+  if (!STANDALONE) {
+    cosmosOpenStore.set(false);
+    return "close-page";
+  }
+  try {
+    window.close();
+  } catch {
+    /* 被拒：保持整页（下方探测落提示） */
+  }
+  /* 关窗成功 → 页面销毁，定时器不会执行；仍在 ⇒ 按裁决落提示（MUST NOT 关整页）。 */
+  setTimeout(() => {
+    let closed = false;
+    try {
+      closed = window.closed === true;
+    } catch {
+      closed = false;
+    }
+    const decision = closeDecisionOf({ standalone: true, closed });
+    if (decision.hint) cosmosStandaloneStore.set({ closeHint: true });
+  }, STANDALONE_CLOSE_PROBE_MS);
+  return "close-window";
+}
+
+/**
+ * 打开同源独立窗口（design D1）：`window.open(origin + "/?cosmos=window")`。
+ * 返回空 = 被弹窗拦截（MUST NOT 静默失败，调用方以 toast 引导放行弹窗）。
+ * @param {string} blockedText 被拦截时的引导文案（locale 同源）
+ * @returns {Window|null} 新窗口句柄（拦截 → null）
+ */
+function openStandaloneWindow(blockedText) {
+  let opened = null;
+  try {
+    opened = typeof window !== "undefined" && typeof window.open === "function"
+      ? window.open(standaloneUrlOf(pageOrigin()))
+      : null;
+  } catch {
+    opened = null;
+  }
+  if (opened === null || opened === undefined) {
+    showCosmosToast(blockedText, true);
+    return null;
+  }
+  return opened;
+}
+
+/* 独立窗口态模块根一次性落地（先于任何 React 提交——首帧即无壳全幅，避免「先带壳再
+   隐藏」的闪跳）：根级标记驱动 standalone 样式作用域，并自动打开整页。 */
+if (STANDALONE && typeof document !== "undefined") {
+  try {
+    document.documentElement.setAttribute("data-cosmos-standalone", "1");
+  } catch {
+    /* 根标记失败只影响观感：整页仍以显式 left:0 全幅覆盖（D3 降级） */
+  }
+  cosmosOpenStore.set(true);
 }
 
 /* 场景版本号镜像（React 面板跟随合并帧；引擎渲染不受 React 管辖）。 */
@@ -362,18 +548,33 @@ function createCosmosController(ctx, notifyToast, channels) {
    * 会话导航（官方 `uiWorkspace.openSession`；旧宿主回落 `ctx.sessions.open`）：
    * 仅「选中会话并呈现其对话」，**不关页、不改写任何草稿**（草稿按会话驻留），
    * 故「执行后跳转」与否只由执行器的 closePage/keepPage 分流决定。
+   *
+   * 独立窗口态短路（add-cosmos-standalone-window D6）：导航依赖主壳右侧系统会话页，
+   * 独立窗口无会话页——链路入口静默 no-op（MUST NOT 报错、MUST NOT 关窗）；动作链路的
+   * 「跳转尾巴」据此自然失效（新建会话/落稿等动作本体照常执行）。
    * @param {string} sessionId 目标会话 id
+   * @returns {boolean} 是否真的发起导航（standalone 恒 false）
    */
   const openSessionVia = (sessionId) => {
+    if (STANDALONE) return false;
     if (typeof ctx.uiWorkspace?.openSession === "function") {
       ctx.uiWorkspace.openSession(sessionId);
-      return;
+      return true;
     }
     if (typeof ctx.sessions?.open === "function") {
       ctx.sessions.open(sessionId);
-      return;
+      return true;
     }
     throw new Error("当前宿主未提供会话导航通道");
+  };
+
+  /**
+   * 动作链路「跳转 = 关整页」尾巴（add-cosmos-standalone-window D6）：独立窗口态静默
+   * no-op——关页在 standalone 语义上是关窗，MUST NOT 由动作跳转触发（否则用户窗口消失）。
+   */
+  const closePageAfterJump = () => {
+    if (STANDALONE) return;
+    cosmosOpenStore.set(false);
   };
 
   /**
@@ -413,7 +614,11 @@ function createCosmosController(ctx, notifyToast, channels) {
     createSession: (workspaceId, card) => createSessionVia(workspaceId, card),
     openSession: (sessionId) => openSessionVia(sessionId),
     startSession: (workspaceId, message, card) => startSessionVia(workspaceId, message, card),
-    closePage: () => cosmosOpenStore.set(false),
+    /* ⑤ 显式关联绑定（fix-cosmos-association-scope 3.2）：新会话 → 目标提案的声明通道。
+       执行器保证非阻断、失败静默；端点未升级/不可达只退回启发式（不 toast、不阻断落稿）。 */
+    bindSession: (input) => bindSession(input),
+    /* 跳转尾巴关整页（add-cosmos-standalone-window D6）：独立窗口态 no-op（见上）。 */
+    closePage: () => closePageAfterJump(),
     keepPage: () => notifyToast?.(tr("cosmos.actions.keepOpenNotice", "已在新会话填入消息，Cosmos 保持打开")),
     notify: (text) => notifyToast?.(text),
     labels: { degraded: tr("cosmos.actions.degraded", "新建会话通道不可用，已降级为复用空白会话") }
@@ -456,7 +661,8 @@ function createCosmosController(ctx, notifyToast, channels) {
     gate: actionGate,
     resolveTarget: (card) => explorationStateOf(card),
     openSession: (sessionId) => openSessionVia(sessionId),
-    closePage: () => cosmosOpenStore.set(false),
+    /* 星胚链路的跳转尾巴同款短路（standalone 静默 no-op）。 */
+    closePage: () => closePageAfterJump(),
     keepPage: () => notifyToast?.(tr("cosmos.actions.embryoKeepOpen", "已在探索会话填入消息，Cosmos 保持打开")),
     notify: (text) => notifyToast?.(text),
     labels: {
@@ -483,7 +689,12 @@ function createCosmosController(ctx, notifyToast, channels) {
     pending: heroMarkers,
     floats: floatMarkers,
     gate: actionGate,
-    preflight: () => loadCosmosSettings().constPreflight,
+    /* preflight 每次 run 现读设置面；**独立窗口态强制 float**（add-cosmos-standalone-window
+       D6）：native 分支以「关页跳转会话页」收尾，而独立窗口无会话页 ⇒ 星空保持优先，
+       浮窗补写能力不受影响。 */
+    preflight: () => (STANDALONE ? "float" : loadCosmosSettings().constPreflight),
+    /* native 分支关整页 = 整页开合 store（与提案动作同通道）。standalone 态经上面的
+       preflight 强制 float 后不可达，故此处保留直写（MUST NOT 在独立窗口关窗）。 */
     closePage: () => cosmosOpenStore.set(false),
     createSession: (workspaceId, group) => createSessionVia(workspaceId, group),
     openSession: (sessionId) => openSessionVia(sessionId),
@@ -586,6 +797,10 @@ function createCosmosController(ctx, notifyToast, channels) {
 
   const actions = {
     openSession(sessionId) {
+      /* 独立窗口态短路（add-cosmos-standalone-window D6）：共享导航回调链入口——信息卡
+         「打开会话」/ 空格快捷键 / 会话面板行 / 决策入口全部经此；动作依赖主壳右侧系统
+         会话页，独立窗口无会话页 ⇒ 静默 no-op（MUST NOT 关窗、MUST NOT 报错）。 */
+      if (STANDALONE) return "standalone-noop";
       /* 先关整页（spec「打开会话」：Cosmos 整页关闭 → 右侧系统会话页切换）。 */
       cosmosOpenStore.set(false);
       try {
@@ -644,6 +859,75 @@ function createCosmosController(ctx, notifyToast, channels) {
       const results = Array.isArray(body?.results) ? body.results : [];
       const entry = results.find((item) => item?.sessionId === id) ?? results[0] ?? null;
       const notice = archiveNoticeOf(entry);
+      engine?.toast(notice.text);
+      return notice;
+    },
+    /**
+     * 星胚移除执行链路（add-cosmos-embryo-dismiss 4.1 / design D5/D9）：
+     *  - 请求体 `{workspaceId, slug}`：画布实体 `ws.id` 与 proto 星 `data.id`（= 锚点 slug）；
+     *  - POST 自有 dismiss 端点 → **恒 200** + `{outcome}` → 文案映射 → 引擎 toast；
+     *  - 呈现零新增：锚点删除经宿主 fs.watch → `proposals-changed` → 骨架差分，星胚以既有
+     *    低强度消散变体退场（本方法 MUST NOT 主动收卡 / 关整页）；
+     *  - 防重入的权威门在引擎点击处理器（两击确认 + per-`ws:slug` 在途，D7）；本方法恒发
+     *    一个请求；失败可再次点击重试（两击确认每轮重来）。
+     * @param {{workspaceId?: string, slug?: string}} input 星实体钩子（`ws.id` / `data.id`）
+     * @returns {Promise<{outcome: string, tone: string, text: string}>} 呈现产物（冒烟观测面）
+     */
+    async dismissEmbryo(input) {
+      const workspaceId = typeof input?.workspaceId === "string" ? input.workspaceId : "";
+      const slug = typeof input?.slug === "string" ? input.slug : "";
+      if (!workspaceId || !slug) {
+        const notice = dismissNotice("failed", "error", tr("cosmos.dismiss.noTarget", "缺少星胚定位信息，未移除"));
+        engine?.toast(notice.text);
+        return notice;
+      }
+      let response;
+      try {
+        response = await fetch(DISMISS_EMBRYO_PATH, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ workspaceId, slug })
+        });
+      } catch (error) {
+        const notice = dismissNotice(
+          "failed",
+          "error",
+          tr("cosmos.dismiss.requestFailed", "移除请求失败：") + String(error?.message || error || "")
+        );
+        engine?.toast(notice.text); // 端点不可达：可再次点击重试
+        return notice;
+      }
+      /* 端点恒 200（结果由 outcome 枚举承载）；非 2xx = 请求面失败（代理错误 / 路由不匹配）。 */
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        const notice = dismissNotice(
+          "failed",
+          "error",
+          tr("cosmos.dismiss.requestFailed", "移除请求失败：") +
+            String(body?.reason || body?.error || response.status + " " + response.statusText)
+        );
+        engine?.toast(notice.text);
+        return notice;
+      }
+      const outcome = typeof body?.outcome === "string" ? body.outcome : "";
+      const reason = typeof body?.reason === "string" ? body.reason : "";
+      let notice;
+      if (outcome === "deleted") {
+        notice = dismissNotice(outcome, "ok", tr("cosmos.dismiss.deleted", "星胚已移除"));
+      } else if (outcome === "already-missing") {
+        notice = dismissNotice(outcome, "neutral", tr("cosmos.dismiss.alreadyMissing", "该星胚已不存在"));
+      } else if (outcome === "guard-dir-exists") {
+        notice = dismissNotice(outcome, "warn", tr("cosmos.dismiss.guardDirExists", "同名提案已创建，未移除"));
+      } else if (outcome === "missing-workspace") {
+        notice = dismissNotice(outcome, "error", tr("cosmos.dismiss.missingWorkspace", "工作区不在册，未移除"));
+      } else {
+        /* failed（或未知枚举）→ 携带端点 reason 供用户判断；未知枚举原样透传便于诊断。 */
+        notice = dismissNotice(
+          outcome || "failed",
+          "error",
+          tr("cosmos.dismiss.failed", "移除失败：") + (reason || tr("cosmos.dismiss.failedUnknown", "未知错误"))
+        );
+      }
       engine?.toast(notice.text);
       return notice;
     },
@@ -720,6 +1004,24 @@ function createCosmosController(ctx, notifyToast, channels) {
       const merged = saveCosmosSettings(patch);
       engine?.setTuning(merged);
       cosmosNavStore.set(navPrefsOf(merged));
+      return merged;
+    },
+    /**
+     * 全局快捷键写入（add-cosmos-shortcuts 5.3 / spec「设置页『快捷键』页签」）：
+     * 轻量偏好即时保存——净房写盘 → 已打开整页 `engine.setShortcuts` 热更（引擎键位表
+     * 翻转/飞回立即跟随）→ 模块 store 同步（关闭链/按钮键分发/浮窗提示经 ref/store 读取）。
+     * 部分写语义（patch 只覆盖给出字段）；净房恒无冲突（读面固定优先序回落）。
+     * @param {object} patch `{ closePage?, goHome?, togglePan?, voiceToggle? }`
+     * @returns {object} 净房后的完整设置
+     */
+    saveShortcuts(patch) {
+      /* 部分写语义：以当前净房值为底合并 patch（缺席键保持原值；非法值由 shortcutsOf
+         回落缺省——与 setTuning 的「非法忽略」略异，本键的缺省回落是确定性净房口径）。 */
+      const current = loadCosmosSettings().shortcuts;
+      const next = shortcutsOf({ ...current, ...(patch && typeof patch === "object" ? patch : {}) });
+      const merged = saveCosmosSettings({ shortcuts: next });
+      engine?.setShortcuts?.(merged.shortcuts);
+      cosmosShortcutsStore.set({ ...merged.shortcuts });
       return merged;
     },
     /**
@@ -979,7 +1281,18 @@ function createCosmosController(ctx, notifyToast, channels) {
   } catch {
     /* 信号不可达 → 降级 idle/busy 两态 */
   }
-  disposers.push(subscribeCosmosEvents(() => refreshSkeleton()));
+  /* 宿主轻帧订阅（add-cosmos-standalone-window 3.4）：骨架帧 → 重拉 scene；占位计数帧 →
+     受控镜像（座位禁用 + 独立窗口双窗提示同源）。独立窗口态连接携带 `role` 标识——
+     页面级连接即占位主体（随页面存活，与整页开合解耦）。 */
+  disposers.push(subscribeCosmosEvents((frame) => {
+    if (frame?.type === "cosmos-presence-changed") {
+      /* 计数幂等：连接建立即广播全量帧（自愈语义）⇒ 同值不触发座位/提示条重渲染。 */
+      const count = Number(frame.count);
+      if (cosmosPresenceStore.getSnapshot().count !== count) cosmosPresenceStore.set({ count });
+      return;
+    }
+    refreshSkeleton();
+  }, { role: STANDALONE ? COSMOS_WINDOW_ROLE : "" }));
 
   return {
     /* 设置页消费面（add-cosmos-skin-themes / add-cosmos-zoom-focus-nav）：控制器顶层
@@ -1059,6 +1372,10 @@ function createCosmosController(ctx, notifyToast, channels) {
         /* 归档动作（add-cosmos-session-archive-action D4/3.3）：与 onOpenSession 同模式注入，
            整页保持打开；引擎以返回的 Promise 作为按钮在途窗口（D6）。 */
         onArchiveSession: (sessionId) => actions.archiveSession(sessionId),
+        /* 星胚移除（add-cosmos-embryo-dismiss 4.1 / D5）：两击确认后的服务端动词出口，
+           载荷 = 该星实体 `ws.id` 与 proto 星 `data.id`（锚点 slug）；整页保持打开（消散由
+           既有骨架差分 + 星胚低强度消散变体承接）。 */
+        onDismissEmbryo: (input) => actions.dismissEmbryo(input),
         /* 决策入口（cosmos-session-decide D6 / 5.3）：与 actions.openSession **同一条官方
            导航链路**——先关 Cosmos 整页 → `ctx.uiWorkspace.openSession`（旧宿主回落
            `ctx.sessions.open`）；决策选项与输入区由 DSH 原生 composer takeover 呈现，
@@ -1077,8 +1394,22 @@ function createCosmosController(ctx, notifyToast, channels) {
             label: tr("cosmos.card.vitality", "活力"),
             active: tr("cosmos.card.vitality.active", "活跃"),
             sleep: tr("cosmos.card.vitality.sleep", "沉睡")
+          },
+          /* 会话卡按钮禁用提示（add-cosmos-standalone-window D6）：独立窗口态「打开会话」
+             呈禁用态并附 title（动作依赖主壳右侧会话页）。 */
+          card: {
+            openDisabled: tr("cosmos.card.openDisabled", "独立窗口内无法跳转会话页（请在主窗口操作）")
+          },
+          /* 星胚卡「移除星胚」按钮 + 内联确认态文案（add-cosmos-embryo-dismiss D9）：
+             仅按钮文案进引擎；outcome toast 映射全在客户端执行体内（actions.dismissEmbryo）。 */
+          dismiss: {
+            remove: tr("cosmos.card.dismiss.remove", "移除星胚"),
+            confirm: tr("cosmos.card.dismiss.confirm", "确认移除？")
           }
         },
+        /* 会话导航可用性（add-cosmos-standalone-window D6）：独立窗口无主壳会话页 ⇒
+           信息卡「打开会话」禁用 + 空格快捷键静默 no-op；内嵌态恒可用（零变化）。 */
+        sessionNavAvailable: !STANDALONE,
         /* 钻取态 → React 面板（过滤/让位）；引擎是唯一权威，镜像只读。 */
         onDrillChange: (info) => drillStore.set(info),
         /* 引擎选中 → React 面板（add-cosmos-selection-linkage 3.1/D6）：同款幂等镜像通道，
@@ -1092,7 +1423,10 @@ function createCosmosController(ctx, notifyToast, channels) {
           const merged = saveCosmosSettings({ dragPan: enabled === true });
           engine?.setTuning(merged);
           return merged;
-        }
+        },
+        /* 浮窗打开态探针（add-cosmos-shortcuts 4.2/D13）：浮窗 armed 即 true——
+           引擎 goHome/togglePan 分支据此模态让位（语音键与关闭键不在引擎侧，不受影响）。 */
+        isFloatOpen: () => floatOpenOf()
       });
       if (mergedScene) engine.setScene(mergedScene, "rebuild");
       if (filterQuery.trim()) syncFilter(); // 重挂载保持当前查询（引擎落位 + 坡道续接）
@@ -1215,7 +1549,7 @@ function usePageLeft(frameRef, measuredRef) {
  * （`data-drill`）下 footer 渲染星座动作条——空星座同样可用（列表空态与 footer 挂点解耦），
  * 按钮列表为空时 footer 不渲染（零布局）；银河态无「当前星座」即无动作目标，整条不渲染。
  */
-function ProposalPanel({ t, model, selectedKey, onSelect, drill, constButtons, onRunConst }) {
+function ProposalPanel({ t, model, selectedKey, onSelect, drill, constButtons, onRunConst, closeKey }) {
   if (!model || !model.visible) return null;
   const drilled = drill !== null && drill !== undefined;
   const showConstActions = drilled && Array.isArray(constButtons) && constButtons.length > 0;
@@ -1234,9 +1568,12 @@ function ProposalPanel({ t, model, selectedKey, onSelect, drill, constButtons, o
         className="dsh-cosmos-panel-list"
         tabIndex={0}
         onKeyDown={(event) => {
-          if (event.key !== "Escape") return;
-          /* 面板内 Esc = 失焦：MUST NOT 触发钻取返回或关页（spec「面板内 Esc 失焦」）。
+          /* 面板内关闭键 = 失焦：MUST NOT 触发钻取返回或关页（spec「面板内 Esc 失焦」）。
+             键位跟随全局配置（add-cosmos-shortcuts 5.1/D3：面板失焦层同键）——经
+             canonical 匹配（Shift/Meta 裁决、Ctrl/Alt 精确），组字中让位输入法。
              焦点可能落在卡片按钮或列表容器自身——统一对 document.activeElement 失焦。 */
+          if (event.isComposing === true || event.keyCode === 229) return;
+          if (!shortcutMatches(event, closeKey ?? "Escape")) return;
           event.preventDefault();
           event.stopPropagation();
           const active = typeof document !== "undefined" ? document.activeElement : null;
@@ -1795,9 +2132,12 @@ function showCosmosToast(text, isError) {
  *    `switchModel`（会话内持久生效）；目录降级 → 只读「会话当前模型」+ 注记；漂移绑定
  *    原样回显标不可用。按钮绑定模型仍链路先行切换，选择器随后回显该绑定。
  *  - **语音转写**（注入 `speech` face，借官方语音 Bundle 的 `remote.speech` 服务层——
- *    官方 VoiceInput UI 挂驻留 composer 槽位，浮窗不可复用其 UI）：麦克风钮
- *    MediaRecorder 默认容器（与官方 createRecording 同构）→ base64 → transcribe →
- *    转写文本**追加**到草稿尾部（既有内容零改写）。Bundle 未启用 → 语音钮隐藏；
+ *    官方 VoiceInput UI 挂驻留 composer 槽位，浮窗不可复用其 UI；fix-cosmos-const-float-voice
+ *    修复其端到端链路）：麦克风钮按官方 `Recording.stop()` 同构链路录音——MediaRecorder
+ *    默认容器**只承担采集** → 解码 → 16 kHz 单声道重采样 → PCM16 WAV → canonical base64
+ *    → transcribe → 按 `RemoteResult` 信封取文本 → **追加**到最新草稿尾部（既有内容零改写）。
+ *    语音不可用（Bundle 未启用 / 旧宿主 face 缺席，客户端不区分）→ 语音钮**置灰可点**
+ *    （引导 toast + Bundle 详情页跳转；MUST NOT 原生 disabled），不再整体隐藏；
  *    权限拒绝/转写失败/空转写 → toast，浮窗留存、草稿不丢。
  */
 function ConstellationFloatDock(props) {
@@ -1813,7 +2153,7 @@ function ConstellationFloatDock(props) {
   const switchModel = typeof props.switchModel === "function" ? props.switchModel : null;
   /* 增强注入（rework 方案 2）：models = 模型目录 face（{catalog}快照）、speech = 语音转写
      桥 face（{available}快照 + transcribe/openBundle）。缺席（旧宿主/未启用）→ 对应增强
-     面整体降级：模型行回落只读标识、语音钮隐藏——零新增噪音。 */
+     面整体降级：模型行回落只读标识、语音钮转「置灰可点」引导态——零新增噪音。 */
   const models = props.models ?? null;
   const speech = props.speech ?? null;
   const notify = typeof props.notify === "function" ? props.notify : null;
@@ -1825,7 +2165,18 @@ function ConstellationFloatDock(props) {
   const [modelSel, setModelSel] = useState(null);
   /* 语音面："idle"（可点开始）|"recording"（录音中，再点停止）|"transcribing"（转写中）。 */
   const [voiceState, setVoiceState] = useState("idle");
-  const voiceRefs = useRef({ stream: null, recorder: null, chunks: [] });
+  /* 在册采集资源与其两枚守卫（fix-cosmos-const-float-voice design D5）：
+     - `voiceRefs`：唯一释放目标（recorder + stream），释放后置 null；
+     - `voiceRunRef`：采集/转写代次。关窗、卸载、录音中失焦/切后台、设备中断与新一轮
+       录音均递增；在途转写回调比对代次，过期即整体丢弃（MUST NOT 以冻结的陈旧草稿基线
+       写回、MUST NOT 在已卸载组件上 setState）；
+     - `voiceDisposedRef`：释放标志。兜底 stop 触发的 onstop 见标志即早退——只释放采集，
+       MUST NOT 误走转写链。 */
+  const voiceRefs = useRef({ stream: null, recorder: null });
+  const voiceRunRef = useRef(0);
+  const voiceDisposedRef = useRef(false);
+  /* 落稿基准镜像（design D6）：转写完成读**当时最新**草稿，消除点击录音时的陈旧闭包。 */
+  const draftRef = useRef(draft);
   const switchedRef = useRef(false);
   /* 已落稿的标记 token（防宿主未发布草稿时对同一标记反复 setDraft）。 */
   const fillRef = useRef(0);
@@ -1837,6 +2188,38 @@ function ConstellationFloatDock(props) {
       return typeof value === "string" && value && value !== key ? value : fallback;
     } catch {
       return fallback;
+    }
+  };
+
+  /* 草稿镜像同步（design D6）：onstop 落稿读 `draftRef.current`（当时最新），不读点击
+     录音时冻结的 `draft` 闭包——录音期间的手动输入零丢失。 */
+  useEffect(() => {
+    draftRef.current = draft;
+  }, [draft]);
+
+  /* 释放采集资源（design D5，**只释放、不转写**）：先置释放标志 + 递增代次（既让兜底
+     stop 触发的 onstop 早退，又作废在途转写）→ 停在册 recorder → 停全部音轨 → 清 refs。
+     零 setState：卸载路径调用安全（复位由各自的打开/交互路径承担）。 */
+  const releaseVoice = () => {
+    voiceDisposedRef.current = true;
+    voiceRunRef.current += 1;
+    const recorder = voiceRefs.current.recorder;
+    voiceRefs.current.recorder = null;
+    if (recorder !== null && recorder.state !== "inactive") {
+      try {
+        recorder.stop();
+      } catch {
+        /* 已在停止流程中：无需再次停止 */
+      }
+    }
+    const stream = voiceRefs.current.stream;
+    voiceRefs.current.stream = null;
+    for (const track of stream?.getTracks?.() ?? []) {
+      try {
+        track.stop();
+      } catch {
+        /* 已停止的音轨：无需再次停止 */
+      }
     }
   };
 
@@ -1867,6 +2250,11 @@ function ConstellationFloatDock(props) {
   const speechAvailable = speechState !== null
     && typeof speechState === "object"
     && speechState.available === true;
+  /* 生效快捷键（add-cosmos-shortcuts 6.1/6.2）：语音开关键与收卡键跟随全局配置——
+     浮窗提示文案动态标注当前生效键（改绑即时生效，无需重开浮窗）。 */
+  const shortcutsState = useSyncExternalStore(cosmosShortcutsStore.subscribe, cosmosShortcutsStore.getSnapshot);
+  const voiceKey = shortcutsState.voiceToggle;
+  const closeKey = shortcutsState.closePage;
 
   useEffect(() => {
     if (armed !== null || floats === null) return;
@@ -1892,6 +2280,39 @@ function ConstellationFloatDock(props) {
     setArmed(entry);
   }, [armed, gate, draft, sessionId, floats, markerVersion]);
 
+  /* 语音资源兜底释放①（spec「关窗释放麦克风」/ design D5）：浮窗关闭（关闭按钮 / Esc /
+     点外 / 发送 → `armed` 转空）与组件卸载共用同一条清理路径——释放标志 + 停 recorder +
+     停全部音轨；在途转写经代次守卫丢弃（关窗后用户在原生输入区手打的字 MUST NOT 被
+     冻结的陈旧草稿基线覆盖）。arm 时返回清理函数 = 只在「打开 → 关闭/卸载」边界触发一次。 */
+  useEffect(() => {
+    if (armed === null) return undefined;
+    return () => releaseVoice();
+  }, [armed]);
+
+  /* 语音资源兜底释放②（spec「关窗释放麦克风」组合路径）：录音中窗口失焦 / 切后台
+     （window blur / document visibilitychange）。只对**在册录音**生效——空闲态不打扰，
+     转写 in-flight 时 recorder 已摘下（`null`）故天然跳过（转写的作废归属关窗/卸载的
+     代次守卫，与官方先例同一口径）。监听器随浮窗打开态注册/移除，零泄漏。 */
+  useEffect(() => {
+    if (armed === null || typeof window === "undefined") return undefined;
+    const halt = () => {
+      if (voiceRefs.current.recorder === null) return;
+      releaseVoice();
+      setVoiceState("idle");
+    };
+    const onVisibility = () => {
+      if (typeof document === "undefined" || document.hidden !== true) return;
+      halt();
+    };
+    const doc = typeof document === "undefined" ? null : document;
+    window.addEventListener("blur", halt);
+    doc?.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      window.removeEventListener("blur", halt);
+      doc?.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, [armed]);
+
   /* 兜底关闭：`/` 命令草稿的提交相位离开 plain（adjudicating/submitting）→ 关浮窗。
      普通文本走宿主 detached 发送、相位恒 plain，该跃迁不触发——收敛由 send() 的主动
      close() 负责（两路同一动作，幂等）；保留本副作用也覆盖宿主未来给普通路径加
@@ -1901,26 +2322,62 @@ function ConstellationFloatDock(props) {
     if (phase !== "plain") setArmed(null);
   }, [armed, phase]);
 
-  /* Esc 最高分层：capture 阶段先于 Cosmos 外壳的 window 冒泡监听消费并阻断传播
-     （不触发钻取返回 / 清搜索 / 关页）。浮窗未打开时不注册 → 既有分层零变化。 */
+  /* Esc 最高分层（add-cosmos-shortcuts 5.1/D3 起**收卡键参数化**）：capture 阶段先于
+     Cosmos 外壳的 window 冒泡监听消费并阻断传播（不触发钻取返回 / 清搜索 / 关页）。
+     浮窗未打开时不注册 → 既有分层零变化；键位跟随全局关闭键配置（缺省 Esc）。 */
   useEffect(() => {
     if (armed === null || typeof window === "undefined") return undefined;
     const onKey = (event) => {
-      /* IME 组字中的 Esc = 取消输入法候选，MUST NOT 关浮窗（中文输入高频路径）。
+      /* IME 组字中的收卡键 = 取消输入法候选，MUST NOT 关浮窗（中文输入高频路径）。
          口径统一（add-cosmos-const-float-send-key D3 复核版）：本监听器挂在 window
          capture 上，回调收到的**本就是原生** KeyboardEvent → 直接读原生组字状态
          `event.isComposing`（改读 `event.nativeEvent?.…` 反而是恒 undefined 的死读取）；
          另补 `keyCode === 229`（组字期间 Chromium 以 229 报键）双保险，使本守卫与 Enter
          守卫及宿主 `isComposingEvent` 前两项判据逐字同源。「组字 Esc 不关浮窗」为既有
-         行为，本行仅加固，由 spec 场景 + 冒烟锚点钉住防漂移。 */
-      if (event.key !== "Escape" || event.isComposing || event.keyCode === 229) return;
+         行为，本行仅加固，由 spec 场景 + 冒烟锚点钉住防漂移。
+         键位匹配 = 全局关闭键的 canonical 精确匹配（Shift/Meta 裁决统一；配置键非 Esc 时
+         Esc 不再收卡）。 */
+      if (event.isComposing === true || event.keyCode === 229) return;
+      if (!shortcutMatches(event, closeKey)) return;
       event.preventDefault();
       event.stopPropagation();
       setArmed(null);
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
+  }, [armed, closeKey]);
+
+  /* 浮窗打开态计数（add-cosmos-shortcuts 5.2/D13 模态让位）：引擎 `goHome`/`togglePan`
+     与外壳按钮键分发据此让位；armed 变化即加减（收卡/卸载自动归零，探针恒无泄漏）。 */
+  useEffect(() => {
+    if (armed === null) return undefined;
+    cosmosFloatArmedCount += 1;
+    return () => {
+      cosmosFloatArmedCount = Math.max(0, cosmosFloatArmedCount - 1);
+    };
   }, [armed]);
+
+  /* 浮窗语音开关键（add-cosmos-shortcuts 6.1 / spec cosmos-constellation-actions
+     「浮窗语音快捷键」）：浮窗 armed 时注册、随浮窗卸载移除（浮窗不打开 = 零监听）。
+     三态 toggle：`idle` → `startVoice()`（与麦克风钮同一链路）/ `recording` →
+     `finishVoice()`（停止并转写追加草稿）/ `transcribing` → no-op（转写中防抖，与麦克风钮
+     disabled 语义一致）。语音不可用时 `startVoice` 守卫转同一引导 toast（不起录音，与置灰
+     钮点击同语义）。守卫：IME 组字 + repeat + Shift/Meta 跳过（`shortcutMatches`
+     内含）；**不做可编辑焦点守卫**——Ctrl/Alt+字母 组合不产字符，浮窗 textarea 聚焦正是
+     「边打字边口述」主场景。命中 `preventDefault`（抑制宿主同键默认行为）。 */
+  useEffect(() => {
+    if (armed === null || typeof window === "undefined") return undefined;
+    const onKey = (event) => {
+      if (event.isComposing === true || event.keyCode === 229 || event.repeat === true) return;
+      if (!shortcutMatches(event, voiceKey)) return;
+      event.preventDefault();
+      if (voiceState === "recording") finishVoice();
+      else if (voiceState === "idle") startVoice();
+      /* transcribing → 静默 no-op（转写中不重复开始/停止） */
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [armed, voiceKey, voiceState]);
 
   /* 按钮绑定模型的链路先行切换（与 hero 同一 modelBridge）：仅在本次呈现内切一次，
      选择器随后反映该绑定。失败 toast 不阻断——选择回落「会话当前模型」（与既有
@@ -1984,6 +2441,16 @@ function ConstellationFloatDock(props) {
     close();
   };
 
+  /* 浮窗提示文案（add-cosmos-shortcuts 6.2）：动态标注当前生效的语音键与收卡键
+     （改绑即时生效——本组件订阅快捷键 store，无需重开浮窗）。词典为双语占位模板，
+     缺键回落中文基线（与引擎/其余浮窗文案同纪律）。 */
+  const floatHintText = tr(
+    "cosmos.constFloat.hint",
+    "Enter 发送 · Shift+Enter 换行 · {voice} 语音 · {close} 关闭浮窗（保留草稿不发送）"
+  )
+    .replace("{voice}", shortcutLabelOf(voiceKey))
+    .replace("{close}", shortcutLabelOf(closeKey));
+
   /* ── 模型选择（rework 方案 2 增强）：目录取值面与设置页同源（describeButtonModel）——
      目录降级 → 下拉仅剩「会话当前模型」+ 降级注记；漂移绑定原样回显标不可用；级别下拉
      仅当所选模型带等级元数据时呈现（默认最高级，settings 页先例）。切换失败不阻断、
@@ -2038,9 +2505,12 @@ function ConstellationFloatDock(props) {
     switchTo(typeof effortId === "string" && effortId !== "" ? { ...base, reasoningEffort: effortId } : base);
   };
 
-  /* ── 语音转写（rework 方案 2 增强，借官方语音 Bundle 服务层）：MediaRecorder 默认容器
-     （与官方 UI 的 createRecording 同构）→ base64 → `remote.speech.transcribe` → 转写文本
-     追加到草稿尾部（唯一真相源写回，既有内容零改写、只追加）。录音/转写全程状态面上浮
+  /* ── 语音转写（rework 方案 2 增强，借官方语音 Bundle 服务层；fix-cosmos-const-float-voice
+     修复端到端链路）：MediaRecorder 默认容器**只承担采集**（与官方 `Recording.start` 同构），
+     停止后按官方 `Recording.stop()` 逐字段同构转换——解码 → 16 kHz 单声道重采样 → PCM16
+     WAV → canonical base64（无 data URL 前缀）→ `remote.speech.transcribe`；结果按
+     `RemoteResult` 信封消费（`ok` / `value.text` / `error.message`）。转写文本**追加**到
+     最新草稿尾部（唯一真相源写回，既有内容零改写、只追加）。录音/转写全程状态面上浮
      （按钮自持）；失败 toast 不关窗、不丢草稿。 ── */
   const bytesToBase64 = (bytes) => {
     let binary = "";
@@ -2050,45 +2520,147 @@ function ConstellationFloatDock(props) {
     }
     return btoa(binary);
   };
+  /* canonical PCM16 WAV（RIFF 小端 / 16 kHz / 单声道 / 44 字节头）：宿主 `validateWave`
+     的硬校验口径（采样率 16000、byteRate 32000、blockAlign 2、位深 16、RIFF 与 data
+     长度自洽）。量化为官方 encodeWave 逐字段同式（负数 ×32768、非负 ×32767 后取整）。 */
+  const encodeWave = (samples) => {
+    const bytes = new Uint8Array(44 + samples.length * 2);
+    const view = new DataView(bytes.buffer);
+    const text = (at, value) => {
+      for (let index = 0; index < value.length; index += 1) bytes[at + index] = value.charCodeAt(index);
+    };
+    text(0, "RIFF");
+    view.setUint32(4, bytes.length - 8, true);
+    text(8, "WAVE");
+    text(12, "fmt ");
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true);
+    view.setUint16(22, 1, true);
+    view.setUint32(24, 16000, true);
+    view.setUint32(28, 32000, true);
+    view.setUint16(32, 2, true);
+    view.setUint16(34, 16, true);
+    text(36, "data");
+    view.setUint32(40, samples.length * 2, true);
+    for (let index = 0; index < samples.length; index += 1) {
+      const value = Math.max(-1, Math.min(1, samples[index]));
+      view.setInt16(44 + index * 2, Math.round(value * (value < 0 ? 32768 : 32767)), true);
+    }
+    return bytes;
+  };
+  /* 采集产物 → canonical WAV（官方 `Recording.stop()` 同式链路）：容器 blob 解码 →
+     OfflineAudioContext 重采样 16 kHz 单声道（样本数与官方同式取 floor、下限 1）→
+     PCM16 编码。解码上下文用完即关（不驻留音频设备）；解码能力缺失 / 容器不可解码 →
+     抛错，由调用方 toast（缺口 F 不细化错误分类）。 */
+  const waveFromBlob = async (blob) => {
+    if (typeof AudioContext === "undefined" || typeof OfflineAudioContext === "undefined") {
+      throw new Error(tr("cosmos.constFloat.voiceDenied", "无法访问麦克风：请检查浏览器权限与环境"));
+    }
+    const context = new AudioContext();
+    try {
+      const decoded = await context.decodeAudioData(await blob.arrayBuffer());
+      const offline = new OfflineAudioContext(1, Math.max(1, Math.floor(decoded.duration * 16000)), 16000);
+      const source = offline.createBufferSource();
+      source.buffer = decoded;
+      source.connect(offline.destination);
+      source.start();
+      const resampled = await offline.startRendering();
+      return encodeWave(resampled.getChannelData(0));
+    } finally {
+      try {
+        Promise.resolve(context.close?.()).catch(() => {});
+      } catch {
+        /* 上下文已关闭：忽略（MUST NOT 掩盖转写产物的成败） */
+      }
+    }
+  };
   const finishVoice = () => {
     const recorder = voiceRefs.current.recorder;
     if (recorder && recorder.state !== "inactive") recorder.stop(); // onstop 承担收尾与转写
   };
   const startVoice = () => {
     if (voiceState !== "idle" || speech === null) return;
-    if (typeof navigator === "undefined" || !navigator.mediaDevices || typeof navigator.mediaDevices.getUserMedia !== "function" || typeof MediaRecorder === "undefined") {
+    /* 不可用守卫（spec「未启用置灰呈现」）：置灰态下快捷键与按钮同一引导语义——
+       不起录音（否则录完必然转写失败，误导用户）。 */
+    if (!speechAvailable) {
+      voiceUnavailableNotice();
+      return;
+    }
+    if (typeof navigator === "undefined" || !navigator.mediaDevices || typeof navigator.mediaDevices.getUserMedia !== "function"
+      || typeof MediaRecorder === "undefined" || typeof AudioContext === "undefined" || typeof OfflineAudioContext === "undefined") {
       notify?.(tr("cosmos.constFloat.voiceDenied", "无法访问麦克风：请检查浏览器权限与环境"), true);
       return;
     }
+    /* 抢占代次（design D5）：授权期间关窗/失焦/卸载 → releaseVoice 递增代次，本轮授权
+       settle 后自我作废并释放轨道（MUST NOT 在已关闭的浮窗上开始采集）。 */
+    const run = voiceRunRef.current + 1;
+    voiceRunRef.current = run;
+    voiceDisposedRef.current = false;
     navigator.mediaDevices.getUserMedia({ audio: true }).then((stream) => {
+      if (run !== voiceRunRef.current || voiceDisposedRef.current) {
+        for (const track of stream.getTracks?.() ?? []) track.stop();
+        return;
+      }
       const recorder = new MediaRecorder(stream);
-      const chunks = voiceRefs.current.chunks;
-      chunks.length = 0;
+      const chunks = [];
       recorder.ondataavailable = (event) => {
         if (event.data && event.data.size > 0) chunks.push(event.data);
       };
+      /* 设备中断（拔麦 / 系统回收）走同一复位（spec「设备中断复位」）：释放 + 状态复位
+         idle；转写中 recorder 已摘下（null）→ 不误伤在途转写。 */
+      const onTrackEnded = () => {
+        if (run !== voiceRunRef.current || voiceRefs.current.recorder === null) return;
+        releaseVoice();
+        setVoiceState("idle");
+      };
+      for (const track of stream.getTracks?.() ?? []) {
+        if (typeof track.addEventListener === "function") track.addEventListener("ended", onTrackEnded);
+      }
       recorder.onstop = () => {
-        /* 收尾：释放麦克风 → 组 Blob → 转写 → 追加草稿。任一步失败 toast，浮窗留存。 */
+        /* 释放守卫（design D5）：兜底 stop（关窗 / 卸载 / 失焦 / 切后台）与迟到的旧
+           recorder MUST 只释放采集、MUST NOT 进入转写链（否则以冻结的陈旧基线覆盖草稿）。 */
+        const disposed = voiceDisposedRef.current || run !== voiceRunRef.current;
         for (const track of voiceRefs.current.stream?.getTracks?.() ?? []) track.stop();
         voiceRefs.current.stream = null;
         voiceRefs.current.recorder = null;
-        const blob = new Blob(chunks, { type: recorder.mimeType || "audio/webm" });
+        if (disposed) return;
+        const blob = new Blob(chunks, { type: recorder.mimeType });
         setVoiceState("transcribing");
         Promise.resolve()
-          .then(() => blob.arrayBuffer())
-          .then((buffer) => bytesToBase64(new Uint8Array(buffer)))
-          .then((audioBase64) => speech.transcribe(audioBase64))
+          .then(() => waveFromBlob(blob))
+          .then((wave) => speech.transcribe(bytesToBase64(wave)))
           .then((result) => {
-            const text = result !== null && typeof result === "object" && typeof result.text === "string" ? result.text : "";
+            /* 在途转写守卫（design D5）：关窗/卸载已递增代次 → 整体丢弃——不 setDraft、
+               不 setState（杜绝陈旧基线覆盖与卸载态写入）。 */
+            if (run !== voiceRunRef.current) return;
+            /* 信封消费（design D3）：`RemoteResult` 失败分支如实呈现 `error.message`，
+               MUST NOT 与「未识别到语音」混淆。 */
+            if (result === null || typeof result !== "object" || result.ok !== true) {
+              const message = result !== null && typeof result === "object"
+                && result.error !== null && typeof result.error === "object"
+                && typeof result.error.message === "string"
+                ? result.error.message
+                : "";
+              setVoiceState("idle");
+              notify?.(tr("cosmos.constFloat.voiceFailed", "语音转写失败：") + message, true);
+              return;
+            }
+            const text = result.value !== null && typeof result.value === "object" && typeof result.value.text === "string"
+              ? result.value.text
+              : "";
+            setVoiceState("idle");
             if (text === "") {
               notify?.(tr("cosmos.constFloat.voiceEmpty", "未识别到语音"), true);
-            } else if (inputActions !== null && typeof inputActions.setDraft === "function") {
-              const glue = draft === "" || draft.endsWith("\n") ? "" : "\n";
-              inputActions.setDraft(draft + glue + text);
+              return;
             }
-            setVoiceState("idle");
+            if (inputActions === null || typeof inputActions.setDraft !== "function") return;
+            /* 落稿基准取**最新**草稿镜像（design D6）：录音期间的手动输入零丢失，
+               既有内容零改写（仅以单个换行衔接后追加）。 */
+            const glue = draftRef.current === "" || draftRef.current.endsWith("\n") ? "" : "\n";
+            inputActions.setDraft(draftRef.current + glue + text);
           })
           .catch((error) => {
+            if (run !== voiceRunRef.current) return;
             setVoiceState("idle");
             notify?.(tr("cosmos.constFloat.voiceFailed", "语音转写失败：") + String(error?.message || error), true);
           });
@@ -2098,8 +2670,23 @@ function ConstellationFloatDock(props) {
       recorder.start();
       setVoiceState("recording");
     }).catch(() => {
+      /* 授权失败：浮窗已被关/卸载（代次已变）则静默——MUST NOT 对已关闭的浮窗报错。 */
+      if (run !== voiceRunRef.current) return;
       notify?.(tr("cosmos.constFloat.voiceDenied", "无法访问麦克风：请检查浏览器权限与环境"), true);
     });
+  };
+  /* 置灰钮点击（spec「置灰点击引导」）：toast 指引 + 尝试跳语音 Bundle 详情页；
+     `pluginNavigation` 桥缺席或跳转失败由 face 内部降级为纯 toast（零降级噪音）。 */
+  const voiceUnavailableNotice = () => {
+    notify?.(tr(
+      "cosmos.constFloat.voiceUnavailable",
+      "需要在配置中开启语音功能：设置 → 插件 → 语音输入"
+    ), true);
+    try {
+      speech?.openBundle?.();
+    } catch {
+      /* 跳转失败：保留纯 toast 引导（不干扰主流程） */
+    }
   };
 
   return createPortal(
@@ -2199,14 +2786,19 @@ function ConstellationFloatDock(props) {
           }}
         />
         <div className="dsh-cosmos-const-float-foot">
+          {/* 语音钮三分支（fix-cosmos-const-float-voice design D4 / spec「未启用置灰呈现」）：
+              语音可用 = 正常状态机钮（idle → 语音 / recording → 停止 / transcribing → 转写中…）；
+              语音不可用（语音 Bundle 未启用 或 旧宿主 face 缺席，客户端 SHALL NOT 区分）=
+              置灰但**可点**钮——MUST NOT 用原生 `disabled` 承载不可用语义（disabled 钮不派发
+              click，提示与引导将永远无法触达）；「转写中」门控仍用真 `disabled`（该态无点击行为）。 */}
           {speechAvailable ? (
             <button
               type="button"
               className="dsh-cosmos-const-float-voice"
               data-state={voiceState}
               disabled={voiceState === "transcribing"}
-              aria-label={tr("cosmos.constFloat.voiceAria", "语音输入")}
-              title={tr("cosmos.constFloat.voiceAria", "语音输入")}
+              aria-label={tr("cosmos.constFloat.voiceAria", "语音输入") + " · " + shortcutLabelOf(voiceKey)}
+              title={tr("cosmos.constFloat.voiceAria", "语音输入") + " · " + shortcutLabelOf(voiceKey)}
               onClick={() => {
                 if (voiceState === "recording") finishVoice();
                 else if (voiceState === "idle") startVoice();
@@ -2218,9 +2810,21 @@ function ConstellationFloatDock(props) {
                   ? tr("cosmos.constFloat.voiceBusy", "转写中…")
                   : tr("cosmos.constFloat.voiceStart", "语音")}
             </button>
-          ) : null}
+          ) : (
+            <button
+              type="button"
+              className="dsh-cosmos-const-float-voice"
+              data-state="unavailable"
+              aria-disabled="true"
+              aria-label={tr("cosmos.constFloat.voiceAria", "语音输入")}
+              title={tr("cosmos.constFloat.voiceUnavailable", "需要在配置中开启语音功能：设置 → 插件 → 语音输入")}
+              onClick={voiceUnavailableNotice}
+            >
+              {tr("cosmos.constFloat.voiceStart", "语音")}
+            </button>
+          )}
           <span className="dsh-cosmos-const-float-hint">
-            {tr("cosmos.constFloat.hint", "Enter 发送 · Shift+Enter 换行 · 发送后浮窗关闭；关闭或 Esc 保留草稿不发送。")}
+            {floatHintText}
           </span>
           <button type="button" className="dsh-cosmos-const-float-send" onClick={send}>
             {tr("cosmos.constFloat.send", "发送")}
@@ -2407,6 +3011,52 @@ function preflightPrefsOf(settings) {
   return { constPreflight: settings.constPreflight };
 }
 
+/* ------------------------------------------------------------------ *
+ * 全局快捷键投影（add-cosmos-shortcuts 5.3）
+ *
+ * 模块级 store——设置页「快捷键」页签的受控镜像（navFace 同构）：写入唯一链路 =
+ * 控制器 `saveShortcuts`（净房持久化 → 已打开引擎 `setShortcuts` 热更 → 本 store），
+ * 冷启动值取持久化偏好（`shortcutsOf` 净房：池校验 + 读面冲突回落，恒无重复）。
+ * 关闭链/按钮键分发/浮窗语音键一律经 ref 或本 store 读**当前生效**键位（不按配置重绑
+ * 监听——仓库 effect 纪律：监听只绑一次，配置走 ref 读取）。
+ * ------------------------------------------------------------------ */
+
+const cosmosShortcutsStore = createSnapshotStore(shortcutsOf(loadCosmosSettings().shortcuts));
+
+/** 当前生效快捷键表（净房后的四键副本；分发器/面板直接消费）。 */
+function currentShortcuts() {
+  return cosmosShortcutsStore.getSnapshot();
+}
+
+/* 两列表按钮草稿投影（跨域唯一性查重的数据面，spec cosmos-shortcuts「跨域唯一性校验」）：
+   apply 内把两个按钮设置控制器的快照同步进本 store——「快捷键」页签与两个动作页签据此
+   即时判定「全局键 × 按钮键 / 按钮键 × 按钮键 / 跨列表」冲突（行内定位 + 面板提示）。 */
+const cosmosButtonDraftsStore = createSnapshotStore({ proposals: [], constellations: [] });
+
+/** 两列表当前草稿（跨域查重输入；形状防御）。 */
+function buttonDraftsOf() {
+  const snapshot = cosmosButtonDraftsStore.getSnapshot();
+  return {
+    proposals: Array.isArray(snapshot?.proposals) ? snapshot.proposals : [],
+    constellations: Array.isArray(snapshot?.constellations) ? snapshot.constellations : []
+  };
+}
+
+/* ------------------------------------------------------------------ *
+ * 浮窗打开态探针（add-cosmos-shortcuts 4.2/5.2/D13 模态让位）
+ *
+ * 浮窗（星座补写卡片）是模态上下文：打开时引擎侧 `goHome`/`togglePan` 与外壳按钮键
+ * 分发 MUST NOT 生效（语音键与关闭键例外）。浮窗组件 armed 时计数 +1、卸载/收卡 -1；
+ * 引擎经注入探针读取（零新增通信面），外壳分发器直接调用同一函数。
+ * ------------------------------------------------------------------ */
+
+let cosmosFloatArmedCount = 0;
+
+/** 浮窗是否打开（模态让位判据；计数防御下界 0）。 */
+function floatOpenOf() {
+  return cosmosFloatArmedCount > 0;
+}
+
 /** 当前皮肤实例的调色面（恒星临终色等引擎级标记口径与皮肤同源）。 */
 function activeSkinPalette() {
   return createSkin(currentSkinId()).palette;
@@ -2478,7 +3128,7 @@ let cosmosSelectWarned = false;
 
 /**
  * 标记一次「整页控制器缺失」失败（face 调用边界专用；幂等）。
- * @param {"skin"|"nav"|"preflight"} face 失败所属设置页签
+ * @param {"skin"|"nav"|"preflight"|"shortcuts"} face 失败所属设置页签
  */
 function markSelectFailure(face) {
   const current = cosmosSelectHealthStore.getSnapshot().lastFailure;
@@ -2541,7 +3191,19 @@ function CosmosPage(props) {
   const degraded = pageLeft === null;
   const hostRef = useRef(null);
 
-  const close = () => cosmosOpenStore.set(false);
+  /* 关闭整页（标题栏关闭按钮 / Esc 分层末层共用的唯一写点）：独立窗口态收敛为关窗，
+     被浏览器拒绝时由 requestPageClose 落「手动关窗」提示（design D5）。 */
+  const close = () => requestPageClose();
+
+  /* 独立窗口双窗提示 / 手动关窗提示（D2/D5）：presence 帧与关页裁决同源，均经模块
+     store 订阅（hooks 先于任何早退注册，Hook 顺序恒定；文案在 tr 定义后派生）。 */
+  const presenceState = useSyncExternalStore(cosmosPresenceStore.subscribe, cosmosPresenceStore.getSnapshot);
+  const closeHint = useSyncExternalStore(cosmosStandaloneStore.subscribe, cosmosStandaloneStore.getSnapshot).closeHint === true;
+
+  /* 全局快捷键生效表（add-cosmos-shortcuts 5.1/5.2）：受控镜像订阅——关闭链、搜索框
+     聚焦层、按钮键分发与浮窗提示全部经此读取「当前生效键位」。effect 依赖**不含**配置
+     （经 ref 读取，监听绑定一次；陈旧闭包纪律沿用）。 */
+  const shortcuts = useSyncExternalStore(cosmosShortcutsStore.subscribe, cosmosShortcutsStore.getSnapshot);
 
   /* 搜索过滤（add-cosmos-search-filter 3.2/3.3）：受控输入 + 查询 ref。
      查询经 ref 供外壳 Esc 分层读取——keydown effect 不把 query 放依赖（防陈旧闭包
@@ -2570,6 +3232,15 @@ function CosmosPage(props) {
       return fallback;
     }
   };
+  /* 独立窗口页内提示行（D2/D5）：双窗共存提示（count ≥ 2，不阻断浏览）+ 脚本关窗被拒
+     后的手动关窗提示（占位与可见 Cosmos 恒一致）。内嵌态恒空（零渲染）。 */
+  const standaloneHints = [];
+  if (STANDALONE && otherWindowHintOf({ standalone: true, count: presenceState?.count })) {
+    standaloneHints.push(tr("cosmos.standalone.otherWindow", "已有另一 Cosmos 窗口（数据实时同态，可共存）"));
+  }
+  if (STANDALONE && closeHint) {
+    standaloneHints.push(tr("cosmos.standalone.manualClose", "请手动关闭本窗口以释放占位"));
+  }
   const applyQuery = (next) => {
     const value = typeof next === "string" ? next : String(next ?? "");
     queryRef.current = value;
@@ -2767,6 +3438,78 @@ function CosmosPage(props) {
     await controller.actions.runConstButton({ button, group: drillGroup });
   };
 
+  /* ── 动作条键盘快捷键分发（add-cosmos-shortcuts 5.2 / spec cosmos-actions「动作条键盘
+     快捷键触发」、spec cosmos-constellation-actions「星座动作条键盘快捷键触发」）──
+     canonical → 按钮映射（useMemo 重建 + ref 同步给一次绑定的监听 effect）：
+      - 数据面 = 已做 preState 渲染过滤的两条动作条按钮列表（隐藏按钮无键通道）；
+      - 门控与点击完全等效：提案侧「动作条点亮（有选中）」+ 行级禁用 + 控制器防重入门；
+        星座侧「钻取态（drillGroup 存在）」；两者弹 toast/执行链路全部复用点击路径；
+      - 守卫（D12 分档）：repeat / IME / **可编辑元素聚焦**；**不含 chrome 聚焦守卫**
+        （`isUiChromeTarget` 覆盖提案/会话面板，而「点击卡片选中提案后按键」正是主流程——
+        焦点滞留在卡片按钮上；新键位非原生激活、面板内数字/功能键无面板语义）、
+        浮窗模态让位、Shift/Meta 跳过（Ctrl/Alt 交 canonical 精确匹配）；
+      - 与全局键漂移防御：命中的规范形若恰等于当前全局键则跳过（保存面已查重拒绝，
+        手工漂移下确定性优先）；命中 preventDefault。 */
+  const buttonShortcutMap = useMemo(() => {
+    const map = new Map();
+    const add = (list, kind) => {
+      for (const button of Array.isArray(list) ? list : []) {
+        const value = typeof button?.shortcut === "string" ? button.shortcut.trim() : "";
+        /* 只认按钮键域池内值（add-cosmos-shortcuts D7）：手工漂移值在设置页呈「不可用」，
+           分发器 MUST NOT 让其成为可触发键（否则漂移会把任意物理键变成动作入口）。 */
+        if (!value || !isButtonShortcut(value)) continue;
+        if (!map.has(value)) map.set(value, { kind, button });
+      }
+    };
+    add(constButtons, "constellation");
+    add(actionButtons, "proposal");
+    return map;
+  }, [actionButtons, constButtons]);
+  const buttonDispatchRef = useRef(null);
+  useEffect(() => {
+    /* 每次渲染同步一次（不重绑监听）：配置/草稿/选中态全部经该 ref 读取。 */
+    buttonDispatchRef.current = {
+      map: buttonShortcutMap,
+      selectedCard,
+      drillGroup,
+      stateOf: actionButtonStateOf,
+      runAction,
+      runConstAction
+    };
+  });
+  useEffect(() => {
+    const onKey = (ev) => {
+      const view = buttonDispatchRef.current;
+      if (!view || view.map.size === 0) return;
+      if (ev.repeat === true) return;
+      if (ev.isComposing === true || ev.keyCode === 229) return;
+      if (ev.shiftKey === true || ev.metaKey === true) return;
+      const canonical = canonicalOfEvent(ev);
+      if (!canonical) return;
+      const entry = view.map.get(canonical);
+      if (!entry) return;
+      const configured = currentShortcuts();
+      if (canonical === configured.closePage || canonical === configured.goHome || canonical === configured.togglePan) return;
+      const active = typeof document !== "undefined" ? document.activeElement : null;
+      /* 仅可编辑元素让位：卡片/动作条按钮聚焦**不**构成守卫（点击选中后按键是主流程）。 */
+      if (isEditableTarget(active)) return;
+      if (floatOpenOf()) return; // 浮窗模态让位（D13）
+      if (entry.kind === "proposal") {
+        if (view.selectedCard === null) return; // 动作条熄灭 → 静默 no-op
+        const extra = typeof view.stateOf === "function" ? view.stateOf(entry.button) : null;
+        if (extra?.disabled === true) return; // 行级禁用 → 静默 no-op
+        ev.preventDefault();
+        view.runAction(entry.button);
+        return;
+      }
+      if (view.drillGroup === null) return; // 星座条限钻取态（银河态无动作目标）
+      ev.preventDefault();
+      view.runConstAction(entry.button);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
   /* 点卡片 = 选中 + 聚焦飞行（add-cosmos-selection-linkage 3.3 / D1）：面板选中先行落定
      （动作条即时点亮、无「先清后选」中间态），随后请引擎「把镜头带到那颗星」——飞行失败
      （骨架时序差 / 已归档 / 星胚）仅静默降级，动作目标不受影响。 */
@@ -2819,18 +3562,15 @@ function CosmosPage(props) {
     };
   }, []);
 
-  /* 页签可见性 → 渲染循环启停（4.6）。 */
+  /* 页签可见性 → 渲染循环启停（4.6）：启停唯一听 `document.hidden`（整页关闭一侧见
+     上方开合 effect）。窗口失焦不暂停——spec「渲染节能」规定整页打开且页签可见时
+     MUST NOT 因失焦暂停（失焦续播）；浏览器 rAF 节流同样以 `document.hidden` 为界，
+     失焦但可见时照常满速，故此处不挂 window blur/focus（fix-cosmos-blur-pause D1）。 */
   useEffect(() => {
     const onVisibility = () => controllerRef.current?.setVisible(!document.hidden);
-    const onBlur = () => controllerRef.current?.setVisible(false);
-    const onFocus = () => controllerRef.current?.setVisible(true);
     document.addEventListener("visibilitychange", onVisibility);
-    window.addEventListener("blur", onBlur);
-    window.addEventListener("focus", onFocus);
     return () => {
       document.removeEventListener("visibilitychange", onVisibility);
-      window.removeEventListener("blur", onBlur);
-      window.removeEventListener("focus", onFocus);
     };
   }, []);
 
@@ -2838,29 +3578,42 @@ function CosmosPage(props) {
      add-cosmos-session-list-panel 3.4 插入收起会话面板层）：
      钻取返回/清选中 > 清空搜索 > 收起会话面板（展开态时） > 退全屏 > 关整页。
      引擎自带的 window keydown（demo）已收编——随 overlay 卸载自动移除。
+     **关闭键参数化**（add-cosmos-shortcuts 5.1/D3）：整条链跟随配置键（canonical 匹配，
+     缺省 `Escape`）——一条链一个键、一个心智模型；配置键非 `Esc` 时 `Esc` MUST NOT 被
+     Cosmos 消费（无任何 Cosmos 行为），宿主语义回归。修饰键裁决与其余键位统一
+     （Shift/Meta 恒跳过，Ctrl/Alt 交 canonical 精确匹配；组字中让位输入法）。
      清空层读查询 MUST 经 ref（effect 依赖不含 query，防陈旧闭包与监听重绑）；
-     面板展开态读模块 store（同一理由：不把 open 放进依赖重绑监听）。 */
+     面板展开态读模块 store、快捷键读模块 store（同一理由：不把配置放进依赖重绑监听）。 */
   useEffect(() => {
     const onKey = (e) => {
-      if (e.key !== "Escape") return;
+      if (!shortcutMatches(e, currentShortcuts().closePage)) return;
+      /* IME 组字中：关闭键归输入法（取消候选），MUST NOT 触发任何 Cosmos 分层。 */
+      if (e.isComposing === true || e.keyCode === 229) return;
       const controller = controllerRef.current;
       const engine = controller?.getEngine?.();
-      if (engine?.consumeEscape?.()) return;
+      if (engine?.consumeEscape?.()) {
+        e.preventDefault();
+        return;
+      }
       if (queryRef.current.trim()) {
         applyQuery("");
+        e.preventDefault();
         return;
       }
       /* 收起会话面板层：仅展开态消费（折叠态跳过，语义回到既有分层）；
          与标题栏开合按钮同一写者（含 settings 持久化）。 */
       if (sessionPanelOpenOf()) {
         setSessionPanelOpen(false);
+        e.preventDefault();
         return;
       }
       if (fullscreen) {
         exitFullscreen();
+        e.preventDefault();
         return;
       }
       close();
+      e.preventDefault();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -2887,7 +3640,7 @@ function CosmosPage(props) {
         position: "absolute",
         top: 0,
         bottom: 0,
-        left: degraded ? 0 : pageLeft,
+        left: STANDALONE || degraded ? 0 : pageLeft,
         right: 0,
         overflow: "hidden",
         /* 整页底色随肤（3.1：`--cos-bg` 令牌；fallback = 风格 D 现值 `#070812`）。 */
@@ -2925,6 +3678,19 @@ function CosmosPage(props) {
       }}
     >
       <div ref={hostRef} style={{ position: "absolute", inset: 0 }} />
+      {/* 独立窗口页内提示条（add-cosmos-standalone-window D2/D5）：双窗共存 / 手动关窗；
+          内嵌态恒不渲染（standaloneHints 空 ⇒ 零布局）。 */}
+      {standaloneHints.length > 0 ? (
+        <div
+          className="cos-standalone-hint"
+          role="status"
+          data-plugin-anchor="dsh-v-cosmos:standalone-hint"
+        >
+          {standaloneHints.map((text, index) => (
+            <span key={index} className="cos-standalone-hint-line">{text}</span>
+          ))}
+        </div>
+      ) : null}
       <ProposalPanel
         t={tr}
         model={panelModel}
@@ -2934,6 +3700,7 @@ function CosmosPage(props) {
         /* 星座动作条（仅钻取态）：目标分组缺失（钻取目标注销）时传空列表 → footer 零布局。 */
         constButtons={drillGroup === null ? [] : constButtons}
         onRunConst={runConstAction}
+        closeKey={shortcuts.closePage}
       />
       {/* 左缘会话列表面板（add-cosmos-session-list-panel；swap-cosmos-panel-sides 移至左缘；
           swap-cosmos-session-toggle-titlebar 把手退役）：overlay 式，不参与布局流（画布零扰动）；
@@ -2985,8 +3752,11 @@ function CosmosPage(props) {
             onFocus={() => setSearchFocused(true)}
             onBlur={() => setSearchFocused(false)}
             onKeyDown={(e) => {
-              if (e.key !== "Escape") return;
-              /* 聚焦态 Esc = 清空 + 失焦，MUST NOT 冒泡到外壳分层（关页/退全屏）。 */
+              /* 关闭键参数化（add-cosmos-shortcuts 5.1/D3）：聚焦态关闭键 = 清空 + 失焦，
+                 MUST NOT 冒泡到外壳分层（关页/退全屏）；键位跟随全局配置，配置键非 Esc 时
+                 Esc 在本框亦不消费（无任何 Cosmos 行为）。组字中让位输入法。 */
+              if (e.isComposing === true || e.keyCode === 229) return;
+              if (!shortcutMatches(e, shortcuts.closePage)) return;
               e.preventDefault();
               e.stopPropagation();
               applyQuery("");
@@ -3035,17 +3805,56 @@ function CosmosPage(props) {
 const COSMOS_ICON_SVG =
   '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="3.2" fill="currentColor"/><ellipse cx="12" cy="12" rx="10" ry="4.2" stroke="currentColor" stroke-width="1.6" transform="rotate(-24 12 12)"/><circle cx="20.2" cy="8.2" r="1.4" fill="currentColor"/></svg>';
 
+/**
+ * 侧栏底部座位「Cosmos」（add-cosmos-standalone-window 4.1–4.3 分流与占位禁用）：
+ *  - 点击时**现读** launchMode（`effectiveLaunchModeOf`：桌面形态恒 embedded，D7）——
+ *    embedded 走现状（`cosmosOpenStore` 开合内嵌整页，零变化）；window 走
+ *    `window.open(origin + "/?cosmos=window")`，返回空（弹窗被拦截，D3/Risks）→
+ *    toast 引导放行弹窗（MUST NOT 静默失败）；
+ *  - 占位计数 ≥1（presence 帧）⇒ 按钮禁用 + 「Cosmos 已在独立窗口打开」提示
+ *    （wide/rail 双形态；aria 语义保留：`disabled` + `aria-disabled` + title）；
+ *  - `storage` 事件将 launchMode 变更同步进受控镜像 → 文案/行为跨窗口即时跟随。
+ * @param {{wide?: boolean, t: (key: string) => string}} props
+ */
 function CosmosSeat({ wide, t }) {
   const open = useCosmosOpen();
-  const toggle = () => cosmosOpenStore.set(!cosmosOpenStore.getSnapshot());
+  const presenceState = useSyncExternalStore(cosmosPresenceStore.subscribe, cosmosPresenceStore.getSnapshot);
+  const launchState = useSyncExternalStore(cosmosLaunchStore.subscribe, cosmosLaunchStore.getSnapshot);
+  const locked = seatLockOf(presenceState?.count);
+  const mode = effectiveLaunchModeOf({ launchMode: launchState?.launchMode, protocol: pageProtocol() });
+  const windowMode = mode === "window";
+  const tr = (key, fallback) => {
+    try {
+      const value = typeof t === "function" ? t(key) : null;
+      return typeof value === "string" && value && value !== key ? value : fallback;
+    } catch {
+      return fallback;
+    }
+  };
+  const lockedText = tr("cosmos.seat.locked", "Cosmos 已在独立窗口打开");
+  const windowText = tr("cosmos.seat.windowAria", "在独立窗口打开 Cosmos");
+  const embeddedText = tr("cosmos.seat.aria", "打开 Cosmos 星系视图");
+  const hint = locked ? lockedText : (windowMode ? windowText : embeddedText);
+  const toggle = () => {
+    /* 占位锁：禁用态之外的兜底（状态帧到达与点击之间的竞态窗口）——静默 no-op。 */
+    if (locked) return;
+    if (windowMode) {
+      openStandaloneWindow(tr("cosmos.seat.popupBlocked", "浏览器拦截了独立窗口，请放行弹窗后重试"));
+      return;
+    }
+    cosmosOpenStore.set(!cosmosOpenStore.getSnapshot());
+  };
   if (wide) {
     return (
-      <div className="cos-seat" data-active={open || undefined}>
+      <div className="cos-seat" data-active={open || undefined} data-locked={locked || undefined} title={locked ? lockedText : undefined}>
         <button
           type="button"
           className="cos-seat-row"
           data-plugin-anchor="dsh-v-cosmos:seat"
-          aria-expanded={open}
+          aria-expanded={windowMode || locked ? undefined : open}
+          aria-disabled={locked || undefined}
+          disabled={locked}
+          title={hint}
           onClick={toggle}
         >
           <span className="cos-seat-icon" dangerouslySetInnerHTML={{ __html: COSMOS_ICON_SVG }} />
@@ -3055,14 +3864,16 @@ function CosmosSeat({ wide, t }) {
     );
   }
   return (
-    <div className="cos-seat" data-active={open || undefined}>
+    <div className="cos-seat" data-active={open || undefined} data-locked={locked || undefined} title={locked ? lockedText : undefined}>
       <button
         type="button"
         className="cos-seat-rail"
         data-plugin-anchor="dsh-v-cosmos:seat"
-        aria-label={t("cosmos.seat.aria")}
-        aria-expanded={open}
-        title={t("cosmos.seat")}
+        aria-label={hint}
+        aria-expanded={windowMode || locked ? undefined : open}
+        aria-disabled={locked || undefined}
+        disabled={locked}
+        title={hint}
         onClick={toggle}
         dangerouslySetInnerHTML={{ __html: COSMOS_ICON_SVG }}
       />
@@ -3348,6 +4159,11 @@ ${ENGINE_CSS}
 .dsh-cosmos-const-float-voice[data-state=recording]{color:#fff;border-color:var(--dsw-alias-state-error-primary,#ff9f9f);
   background:var(--dsw-alias-state-error-primary,rgba(255,120,120,.35))}
 .dsh-cosmos-const-float-voice[data-state=transcribing]{opacity:.6;cursor:default}
+/* 不可用（语音 Bundle 未启用 / 旧宿主 face 缺席）：置灰但仍可点（点击 → 引导 toast +
+   Bundle 详情页跳转），故只降视觉权重、不吞事件——MUST NOT 写 pointer-events:none。 */
+.dsh-cosmos-const-float-voice[data-state=unavailable]{opacity:.6;cursor:not-allowed;
+  border-color:var(--dsw-alias-border-l1,var(--cos-line,rgba(255,210,140,.28)))}
+.dsh-cosmos-const-float-voice[data-state=unavailable]:hover{background:transparent}
 .dsh-cosmos-const-float-voice:focus-visible{outline:1px solid rgb(var(--cos-accent-rgb,255 210 140) / .85);outline-offset:2px}
 .dsh-cosmos-const-float-hint{flex:1;min-width:0;font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary,#cbb89a)}
 .dsh-cosmos-const-float-send{flex:none;box-sizing:border-box;min-width:84px;min-height:40px;padding:8px 16px;cursor:pointer;
@@ -3399,7 +4215,18 @@ ${ENGINE_CSS}
 [data-cos-mode="light"] .cos-chip,
 [data-cos-mode="light"] .cos-toast{box-shadow:var(--cos-shadow,none);text-shadow:none}
 [data-cos-mode="light"] .cos-scanlines{display:none}
-`;
+/* ── 座位占位锁定态（add-cosmos-standalone-window 4.2）：disabled 视觉 + 无悬停反馈；
+      提示文案走 title/aria（wide/rail 双形态同源）。 ── */
+.cos-seat-row:disabled,.cos-seat-rail:disabled{cursor:not-allowed;opacity:.5}
+.cos-seat-row:disabled:hover,.cos-seat-rail:disabled:hover{background:0 0}
+/* ── 独立窗口页内提示条（add-cosmos-standalone-window D2/D5）：贴底中、动作条之上、
+      引擎 toast 之上（z=58 > toast 30 / 动作条 43）；提示条是状态呈现，不拦截指针。 ── */
+.cos-standalone-hint{position:absolute;left:50%;bottom:calc(var(--cos-actions-h,0px) + 72px);transform:translateX(-50%);z-index:58;
+  display:flex;flex-direction:column;gap:4px;align-items:center;max-width:min(560px,72vw);padding:6px 12px;pointer-events:none;
+  background:var(--cos-panel-soft,rgba(8,8,16,.62));border:1px solid rgb(var(--cos-accent-rgb,255 210 140) / .35);
+  color:var(--cos-accent-ink,#ffe3b8);font-size:12px;line-height:16px;letter-spacing:.5px;text-align:center}
+.cos-standalone-hint-line{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
+${STANDALONE_CSS}`;
 
 function installStyles(ctx) {
   if (typeof document === "undefined") return;
@@ -3551,6 +4378,27 @@ export function apply(ctx) {
   const t = ctx.locale.bind(NS);
   const sectionT = ctx.locale.bind(NS);
 
+  /* ── 设置跨窗口桥（add-cosmos-standalone-window 2.1/D4）：同源 localStorage 是全部
+     窗口共享的唯一设置面——他窗写入 `launchMode` 后经 `storage` 事件同步进受控镜像
+     （座位文案/设置页单选即时跟随）；座位按钮点击另现读持久值（双保险）。与本面无关的
+     storage 键 → `settingsFromStorageEvent` 返回 null，静默忽略。 */
+  ctx.effect(() => {
+    if (typeof window === "undefined" || typeof window.addEventListener !== "function") return () => {};
+    const onStorage = (event) => {
+      const next = settingsFromStorageEvent(event);
+      if (next === null) return;
+      cosmosLaunchStore.set({ launchMode: next.launchMode });
+    };
+    window.addEventListener("storage", onStorage);
+    return () => {
+      try {
+        window.removeEventListener("storage", onStorage);
+      } catch {
+        /* 卸载期窗口已销毁（独立窗口关窗）→ 忽略 */
+      }
+    };
+  }, "dsh-v-cosmos: settings storage bridge");
+
   /* ── 动作按钮配置通道 + 动作条数据面（add-cosmos-proposal-actions 2.4/5.x） ──
      三通道归一：自营 API（首选，apply 内同步 attach）→ settingsScope / configForms
      fallback → 合成只读（动作条不渲染、设置页只读，插件激活不受阻）。 */
@@ -3567,8 +4415,40 @@ export function apply(ctx) {
   const publishConstButtons = () => cosmosConstButtonsFace.set(constButtonsStore.getSnapshot());
   const offConstButtons = constButtonsStore.subscribe(publishConstButtons);
   publishConstButtons();
-  const buttonSettings = createButtonSettingsController(activeScope);
-  const constButtonSettings = createButtonSettingsController(activeScope, CONSTELLATION_PROFILE);
+  /* 跨域唯一性（add-cosmos-shortcuts 3.3/5.3/D9）：两个控制器实例的 `crossIssue` 在保存门
+     并集查重（本侧草稿 + 另一侧当前草稿 + 全局四键生效值）。侧别经闭包固定；「另一侧」
+     经惰性 holder 读取——控制器构造期即会 publish（此时对侧尚未创建，按空列表处理，
+     两实例就绪后再经一次 discard 触发重算，见下）。 */
+  const controllerSides = { proposals: null, constellations: null };
+  const shortcutCrossIssue = (side, entries) => {
+    const other = side === "proposals" ? controllerSides.constellations : controllerSides.proposals;
+    const otherDrafts = other?.getSnapshot?.()?.buttonsDraft ?? [];
+    const own = Array.isArray(entries) ? entries : [];
+    return shortcutsIssue(cosmosShortcutsStore.getSnapshot(), {
+      proposals: side === "proposals" ? own : otherDrafts,
+      constellations: side === "constellations" ? own : otherDrafts
+    });
+  };
+  const buttonSettings = createButtonSettingsController(activeScope, {
+    crossIssue: (entries) => shortcutCrossIssue("proposals", entries)
+  });
+  controllerSides.proposals = buttonSettings;
+  const constButtonSettings = createButtonSettingsController(activeScope, {
+    ...CONSTELLATION_PROFILE,
+    crossIssue: (entries) => shortcutCrossIssue("constellations", entries)
+  });
+  controllerSides.constellations = constButtonSettings;
+  /* 两实例就绪 → 用一次 discard（草稿已为 null，纯重算）让双方按完整「另一侧」重算合法性；
+     同时把两列表草稿投影进模块 store（「快捷键」页签 / 动作页签的行内冲突定位数据面）。 */
+  const publishButtonDrafts = () => cosmosButtonDraftsStore.set({
+    proposals: buttonSettings.getSnapshot()?.buttonsDraft ?? [],
+    constellations: constButtonSettings.getSnapshot()?.buttonsDraft ?? []
+  });
+  const offDraftProposals = buttonSettings.subscribe(publishButtonDrafts);
+  const offDraftConstButtons = constButtonSettings.subscribe(publishButtonDrafts);
+  buttonSettings.discard();
+  constButtonSettings.discard();
+  publishButtonDrafts();
 
   /* 模型目录桥（可选注入；缺失 → 目录降级、切换返回 unavailable）。 */
   let modelBridge = null;
@@ -3628,9 +4508,12 @@ export function apply(ctx) {
   /* 语音转写桥（rework 方案 2：浮窗语音钮**借官方语音 Bundle 的服务层**，不复用其 UI——
      官方 VoiceInput 注入 `conversation.input.activity` 驻留槽位，浮窗拿不到）。依赖链：
      语音 Bundle 启用后注册 `remote.speech` Remote face（独立服务键 → MUST 声明
-     "remote.speech"）；缺席（未启用）→ face.available=false，浮窗语音钮隐藏，零降级噪音。
-     转写调用 = `speech.transcribe({ audioBase64 })` → `{ text }`；录音格式与官方 UI 同构
-     （浏览器默认 MediaRecorder 容器 base64——官方 `createRecording` 即此做法）。
+     "remote.speech"）；缺席（未启用）→ face.available=false，浮窗语音钮转「置灰可点」
+     引导态（fix-cosmos-const-float-voice，零降级噪音）。
+     转写调用 = `speech.transcribe({ audioBase64 })` → `RemoteResult` 信封（`ok` /
+     `value.text` / `error.message`，由组件侧消费）；audioBase64 MUST 为 canonical
+     16 kHz 单声道 PCM16 WAV（宿主 `validateWave` 硬校验），容器格式由**组件侧**先转码
+     （与官方 `Recording.stop()` 同构），桥只做薄透传。
      引导跳转（未安装/未就绪时）经 `pluginNavigation.openBundle`（可选注入，缺席即不可跳）。 */
   let speechBridge = null;
   let pluginNavigationBridge = null;
@@ -3672,6 +4555,8 @@ export function apply(ctx) {
   ctx.effect(() => () => {
     offButtons?.();
     offConstButtons?.();
+    offDraftProposals?.();
+    offDraftConstButtons?.();
     buttonSettings.dispose();
     constButtonSettings.dispose();
     buttonsStore.dispose();
@@ -3679,6 +4564,7 @@ export function apply(ctx) {
     activeScope.dispose();
     cosmosButtonsFace.set({ buttons: [] });
     cosmosConstButtonsFace.set({ constellationButtons: [] });
+    cosmosButtonDraftsStore.set({ proposals: [], constellations: [] });
   }, "dsh-v-cosmos: settings scope");
 
   /* 控制器：providers + 引擎生命周期（与插件 fiber 同寿命）；**三套一次性标记**
@@ -3788,6 +4674,28 @@ export function apply(ctx) {
       CosmosSettingsSection
     )
   );
+  /* 3a. 「通用」标签页（add-cosmos-standalone-window 2.2/2.3）：order -1（置于「快捷动作」(0)
+      之前）；注入 launch face——受控镜像 = 模块级 cosmosLaunchStore，写入 = `applyLaunchMode`
+      （净房持久化 + 镜像；无引擎热更需求，故不经整页控制器）；`desktop` 为浏览器侧可观察
+      事实（`file://` 降级：控件禁用 + 说明，design D7）。 */
+  const launchFace = {
+    getSnapshot: () => cosmosLaunchStore.getSnapshot(),
+    subscribe: (listener) => cosmosLaunchStore.subscribe(listener),
+    set: (mode) => applyLaunchMode(mode)
+  };
+  ctx.slots.inject(SETTINGS_TAB_SLOT, () =>
+    ctx.slots.register(
+      {
+        name: SETTINGS_TAB_SLOT,
+        id: "general",
+        order: -1,
+        label: () => sectionT("cosmos.settings.tabGeneral"),
+        locale: NS,
+        inject: () => ({ launch: launchFace, desktop: DESKTOP_PROTOCOL })
+      },
+      CosmosGeneralPanel
+    )
+  );
   ctx.slots.inject(SETTINGS_TAB_SLOT, () =>
     ctx.slots.register(
       {
@@ -3796,7 +4704,7 @@ export function apply(ctx) {
         order: 0,
         label: () => sectionT("cosmos.settings.tabActions"),
         locale: NS,
-        inject: () => ({ face: buttonSettings, models: modelsFace })
+        inject: () => ({ face: buttonSettings, models: modelsFace, shortcuts: shortcutsFace, drafts: buttonDraftsFace })
       },
       CosmosActionsPanel
     )
@@ -3830,7 +4738,7 @@ export function apply(ctx) {
         order: 1,
         label: () => sectionT("cosmos.settings.tabConstActions"),
         locale: NS,
-        inject: () => ({ face: constButtonSettings, models: modelsFace, variant: "constellation", preflight: preflightFace })
+        inject: () => ({ face: constButtonSettings, models: modelsFace, variant: "constellation", preflight: preflightFace, shortcuts: shortcutsFace, drafts: buttonDraftsFace })
       },
       CosmosActionsPanel
     )
@@ -3904,6 +4812,45 @@ export function apply(ctx) {
     )
   );
 
+  /* 3e. 「快捷键」标签页（add-cosmos-shortcuts 7.1/5.3）：同一标签目录、order 4（「界面」之后）；
+      注入 shortcuts face（受控镜像 = 模块级 cosmosShortcutsStore；写入 = 控制器
+      saveShortcuts：净房持久化 + 已打开整页 engine.setShortcuts 热更）+ 两列表草稿数据面
+      （跨域冲突定位）+ health face（控制器缺失时「未生效」）。冲突在 face.set 前置拒绝。 */
+  const shortcutsFace = {
+    getSnapshot: () => cosmosShortcutsStore.getSnapshot(),
+    subscribe: (listener) => cosmosShortcutsStore.subscribe(listener),
+    set: (patch) => {
+      if (controllerRef.current == null) {
+        markSelectFailure("shortcuts");
+        return cosmosShortcutsStore.getSnapshot();
+      }
+      const current = cosmosShortcutsStore.getSnapshot();
+      const candidate = shortcutsOf({ ...current, ...(patch && typeof patch === "object" ? patch : {}) });
+      /* 跨域唯一性（D9 保存面）：冲突 → 拒绝写入（面板已做本地预判并回弹选择）。 */
+      if (shortcutConflictOf(candidate, buttonDraftsOf()) !== null) return current;
+      const merged = controllerRef.current.saveShortcuts?.(candidate) ?? null;
+      clearSelectFailure();
+      return merged !== null && merged !== undefined && merged.shortcuts ? { ...merged.shortcuts } : cosmosShortcutsStore.getSnapshot();
+    }
+  };
+  const buttonDraftsFace = {
+    getSnapshot: () => cosmosButtonDraftsStore.getSnapshot(),
+    subscribe: (listener) => cosmosButtonDraftsStore.subscribe(listener)
+  };
+  ctx.slots.inject(SETTINGS_TAB_SLOT, () =>
+    ctx.slots.register(
+      {
+        name: SETTINGS_TAB_SLOT,
+        id: "shortcuts",
+        order: 4,
+        label: () => sectionT("cosmos.settings.tabShortcuts"),
+        locale: NS,
+        inject: () => ({ shortcuts: shortcutsFace, drafts: buttonDraftsFace, selectHealth: selectHealthFace })
+      },
+      CosmosShortcutsPanel
+    )
+  );
+
   /* 4. hero 接力消费条目（add-cosmos-proposal-actions 4.4/4.5）：`conversation.input.dock`
      的 session 作用域列表条目，渲染 null，仅作新 blank 会话首屏的相位钩子。 */
   ctx.slots.inject("conversation.input.dock", () =>
@@ -3969,13 +4916,18 @@ export function apply(ctx) {
 
 /* 冒烟测试观测面（hive exports 先例）：只读镜像 + 纯函数引用，供 bundle 级冒烟
    直测导出面与推导口径；运行时行为不受影响。 */
-export { cosmosOpenStore, sceneVersionStore, filterStore, drillStore, engineSelectStore, cosmosButtonsFace, cosmosConstButtonsFace, cosmosSkinStore, cosmosNavStore, cosmosSessionPanelStore, cosmosSelectHealthOf, COSMOS_SKINS, COSMOS_SKIN_IDS, COSMOS_DEFAULT_SKIN, createSkin, applySkinTokens, mergeScene, sceneDiffLevel, planetStateOf, relativeTime, matchWorkspaces, filteredPositions, findRegisteredWorkspace, normalizeWorkspacePath, isWindowsPlatform, isEmptyConstellation, projectPanel, projectSessionPanel, sessionKeyOf, findCard, proposalKeyOf, assembleMessage, assembleEmbryoMessage, actionButtonVisible, draftMatches, isBlankDraft, pendingReadinessOf, createActionGate, createPendingActionStore, createActionExecutor, createEmbryoActionExecutor, consumePendingAction, explorationTargetOf, createModelBridge, ProposalPanel, SessionPanel, ActionBar, ConstActionBar, ActionHeroDock, ConstellationFloatDock, EmbryoActionDock, CosmosSettingsSection, CosmosActionsPanel, CosmosSkinPanel, CosmosNavPanel, SKIN_D_PALETTE, createSkinD, createCosmosEngine, isUiChromeTarget, fetchScene, subscribeCosmosEvents, loadCosmosSettings, saveCosmosSettings, COSMOS_SETTINGS_DEFAULTS, COSMOS_SETTINGS_BOUNDS, PENDING_DIVE_WAIT_MS, normalizeConstButtons, constButtonsSectionOf, constellationMessageOf, createFloatMarkerStore, createConstellationExecutor, floatPresentationOf, createButtonSettingsController, constButtonDraftOf, constButtonIssue, CONSTELLATION_PROFILE, isSessionArchiveOutcome, activitySummaryOf, archiveNoticeOf, archiveRequestFailureNotice };
+export { cosmosOpenStore, cosmosPresenceStore, cosmosLaunchStore, cosmosStandaloneStore, STANDALONE, DESKTOP_PROTOCOL, requestPageClose, applyLaunchMode, openStandaloneWindow, isStandaloneSearch, isStandalonePage, standaloneUrlOf, isDesktopProtocol, effectiveLaunchModeOf, seatLockOf, otherWindowHintOf, closeDecisionOf, CosmosGeneralPanel, sceneVersionStore, filterStore, drillStore, engineSelectStore, cosmosButtonsFace, cosmosConstButtonsFace, cosmosSkinStore, cosmosNavStore, cosmosShortcutsStore, cosmosButtonDraftsStore, cosmosSessionPanelStore, cosmosSelectHealthOf, currentShortcuts, buttonDraftsOf, floatOpenOf, COSMOS_SKINS, COSMOS_SKIN_IDS, COSMOS_DEFAULT_SKIN, createSkin, applySkinTokens, mergeScene, sceneDiffLevel, planetStateOf, relativeTime, matchWorkspaces, filteredPositions, findRegisteredWorkspace, normalizeWorkspacePath, isWindowsPlatform, isEmptyConstellation, projectPanel, projectSessionPanel, sessionKeyOf, findCard, proposalKeyOf, assembleMessage, assembleEmbryoMessage, actionButtonVisible, draftMatches, isBlankDraft, pendingReadinessOf, createActionGate, createPendingActionStore, createActionExecutor, createEmbryoActionExecutor, consumePendingAction, explorationTargetOf, createModelBridge, ProposalPanel, SessionPanel, ActionBar, ConstActionBar, ActionHeroDock, ConstellationFloatDock, EmbryoActionDock, CosmosSettingsSection, CosmosActionsPanel, CosmosSkinPanel, CosmosNavPanel, CosmosShortcutsPanel, SKIN_D_PALETTE, createSkinD, createCosmosEngine, isUiChromeTarget, fetchScene, subscribeCosmosEvents, bindSession, loadCosmosSettings, saveCosmosSettings, COSMOS_SETTINGS_DEFAULTS, COSMOS_SETTINGS_BOUNDS, PENDING_DIVE_WAIT_MS, normalizeConstButtons, constButtonsSectionOf, constellationMessageOf, createFloatMarkerStore, createConstellationExecutor, floatPresentationOf, createButtonSettingsController, constButtonDraftOf, constButtonIssue, CONSTELLATION_PROFILE, isSessionArchiveOutcome, activitySummaryOf, archiveNoticeOf, archiveRequestFailureNotice, SHORTCUT_DEFAULTS, SHORTCUT_FIELDS, SHORTCUT_UI_ORDER, SHORTCUT_GLOBAL_KEYS, SHORTCUT_BUTTON_KEYS, shortcutLabelOf, shortcutMatches, shortcutsOf, shortcutConflictOf, shortcutsIssue };
 
 /* 文案（zh/en 成对；引擎内嵌中文提示为 demo 语言的既定呈现）。 */
 const DICT = {
   zh: {
     "cosmos.seat": "Cosmos",
     "cosmos.seat.aria": "打开 Cosmos 星系视图",
+    /* 独立窗口入口语义（add-cosmos-standalone-window 4.1–4.3）：占位锁定提示 / 独立窗口
+       打开文案 / 弹窗拦截引导。 */
+    "cosmos.seat.locked": "Cosmos 已在独立窗口打开",
+    "cosmos.seat.windowAria": "在独立窗口打开 Cosmos",
+    "cosmos.seat.popupBlocked": "浏览器拦截了独立窗口，请放行弹窗后重试",
     "cosmos.add": "新增",
     "cosmos.add.aria": "新增工作区",
     "cosmos.search.placeholder": "搜索工作区…",
@@ -4022,6 +4974,22 @@ const DICT = {
     "cosmos.card.decide.planReview": "计划待审",
     "cosmos.card.decide.question": "待回答",
     "cosmos.card.decide.other": "待决策",
+    /* 信息卡「打开会话」独立窗口禁用提示（add-cosmos-standalone-window D6）。 */
+    "cosmos.card.openDisabled": "独立窗口内无法跳转会话页（请在主窗口操作）",
+    /* 星胚卡「移除星胚」按钮 / 内联确认态 / outcome toast（add-cosmos-embryo-dismiss D9）。 */
+    "cosmos.card.dismiss.remove": "移除星胚",
+    "cosmos.card.dismiss.confirm": "确认移除？",
+    "cosmos.dismiss.deleted": "星胚已移除",
+    "cosmos.dismiss.alreadyMissing": "该星胚已不存在",
+    "cosmos.dismiss.guardDirExists": "同名提案已创建，未移除",
+    "cosmos.dismiss.missingWorkspace": "工作区不在册，未移除",
+    "cosmos.dismiss.failed": "移除失败：",
+    "cosmos.dismiss.failedUnknown": "未知错误",
+    "cosmos.dismiss.requestFailed": "移除请求失败：",
+    "cosmos.dismiss.noTarget": "缺少星胚定位信息，未移除",
+    /* 独立窗口页内提示条（D2/D5）。 */
+    "cosmos.standalone.otherWindow": "已有另一 Cosmos 窗口（数据实时同态，可共存）",
+    "cosmos.standalone.manualClose": "请手动关闭本窗口以释放占位",
     "cosmos.actions.aria": "提案动作",
     "cosmos.actions.switchFailed": "模型切换失败：",
     "cosmos.actions.switchUnavailable": "模型切换不可用：当前连接不支持",
@@ -4039,7 +5007,7 @@ const DICT = {
     "cosmos.constFloat.placeholder": "补写或修改消息，发送后进入当前星座工作区的会话…",
     "cosmos.constFloat.send": "发送",
     "cosmos.constFloat.close": "关闭",
-    "cosmos.constFloat.hint": "Enter 发送 · Shift+Enter 换行 · 发送后浮窗关闭；关闭或 Esc 保留草稿不发送。",
+    "cosmos.constFloat.hint": "Enter 发送 · Shift+Enter 换行 · {voice} 语音 · {close} 关闭浮窗（保留草稿不发送）",
     "cosmos.constFloat.modelLabel": "模型",
     "cosmos.constFloat.switching": "切换中…",
     "cosmos.constFloat.modelFallback": "已按会话当前模型",
@@ -4054,7 +5022,20 @@ const DICT = {
     "cosmos.constFloat.voiceDenied": "无法访问麦克风：请检查浏览器权限与环境",
     "cosmos.constFloat.voiceFailed": "语音转写失败：",
     "cosmos.constFloat.voiceEmpty": "未识别到语音",
+    /* 不可用引导（fix-cosmos-const-float-voice 2.3）：置灰钮 toast + title 同文案。 */
+    "cosmos.constFloat.voiceUnavailable": "需要在配置中开启语音功能：设置 → 插件 → 语音输入",
     "cosmos.settings.nav": "Cosmos",
+    /* 「通用」页签（add-cosmos-standalone-window 2.3）：打开方式单选 + 桌面降级说明。 */
+    "cosmos.settings.tabGeneral": "通用",
+    "cosmos.settings.generalUnavailable": "通用设置暂不可用：插件整页未就绪（刷新页面后重试）。",
+    "cosmos.settings.launchModeLabel": "打开方式",
+    "cosmos.settings.launchModeHint": "内嵌整页 = 在当前 DSH 窗口内以整页覆盖层打开（现状）；独立窗口 = 以同源新窗口打开只有 Cosmos 内容的页面，可与主窗口分屏（同属一个 DSH、数据实时同态）。独立窗口存在期间主壳入口禁用，关闭窗口即解锁。",
+    "cosmos.settings.launchModeEmbedded": "内嵌整页（默认）",
+    "cosmos.settings.launchModeEmbeddedHint": "在 DSH 主窗口内以整页覆盖层打开（与变更前一致）。",
+    "cosmos.settings.launchModeWindow": "独立窗口",
+    "cosmos.settings.launchModeWindowHint": "浏览器新开同源窗口，只显示 Cosmos；主壳入口在此期间禁用，分屏时数据实时同态。",
+    "cosmos.settings.launchModeDesktop": "桌面形态（file://）无 HTTP origin，独立窗口不可用：入口固定为内嵌整页（历史配置保留，桌面形态忽略）。",
+    "cosmos.settings.launchModeInstant": "改动立即生效并保存",
     "cosmos.settings.tabActions": "快捷动作",
     "cosmos.settings.tabConstActions": "星座动作",
     "cosmos.settings.tabSkins": "皮肤",
@@ -4160,6 +5141,36 @@ const DICT = {
     "cosmos.settings.navUnavailable": "界面设置暂不可用：插件整页未就绪（刷新页面后重试）。",
     "cosmos.settings.skinNotApplied": "皮肤选择未生效：插件整页控制器缺失，请重试或刷新页面后重新选择。",
     "cosmos.settings.navNotApplied": "界面设置未生效：插件整页控制器缺失，请重试或刷新页面后重新调整。",
+    /* ── 快捷键（add-cosmos-shortcuts 7.3）：页签 / 四行 / 说明列 / 错误键 / 风险注记 ── */
+    "cosmos.settings.tabShortcuts": "快捷键",
+    "cosmos.settings.shortcutsHint": "四个全局键 + 两条动作条按钮的自定义快捷键：改动立即生效并保存（无需重启或重开整页）。快捷键只在 Cosmos 整页打开时生效——输入框聚焦、输入法组字、浮窗打开时按纪律让位。键位按物理键位（ev.code）匹配，非 QWERTY 布局下印刷字母可能不同。",
+    "cosmos.settings.shortcutsDefault": "默认",
+    "cosmos.settings.shortcutGoHome": "回到银河",
+    "cosmos.settings.shortcutTogglePan": "移动开关",
+    "cosmos.settings.shortcutVoiceToggle": "语音开关（浮窗）",
+    "cosmos.settings.shortcutClosePage": "关闭页面",
+    "cosmos.settings.shortcutGoHomeHint": "钻取态生效：飞回银河视图（与右下「回到银河」按钮等效）；银河态无动作。",
+    "cosmos.settings.shortcutTogglePanHint": "整页打开时生效：翻转右下「拖拽平移」开关（与点击按钮同一状态链，含持久化）。",
+    "cosmos.settings.shortcutVoiceToggleHint": "仅浮窗打开时生效：开始/停止语音录入（idle → 录音，录音中 → 停止并转写）；浮窗文本域聚焦时可用。",
+    "cosmos.settings.shortcutClosePageHint": "整页打开时生效：关闭/收起链——钻取返回 > 清空搜索 > 收起会话面板 > 退全屏 > 关闭整页（整页关闭时零键盘监听）。",
+    "cosmos.settings.shortcutRisky": "浏览器保留组合，可能无法拦截（部分浏览器可能直接退出）",
+    "cosmos.settings.shortcutRiskTag": "浏览器保留",
+    "cosmos.settings.shortcutRiskyHint": "Ctrl+Q 在部分浏览器是「退出浏览器」的保留组合、网页无法拦截：可改用 Alt+Q 等替代键。",
+    "cosmos.settings.shortcutDup": "快捷键冲突：与其它按键（全局键或其它按钮）重复，请改选其它键位",
+    "cosmos.settings.shortcutConflictRow": "冲突：该键与「{other}」重复",
+    "cosmos.settings.buttonShortcutLabel": "快捷键",
+    "cosmos.settings.buttonShortcutSaveHint": "选择后需点击下方「保存」才生效",
+    "cosmos.settings.buttonShortcutPreStateHint": "仅当选中提案的前置状态为「{state}」且空闲（该按钮渲染出来）时按键才生效",
+    "cosmos.settings.buttonShortcutPreStateShort": "仅「{state}」时生效",
+    "cosmos.settings.buttonShortcutNone": "无",
+    "cosmos.settings.buttonShortcutUnavailable": "不可用",
+    "cosmos.settings.buttonShortcutInvalid": "快捷键非法（可选 无 / 0–9 / F2 / F4 / F8 / F9）",
+    "cosmos.settings.constButtonShortcutInvalid": "快捷键非法（可选 无 / 0–9 / F2 / F4 / F8 / F9）",
+    "cosmos.settings.shortcutInstant": "改动立即生效并保存",
+    "cosmos.settings.shortcutPanelHint": "按钮快捷键与全局键共享同一唯一性域：同一键只属于一个动作（保存时跨列表查重，重复会被拒绝）。选好键位后需点击下方「保存」才生效（与其它按钮字段同一草稿流）。",
+    "cosmos.settings.shortcutsUnavailable": "快捷键设置暂不可用：插件整页未就绪（刷新页面后重试）。",
+    "cosmos.settings.shortcutsNotApplied": "快捷键未生效：插件整页控制器缺失，请重试或刷新页面后重新设置。",
+    "cosmos.settings.shortcutsCount": "全局快捷键：",
     "cosmos.skin.deepspace.name": "深空银河",
     "cosmos.skin.deepspace.ref": "现风格 D（视觉回归基线）",
     "cosmos.skin.rosepine.name": "星图玫瑰松",
@@ -4188,6 +5199,9 @@ const DICT = {
   en: {
     "cosmos.seat": "Cosmos",
     "cosmos.seat.aria": "Open Cosmos galaxy view",
+    "cosmos.seat.locked": "Cosmos is already open in a standalone window",
+    "cosmos.seat.windowAria": "Open Cosmos in a standalone window",
+    "cosmos.seat.popupBlocked": "The browser blocked the standalone window; allow pop-ups and retry",
     "cosmos.add": "Add",
     "cosmos.add.aria": "Add workspace",
     "cosmos.search.placeholder": "Search workspaces…",
@@ -4232,6 +5246,19 @@ const DICT = {
     "cosmos.card.decide.planReview": "Review plan",
     "cosmos.card.decide.question": "Answer",
     "cosmos.card.decide.other": "Decide",
+    "cosmos.card.openDisabled": "Session navigation is unavailable in the standalone window (use the main window)",
+    "cosmos.card.dismiss.remove": "Remove embryo",
+    "cosmos.card.dismiss.confirm": "Confirm removal?",
+    "cosmos.dismiss.deleted": "Embryo removed",
+    "cosmos.dismiss.alreadyMissing": "That embryo is already gone",
+    "cosmos.dismiss.guardDirExists": "A proposal with this name exists; not removed",
+    "cosmos.dismiss.missingWorkspace": "Workspace is not registered; not removed",
+    "cosmos.dismiss.failed": "Removal failed: ",
+    "cosmos.dismiss.failedUnknown": "unknown error",
+    "cosmos.dismiss.requestFailed": "Removal request failed: ",
+    "cosmos.dismiss.noTarget": "Missing embryo target; not removed",
+    "cosmos.standalone.otherWindow": "Another Cosmos window is open (same live data; both can stay)",
+    "cosmos.standalone.manualClose": "Close this window manually to release the slot",
     "cosmos.actions.aria": "Proposal actions",
     "cosmos.actions.switchFailed": "Model switch failed: ",
     "cosmos.actions.switchUnavailable": "Model switching unavailable on this connection",
@@ -4249,7 +5276,7 @@ const DICT = {
     "cosmos.constFloat.placeholder": "Extend or edit the message; sending starts the session in the current constellation's workspace…",
     "cosmos.constFloat.send": "Send",
     "cosmos.constFloat.close": "Close",
-    "cosmos.constFloat.hint": "Enter sends · Shift+Enter starts a new line · The composer closes after sending; closing or Esc keeps the draft unsent.",
+    "cosmos.constFloat.hint": "Enter sends · Shift+Enter starts a new line · {voice} starts voice · {close} closes the composer (draft kept)",
     "cosmos.constFloat.modelLabel": "Model",
     "cosmos.constFloat.switching": "Switching…",
     "cosmos.constFloat.modelFallback": "using the session's current model",
@@ -4264,7 +5291,18 @@ const DICT = {
     "cosmos.constFloat.voiceDenied": "Cannot access the microphone: check browser permission and environment",
     "cosmos.constFloat.voiceFailed": "Voice transcription failed: ",
     "cosmos.constFloat.voiceEmpty": "No speech recognized",
+    "cosmos.constFloat.voiceUnavailable": "Enable voice input in settings: Settings → Plugins → Voice input",
     "cosmos.settings.nav": "Cosmos",
+    "cosmos.settings.tabGeneral": "General",
+    "cosmos.settings.generalUnavailable": "General settings are unavailable: the plugin page is not ready (reload the page and retry).",
+    "cosmos.settings.launchModeLabel": "Open as",
+    "cosmos.settings.launchModeHint": "Inline page = open inside the current DSH window as a full-page overlay (current behaviour); standalone window = open a same-origin window that only shows Cosmos, so it can sit on a second screen while the main window keeps working (one DSH, live data). While that window is open the main entry is disabled; closing the window releases it.",
+    "cosmos.settings.launchModeEmbedded": "Inline page (default)",
+    "cosmos.settings.launchModeEmbeddedHint": "Open as a full-page overlay inside the DSH window (unchanged).",
+    "cosmos.settings.launchModeWindow": "Standalone window",
+    "cosmos.settings.launchModeWindowHint": "The browser opens a same-origin window showing only Cosmos; the main entry is disabled meanwhile, and data stays in sync across screens.",
+    "cosmos.settings.launchModeDesktop": "Desktop form (file://) has no HTTP origin, so the standalone window is unavailable: the entry stays inline (the stored preference is kept but ignored on desktop).",
+    "cosmos.settings.launchModeInstant": "Changes apply and persist immediately",
     "cosmos.settings.tabActions": "Quick actions",
     "cosmos.settings.tabConstActions": "Constellation actions",
     "cosmos.settings.tabSkins": "Skins",
@@ -4370,6 +5408,36 @@ const DICT = {
     "cosmos.settings.navUnavailable": "Interface settings are unavailable: the plugin page is not ready (reload the page and retry).",
     "cosmos.settings.skinNotApplied": "Skin selection did not apply: the plugin page controller is missing. Retry, or reload the page and select again.",
     "cosmos.settings.navNotApplied": "Interface change did not apply: the plugin page controller is missing. Retry, or reload the page and adjust again.",
+    /* ── Shortcuts (add-cosmos-shortcuts 7.3) ── */
+    "cosmos.settings.tabShortcuts": "Shortcuts",
+    "cosmos.settings.shortcutsHint": "Four global keys plus custom shortcuts for the action-bar buttons. Changes apply and persist immediately (no restart or page reopen). Shortcuts are active only while the Cosmos page is open — they yield to focused inputs, IME composition, and the floating composer. Keys match physical key positions (ev.code), so printed letters may differ on non-QWERTY layouts.",
+    "cosmos.settings.shortcutsDefault": "Default",
+    "cosmos.settings.shortcutGoHome": "Back to galaxy",
+    "cosmos.settings.shortcutTogglePan": "Pan toggle",
+    "cosmos.settings.shortcutVoiceToggle": "Voice toggle (composer)",
+    "cosmos.settings.shortcutClosePage": "Close page",
+    "cosmos.settings.shortcutGoHomeHint": "Active while drilled in: flies back to the galaxy view (same as the bottom-right \"back to galaxy\" button); does nothing in the galaxy view.",
+    "cosmos.settings.shortcutTogglePanHint": "Active while the page is open: flips the bottom-right \"drag to pan\" switch (same state chain as clicking it, including persistence).",
+    "cosmos.settings.shortcutVoiceToggleHint": "Active only while the floating composer is open: starts/stops voice input (idle → record, recording → stop and transcribe); usable while the composer textarea is focused.",
+    "cosmos.settings.shortcutClosePageHint": "Active while the page is open: the close/collapse chain — leave constellation > clear search > collapse session panel > exit fullscreen > close page (no keyboard listeners once the page is closed).",
+    "cosmos.settings.shortcutRisky": "Browser-reserved combination, may not be interceptable (some browsers may quit)",
+    "cosmos.settings.shortcutRiskTag": "browser-reserved",
+    "cosmos.settings.shortcutRiskyHint": "Ctrl+Q is the reserved \"quit browser\" combination in some browsers and cannot be intercepted by a web page: use Alt+Q or another alternative.",
+    "cosmos.settings.shortcutDup": "Shortcut conflict: this key duplicates another binding (global key or another button) — pick a different key",
+    "cosmos.settings.shortcutConflictRow": "Conflict: this key duplicates \"{other}\"",
+    "cosmos.settings.buttonShortcutLabel": "Shortcut",
+    "cosmos.settings.buttonShortcutSaveHint": "Pick a key, then click Save below to apply",
+    "cosmos.settings.buttonShortcutPreStateHint": "Active only when the selected proposal's pre-state is \"{state}\" and idle (i.e. when this button is rendered)",
+    "cosmos.settings.buttonShortcutPreStateShort": "only when \"{state}\"",
+    "cosmos.settings.buttonShortcutNone": "None",
+    "cosmos.settings.buttonShortcutUnavailable": "Unavailable",
+    "cosmos.settings.buttonShortcutInvalid": "Invalid shortcut (choose None / 0–9 / F2 / F4 / F8 / F9)",
+    "cosmos.settings.constButtonShortcutInvalid": "Invalid shortcut (choose None / 0–9 / F2 / F4 / F8 / F9)",
+    "cosmos.settings.shortcutInstant": "Changes apply and persist immediately",
+    "cosmos.settings.shortcutPanelHint": "Button shortcuts share one uniqueness domain with the global keys: each key belongs to exactly one action (cross-list duplicates are rejected on save). Pick a key, then click \"Save\" below to apply it (same draft flow as the other button fields).",
+    "cosmos.settings.shortcutsUnavailable": "Shortcut settings are unavailable: the plugin page is not ready (reload the page and retry).",
+    "cosmos.settings.shortcutsNotApplied": "Shortcut change did not apply: the plugin page controller is missing. Retry, or reload the page and set it again.",
+    "cosmos.settings.shortcutsCount": "Global shortcuts: ",
     "cosmos.skin.deepspace.name": "Deep Space",
     "cosmos.skin.deepspace.ref": "Current style D (visual regression baseline)",
     "cosmos.skin.rosepine.name": "Rosé Pine",

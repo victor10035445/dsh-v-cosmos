@@ -11,6 +11,10 @@
  *  - 提案归档 → 关联边记录**保留**（可被启发式重新认领 / 后续 UI 手动重建）；
  *  - 会话归档 → 关联条目剪除（行星熄灭，宿主半区持久化写入点执行）；
  *  - MUST NOT 落盘到任何 openspec 工件（存储只写 $DSH_HOME/storages/dsh-v-cosmos.json）。
+ *
+ * 双轨（fix-cosmos-association-scope）：`origin: "explicit"` 条目是会话的**绑定声明**
+ * （bind-session 端点经 `applyBinding` 替换写入），对持有该工作区 explicit 条目的会话，
+ * 启发式两条规则均被压制（`explicitBoundSessionIds`）；启发式只对无绑定会话生效。
  */
 
 import { matchProposalSlugs, birthtimeWindowUnique } from "./scan.mjs";
@@ -20,8 +24,10 @@ export { matchProposalSlugs };
 export const ASSOC_VERSION = 1;
 /** 关联条目封顶（对齐 hive `PROPOSAL_STATES_LIMIT` 惯例）：超出按 updatedAt 淘汰最旧。 */
 export const ASSOC_ENTRIES_LIMIT = 512;
+/** 单次显式绑定声明的提案清单上限（去重后；覆盖全部建议 slug 的探索会话远低于此）。 */
+export const BIND_PROPOSALS_LIMIT = 16;
 
-/** 合法 origin（explicit 供后续人工纠正 UI；v1 只有 heuristic 写入）。 */
+/** 合法 origin：heuristic = 宿主启发式推断；explicit = 会话绑定声明（bind-session 写入）。 */
 const ORIGINS = Object.freeze(["heuristic", "explicit"]);
 
 /**
@@ -122,6 +128,110 @@ export function upsertAssociation(entries, input, now = Date.now()) {
 export function pruneArchivedSessions(entries, archivedSessionIds) {
   const normalized = normalizeAssociations(entries, { archivedSessionIds });
   return normalized ?? null;
+}
+
+/**
+ * 显式绑定请求归一化（fix-cosmos-association-scope 1.1 / spec「显式会话关联绑定」）：
+ * `{ sessionId, proposals }`——`sessionId` 非空字符串（**原样保留**：registry 精确匹配
+ * 用原文，仅以 trim 判空）；`proposals` 非空数组、条目以 **trim 后值**为准（trim 后
+ * 空 → 非法）、按 trim 后值去重保序、上限 BIND_PROPOSALS_LIMIT（去重后）。
+ * 非法 → `{ ok: false, reason }`（宿主映射 400 invalid；口径对齐 sweep 归一化）。
+ * @param {unknown} body 请求体（任意 JSON 值）
+ * @returns {{ ok: true, sessionId: string, proposals: string[] } | { ok: false, reason: string }}
+ */
+export function normalizeBindRequest(body) {
+  const source = body && typeof body === "object" && !Array.isArray(body) ? body : {};
+  if (typeof source.sessionId !== "string" || !source.sessionId.trim()) {
+    return { ok: false, reason: "sessionId must be a non-empty string" };
+  }
+  if (!Array.isArray(source.proposals)) return { ok: false, reason: "proposals must be an array" };
+  const proposals = [];
+  const seen = new Set();
+  for (const value of source.proposals) {
+    if (typeof value !== "string") return { ok: false, reason: "proposals entries must be strings" };
+    const slug = value.trim();
+    if (!slug) return { ok: false, reason: "proposals entries must be non-empty strings" };
+    if (seen.has(slug)) continue;
+    seen.add(slug);
+    proposals.push(slug);
+  }
+  if (proposals.length === 0) return { ok: false, reason: "proposals must be a non-empty array" };
+  if (proposals.length > BIND_PROPOSALS_LIMIT) {
+    return { ok: false, reason: `proposals exceeds the limit of ${BIND_PROPOSALS_LIMIT} after dedupe` };
+  }
+  return { ok: true, sessionId: source.sessionId, proposals };
+}
+
+/**
+ * 显式绑定的替换语义（fix-cosmos-association-scope 1.2 / spec「显式会话关联绑定」）：
+ * 以 `(workspace, sessionId)` 为范围，写入「该会话当前工作面」的**完整声明**——
+ *  - 保留范围内恰为 `proposals` 的 explicit 条目（createdAt/updatedAt 原样：重绑即零抖动）；
+ *  - 同提案 heuristic 条目以 explicit 重建（origin 切换 = 变更；createdAt/updatedAt = now）；
+ *  - 删除该范围内其余全部条目（其余 heuristic 与过期 explicit）；
+ *  - 补齐缺失提案（explicit，createdAt/updatedAt = now）。
+ *
+ * 幂等：同清单且集合无增删 → `changed: false`、条目原样（updatedAt 不动）——宿主据此
+ * 跳过落盘与广播。范围外条目一律原样保留（含其他会话 / 其他工作区）。
+ *
+ * @param {Array<object>|undefined} entries 现有条目
+ * @param {{ workspace: string, sessionId: string, proposals: string[] }} input
+ * @param {number} [now] 时间戳（缺省 Date.now()）
+ * @returns {{ entries: Array<object>, changed: boolean }}
+ */
+export function applyBinding(entries, input, now = Date.now()) {
+  const workspace = typeof input?.workspace === "string" ? input.workspace : "";
+  const sessionId = typeof input?.sessionId === "string" ? input.sessionId : "";
+  const proposals = Array.isArray(input?.proposals) ? input.proposals : [];
+  const wanted = new Set(proposals);
+  const list = Array.isArray(entries) ? entries : [];
+  const next = [];
+  let changed = false;
+  for (const raw of list) {
+    const entry = validEntry(raw);
+    if (!entry) {
+      changed = true; // 形状非法条目丢弃 = 变更（宿主写入口即清洗）
+      continue;
+    }
+    if (entry.workspace !== workspace || entry.sessionId !== sessionId) {
+      next.push(raw);
+      continue;
+    }
+    if (entry.origin === "explicit" && wanted.has(entry.proposal)) {
+      next.push(raw); // 已存 explicit 条目原样保留（幂等面）
+      continue;
+    }
+    changed = true; // 其余条目（heuristic / 过期 explicit）删除
+  }
+  for (const proposal of proposals) {
+    const exists = next.some((entry) => {
+      const valid = validEntry(entry);
+      return valid !== null && valid.workspace === workspace && valid.sessionId === sessionId && valid.proposal === proposal;
+    });
+    if (exists) continue;
+    next.push({ workspace, proposal, sessionId, origin: "explicit", createdAt: now, updatedAt: now });
+    changed = true;
+  }
+  if (!changed) return { entries: list, changed: false };
+  return { entries: normalizeAssociations(next) ?? [], changed: true };
+}
+
+/**
+ * 启发式压制查询（纯函数，fix-cosmos-association-scope 1.3 / spec 压制规则）：
+ * 该工作区中持有任意 `origin: "explicit"` 条目的 sessionId 集合。以**存储条目为唯一
+ * 依据**（无内存态标志）——进程重启后由存储回读自然恢复压制。
+ * @param {Array<object>|undefined} entries
+ * @param {string} workspace 工作区路径指纹
+ * @returns {Set<string>}
+ */
+export function explicitBoundSessionIds(entries, workspace) {
+  const bound = new Set();
+  for (const raw of Array.isArray(entries) ? entries : []) {
+    const entry = validEntry(raw);
+    if (!entry) continue;
+    if (entry.workspace !== workspace || entry.origin !== "explicit") continue;
+    bound.add(entry.sessionId);
+  }
+  return bound;
 }
 
 /**

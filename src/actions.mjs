@@ -21,7 +21,10 @@
  *    toast，标记无 SessionId 判据，消费退回「草稿等校验」口径；
  *  - 一次性消费 → 有绑定模型先切后发（autoSend=false 仅落稿/切模型）→ 成功后清标记；
  *  - 链路防重入（cooldown 窗内的重复点击忽略；`createActionGate` 可跨链路共享——
- *    add-cosmos-constellation-actions 的星座动作与提案动作同门，任一运行中互相忽略）。
+ *    add-cosmos-constellation-actions 的星座动作与提案动作同门，任一运行中互相忽略）；
+ *  - ⑤ 显式关联绑定（fix-cosmos-association-scope）：新会话取得 SessionId 后**非阻断**
+ *    调用注入的 `bindSession`（不 await 呈现、失败静默）——降级路径无新会话 id，
+ *    天然跳过；绑定只是可视化纠偏，失败退回启发式推断。
  *
  * 星胚动作（add-cosmos-action-prestate-gate 3.x）：`preState: "proto"` 的按钮由
  * `createEmbryoActionExecutor` 承接——消息无 @提案引用（`assembleEmbryoMessage`）、
@@ -385,6 +388,9 @@ export async function consumePendingAction(input) {
  * @param {(wsId: string, message: string, card: object) => unknown} [options.startSession]
  *        **降级路径**用的官方 `uiWorkspace.startSession(workspaceId, { prompt })` 薄包装
  *        （第三参为卡片，供实现侧按路径解析权威 workspaceId）
+ * @param {(input: {sessionId: string, proposals: string[]}) => Promise<unknown>} [options.bindSession]
+ *        **⑤ 显式关联绑定**：新会话 SessionId 取得后非阻断调用（不 await、失败静默；
+ *        缺省不绑定——老宿主/测试面行为不变）。降级路径（无新会话 id）MUST 跳过。
  * @param {() => void} [options.closePage] 按钮 `jumpNewSession !== false` 时调用（关页跳转）
  * @param {() => void} [options.keepPage] 按钮 `jumpNewSession === false` 时调用（保持整页，
  *        由注入方呈现反馈 toast）
@@ -404,11 +410,29 @@ export function createActionExecutor(options = {}) {
   const closePage = typeof options.closePage === "function" ? options.closePage : () => {};
   const keepPage = typeof options.keepPage === "function" ? options.keepPage : () => {};
   const notify = typeof options.notify === "function" ? options.notify : () => {};
+  const bindSession = typeof options.bindSession === "function" ? options.bindSession : null;
   const degradedLabel = typeof options.labels?.degraded === "string" && options.labels.degraded
     ? options.labels.degraded
     : "新建会话通道不可用，已降级为复用空白会话";
   const canCreateNew = createSession !== null && openSession !== null;
   const gate = options.gate ?? createActionGate({ now: options.now, cooldownMs: options.cooldownMs });
+
+  /**
+   * ⑤ 显式关联绑定（fix-cosmos-association-scope 3.2 / spec cosmos-actions ⑤）：
+   * 新会话取得后**非阻断**声明目标提案的工作面——不 await（呈现不等待）、同步/异步
+   * 失败一律吞掉（无 toast、无重试、不影响落稿与提交）。绑定失败只退回启发式推断。
+   */
+  const bindExplicitAssociation = (sessionId, card) => {
+    if (bindSession === null) return;
+    const proposal = typeof card?.id === "string" ? card.id : "";
+    if (!proposal) return;
+    try {
+      const pendingBind = bindSession({ sessionId, proposals: [proposal] });
+      if (pendingBind && typeof pendingBind.catch === "function") pendingBind.catch(() => {});
+    } catch {
+      /* 静默：绑定失败不影响链路其余步骤 */
+    }
+  };
 
   /** 降级回落（现行链路：`startSession` keep + 现行登记条件——`startSession` 已落稿）。 */
   const fallback = async (button, card, message, model, submit, jump, detail) => {
@@ -465,6 +489,9 @@ export function createActionExecutor(options = {}) {
           /* 恒新建不可用（宿主拒绝/通道异常）：回落现行链路，toast 注明降级。 */
           return await fallback(button, card, message, model, submit, jump, String(error?.message || error));
         }
+        /* ⑤ 显式关联绑定（spec ⑤）：取得 SessionId 后**非阻断**声明目标提案工作面；
+           失败静默跳过（该会话退回启发式）。降级路径无新会话 id，天然不经过这里。 */
+        bindExplicitAssociation(sessionId, card);
         /* 标记必须先于 openSession：新会话 hero 相位可能在导航完成瞬间挂载。
            恒新建路径恒登记（autoSend=false 也要落稿），判据 = 目标 SessionId。 */
         armed = pending.arm({ message, model, submit, targetSessionId: sessionId, setDraft: true });

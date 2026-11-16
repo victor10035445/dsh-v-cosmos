@@ -5,7 +5,7 @@
  */
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { createCosmosEngine, ENGINE_CSS, panBasis, panCameraTarget, panCameraTargetByDrag, PAN_SPEED, PAN_SHIFT_BOOST, PAN_DRAG_FACTOR, SESSION_OPEN_KEY, makeNova, stepNovae, buildScenePure, FX_PRIORITY, FX_NOVA_DUR, FX_NOVA_PROTO_DUR, BOOT_DUR, isEditableTarget, boundingSphereOf, fitCameraOf, FILTER_RAMP_DUR, FILTER_SHIFT_DUR, FILTER_FIT_DUR, FILTER_FIT_MARGIN, WS_SHIFT_DUR, WS_BIRTH_HL_DUR, GESTURE_SUPPRESS_MS, zoomSwitchVerdict, zoomFocusTargetOf, canvasPointOf, constellationBoundROf, DIVE_REF, SWITCH_COOLDOWN_MS, CENTER_GATE_RATIO, DIVE_SAFE_MARGIN, FLYOUT_DIST_FLOOR_MULT, COMET_WANDER_R, STAR_FOCUS_DIST, STAR_FOCUS_DUR, SHOCK_SPEED, SHOCK_HOLD_MIN, SHOCK_HOLD_MAX, SHOCK_KICK_DUR, SHOCK_GLIDE_DUR, SHOCK_TOTAL_MAX, shockHitOf, shockEjectionAt, shockTotalDurOf, adoptTrailAcrossKinds, resolveBlastCoreOf, CAPTURE_DUR, COMET_WANDER_AMP, COMET_WANDER_FREQ, cometHeadingAt, orbitPointAt, orbitTangentAt, captureRingPointAt, capturePoseAt, TIP_GAP, TIP_LINE, tipLeaderOf, tipLineColorOf } from "../src/cosmos/engine.mjs";
+import { createCosmosEngine, ENGINE_CSS, panBasis, panCameraTarget, panCameraTargetByDrag, PAN_SPEED, PAN_SHIFT_BOOST, PAN_DRAG_FACTOR, SESSION_OPEN_KEY, makeNova, stepNovae, buildScenePure, FX_PRIORITY, FX_NOVA_DUR, FX_NOVA_PROTO_DUR, BOOT_DUR, isEditableTarget, boundingSphereOf, fitCameraOf, FILTER_RAMP_DUR, FILTER_SHIFT_DUR, FILTER_FIT_DUR, FILTER_FIT_MARGIN, WS_SHIFT_DUR, WS_BIRTH_HL_DUR, GESTURE_SUPPRESS_MS, zoomSwitchVerdict, zoomFocusTargetOf, canvasPointOf, constellationBoundROf, DIVE_REF, SWITCH_COOLDOWN_MS, CENTER_GATE_RATIO, DIVE_SAFE_MARGIN, FLYOUT_DIST_FLOOR_MULT, COMET_WANDER_R, STAR_FOCUS_DIST, STAR_FOCUS_DUR, SHOCK_SPEED, SHOCK_HOLD_MIN, SHOCK_HOLD_MAX, SHOCK_KICK_DUR, SHOCK_GLIDE_DUR, SHOCK_TOTAL_MAX, shockHitOf, shockEjectionAt, shockTotalDurOf, adoptTrailAcrossKinds, resolveBlastCoreOf, CAPTURE_DUR, COMET_WANDER_AMP, COMET_WANDER_FREQ, cometHeadingAt, orbitPointAt, orbitTangentAt, captureRingPointAt, capturePoseAt, TIP_GAP, TIP_LINE, tipLeaderOf, tipLineColorOf, DISMISS_CONFIRM_MS } from "../src/cosmos/engine.mjs";
 import { createSkinD, createSkinDeepspace, SKIN_D_PALETTE } from "../src/cosmos/skin-d.mjs";
 import { COSMOS_SKINS, COSMOS_SKIN_IDS, createSkin } from "../src/cosmos/skin-registry.mjs";
 import { COSMOS_SETTINGS_DEFAULTS, COSMOS_SETTINGS_BOUNDS, COSMOS_SETTINGS_VERSION, sanitizeCosmosSettings, loadCosmosSettings, saveCosmosSettings, cosmosLayoutTokensOf } from "../src/settings.mjs";
@@ -99,11 +99,15 @@ const near = (v, w, eps = 1e-9) => Math.abs(v - w) < eps;
       /* 界面尺寸 12 键（add-cosmos-layout-tuning D2）：缺省 = 引入配置面之前的现值。 */
       sessionPanelWidth: 260, sessionPanelHeight: 0, constPanelWidth: 187, constPanelHeight: 0,
       addBtnSize: 44, hudBtnSize: 44, actionBtnWidth: 112, actionBtnHeight: 40,
-      constActionHeight: 40, searchWidth: 320, searchHeight: 0, wsTitleSize: 13
+      constActionHeight: 40, searchWidth: 320, searchHeight: 0, wsTitleSize: 13,
+      /* 全局快捷键四键（add-cosmos-shortcuts 2.1）：缺省遵用户裁决。 */
+      shortcuts: { closePage: "Escape", goHome: "Backquote", togglePan: "KeyM", voiceToggle: "Ctrl+KeyQ" },
+      /* 入口打开方式（add-cosmos-standalone-window 1.1/D4）：缺省 embedded = 现状。 */
+      launchMode: "embedded"
     },
-    "出厂默认（含默认皮肤、缩放导航三键、会话面板展开态、发送前编辑分支 float、拖拽平移关闭、界面尺寸 12 键 = 现值）"
+    "出厂默认（含默认皮肤、缩放导航三键、会话面板展开态、发送前编辑分支 float、拖拽平移关闭、界面尺寸 12 键 = 现值、快捷键四键、入口打开方式 embedded）"
   );
-  assert.equal(COSMOS_SETTINGS_VERSION, 7, "设置面 v7（新增界面尺寸 12 键）");
+  assert.equal(COSMOS_SETTINGS_VERSION, 9, "设置面 v9（v8 = shortcuts 子对象，v9 = launchMode）");
   assert.deepEqual(sanitizeCosmosSettings({}), COSMOS_SETTINGS_DEFAULTS, "空配置 → 默认");
   assert.deepEqual(
     sanitizeCosmosSettings({ panSpeed: 999, panShiftBoost: 0, hacker: 1 }),
@@ -119,7 +123,9 @@ const near = (v, w, eps = 1e-9) => Math.abs(v - w) < eps;
       dragPan: false,
       sessionPanelWidth: 260, sessionPanelHeight: 0, constPanelWidth: 187, constPanelHeight: 0,
       addBtnSize: 44, hudBtnSize: 44, actionBtnWidth: 112, actionBtnHeight: 40,
-      constActionHeight: 40, searchWidth: 320, searchHeight: 0, wsTitleSize: 13
+      constActionHeight: 40, searchWidth: 320, searchHeight: 0, wsTitleSize: 13,
+      shortcuts: { closePage: "Escape", goHome: "Backquote", togglePan: "KeyM", voiceToggle: "Ctrl+KeyQ" },
+      launchMode: "embedded"
     },
     "越界落端点 + 未知键剥离"
   );
@@ -4056,6 +4062,422 @@ function goldLiteralsOutsideVarFallback(source) {
     eng.stop();
     eng.dispose();
     ctxFactory = stubCtx2d;
+  }
+}
+
+/* ── 4.3 全局快捷键键位（add-cosmos-shortcuts 4.3）：goHome（缺省 ~，钻取态 flyOut /
+      银河态 no-op）/ togglePan（缺省 M，翻转 + 持久化回调）/ 组合键改绑命中 / 修饰键与
+      焦点守卫 / 组字与连发 / 按钮聚焦不守卫 / 热更改绑 / 浮窗模态让位。
+      与 WASD/空格**同一 window keydown handler**（零新增监听面）。 ── */
+{
+  /** 单星座单恒星夹具（off=0 → 屏心可拾取；diveToWs 确定可达）。 */
+  function shortcutScene() {
+    return {
+      workspaces: [{
+        id: "sc", name: "shortcut-ws", pos: [0, 0, 0],
+        stars: [{ id: "sc-s", name: "s", lifecycle: "executed", setBy: null, at: null, tasks: [1, 1], age: "刚刚", act: 0, off: [0, 0, 0] }],
+        links: [], planets: [], comets: [], archives: 0, satelliteCount: 0
+      }]
+    };
+  }
+  const before = windowListeners.keydown.length;
+  /* 卸载观测：桩 window 的 removeEventListener 恒 no-op → 本段临时记录解绑调用，
+     断言 dispose 真实移除了本引擎的 window keydown 监听（页关零监听）。 */
+  const removed = [];
+  const prevRemove = globalThis.window.removeEventListener;
+  globalThis.window.removeEventListener = (type, fn) => { removed.push({ type, fn }); };
+  const toggles = [];
+  let floatOpen = false;
+  const container = stubEl("div");
+  const eng = createCosmosEngine({
+    container,
+    style: createSkinD(),
+    settings: {
+      panSpeed: 120, panShiftBoost: 3, zoomDiveRatio: 100, zoomFlyOutRatio: 25,
+      zoomPointerFocus: true, dragPan: false,
+      shortcuts: { closePage: "Escape", goHome: "Backquote", togglePan: "KeyM", voiceToggle: "Ctrl+KeyQ" }
+    },
+    onDragPanToggle: (enabled) => toggles.push(enabled),
+    isFloatOpen: () => floatOpen
+  });
+  const root = container.children[0];
+  const dragBtn = createdEls.filter((el) => el.className === "cos-dragpan-btn").pop();
+  const handlers = windowListeners.keydown.slice(before);
+  assert.equal(handlers.length, 1, "快捷键与 WASD/空格共享同一 window keydown handler（零新增监听面）");
+  const press = (code, modifiers) => {
+    let prevented = false;
+    const ev = {
+      code, ctrlKey: false, metaKey: false, altKey: false, shiftKey: false,
+      isComposing: false, repeat: false, keyCode: 0,
+      preventDefault() { prevented = true; },
+      ...(modifiers ?? {})
+    };
+    for (const fn of handlers) fn(ev);
+    return prevented;
+  };
+  rafQ.length = 0;
+  fakeNow = 900000;
+  let tNow = 900000;
+  const step = () => { tNow += 50; stepFrame(tNow); };
+  eng.setScene(shortcutScene(), "rebuild");
+  eng.start();
+  for (let i = 0; i < 27; i++) step(); // 过冷启动序曲
+
+  /* ① 构造初值：设置注入的快捷键表（净房同源） */
+  assert.deepEqual(eng.getShortcuts(), {
+    closePage: "Escape", goHome: "Backquote", togglePan: "KeyM", voiceToggle: "Ctrl+KeyQ"
+  }, "构造读 settings.shortcuts 初值");
+
+  /* ② 银河态 `~` → no-op（不清选中、不动镜头、不拦截默认行为） */
+  assert.equal(eng.isDiving(), false, "初始银河态");
+  const camBefore = JSON.stringify(eng.inspectFilter().tween ?? null);
+  assert.equal(press("Backquote"), false, "银河态 ~ → no-op（不 preventDefault、不清选中）");
+  assert.equal(eng.inspectSelection(), null, "银河态 ~ 不产生选中变化");
+  assert.equal(JSON.stringify(eng.inspectFilter().tween ?? null), camBefore, "银河态 ~ 不动镜头补间");
+
+  /* ③ togglePan：`M` 翻转开关 → 与按钮点击同一状态链（视觉 + 持久化回调） */
+  assert.equal(eng.getTuning().dragPan, undefined, "开关镜像不进 getTuning（既有口径不变）");
+  assert.equal(dragBtn.attrs["aria-pressed"], "false", "初始关闭态");
+  assert.equal(press("KeyM"), true, "M 命中 → preventDefault");
+  assert.equal(dragBtn.attrs["aria-pressed"], "true", "键盘翻转 → aria-pressed 同步点亮");
+  assert.deepEqual(toggles, [true], "持久化回调写穿目标态（与按钮同一链路）");
+  assert.equal(press("KeyM"), true, "再按一次");
+  assert.equal(dragBtn.attrs["aria-pressed"], "false", "再按翻回关闭");
+  assert.deepEqual(toggles, [true, false], "回调每次目标态写穿");
+
+  /* ④ 按钮点击与键盘三入口一致（键盘翻到开启后点按钮 → 关闭语义） */
+  assert.equal(press("KeyM"), true);
+  assert.equal(dragBtn.attrs["aria-pressed"], "true", "键盘翻至开启");
+  for (const fn of dragBtn.listeners.click ?? []) fn({});
+  assert.equal(dragBtn.attrs["aria-pressed"], "false", "点击按「关闭」语义翻转（无双写分叉）");
+  assert.deepEqual(toggles, [true, false, true, false], "按钮与键盘共用同一条状态链");
+
+  /* ⑤ 修饰键裁决（D8b）：Shift/Meta 恒跳过；Ctrl/Alt 精确匹配（配置不含则不消费） */
+  const togglesBefore = toggles.length;
+  assert.equal(press("KeyM", { shiftKey: true }), false, "Shift+M 不触发（加速档语义位）");
+  assert.equal(press("KeyM", { metaKey: true }), false, "Meta+M 不触发（系统语义）");
+  assert.equal(press("KeyM", { ctrlKey: true }), false, "Ctrl+M ≠ M（配置不含修饰 → 不消费）");
+  assert.equal(press("KeyM", { altKey: true }), false, "Alt+M ≠ M");
+  assert.equal(toggles.length, togglesBefore, "修饰键组合零翻转");
+
+  /* ⑥ 组字与连发守卫 */
+  assert.equal(press("KeyM", { isComposing: true }), false, "组字中 M 不触发（键归输入法）");
+  assert.equal(press("KeyM", { keyCode: 229 }), false, "keyCode 229（Chromium 组字报键）不触发");
+  assert.equal(press("KeyM", { repeat: true }), false, "按住连发忽略（不抖动）");
+  assert.equal(toggles.length, togglesBefore, "守卫命中零翻转");
+
+  /* ⑦ 输入聚焦守卫（可编辑元素让位）；**chrome 聚焦不构成守卫**（D12 分档 + 真机反馈修订：
+     点击提案卡片/会话行后焦点滞留在面板内按钮上，「选中后按键」是主流程） */
+  globalThis.document.activeElement = { tagName: "INPUT", isContentEditable: false };
+  assert.equal(press("KeyM"), false, "可编辑聚焦 → M 不触发（字符进输入框）");
+  assert.equal(press("Backquote"), false, "可编辑聚焦 → ~ 不触发");
+  globalThis.document.activeElement = null;
+  const chromeEl = { tagName: "BUTTON", isContentEditable: false };
+  chromeEl.closest = (sel) => (String(sel).includes(".dsh-cosmos-panel") ? { tagName: "ASIDE" } : null);
+  globalThis.document.activeElement = chromeEl;
+  assert.equal(press("KeyM"), true, "面板卡片（chrome 内按钮）聚焦 → M 照常触发（chrome 不构成守卫）");
+  assert.equal(toggles.length, togglesBefore + 1, "面板卡片聚焦路径完成一次翻转");
+  const chromeDiv = { tagName: "DIV", isContentEditable: false };
+  chromeDiv.closest = (sel) => (String(sel).includes(".dsh-cosmos-sessions") ? { tagName: "ASIDE" } : null);
+  globalThis.document.activeElement = chromeDiv;
+  assert.equal(press("KeyM"), true, "会话面板容器聚焦 → M 照常触发（同上）");
+  assert.equal(toggles.length, togglesBefore + 2, "会话面板路径完成一次翻转");
+  globalThis.document.activeElement = null;
+  const btnEl = { tagName: "BUTTON", isContentEditable: false, closest: () => null };
+  globalThis.document.activeElement = btnEl;
+  assert.equal(press("KeyM"), true, "按钮聚焦 → M 照常触发（非原生激活键，按钮聚焦不构成守卫）");
+  assert.equal(toggles.length, togglesBefore + 3, "按钮聚焦路径完成一次翻转");
+  globalThis.document.activeElement = null;
+  assert.equal(toggles.length, togglesBefore + 3);
+
+  /* ⑧ 钻取态 `~` → flyOut（与右下按钮 / Esc 第一层等效） */
+  const settle = () => { fakeNow += 1400; for (let i = 0; i < 30; i += 1) step(); };
+  assert.equal(eng.diveToWs("sc"), true, "钻取到快捷键场景");
+  fakeNow += 1400;
+  step();
+  assert.equal(eng.isDiving(), true, "钻取态成立");
+  assert.equal(press("Backquote"), true, "钻取态 ~ 命中 → preventDefault");
+  settle();
+  assert.equal(eng.isDiving(), false, "~ 飞回银河（同一 flyOut 链路，补间收尾后状态归零）");
+  assert.equal(press("Backquote"), false, "飞回后再按 → 银河态 no-op（不拦截）");
+
+  /* ⑨ 组合键改绑热更命中（Alt+KeyH）；旧键失效 */
+  eng.setShortcuts({ goHome: "Alt+KeyH" });
+  assert.equal(eng.getShortcuts().goHome, "Alt+KeyH", "热更写穿");
+  assert.equal(eng.diveToWs("sc"), true, "再次钻取");
+  fakeNow += 1400;
+  step();
+  assert.equal(press("Backquote"), false, "改绑后旧键 ~ 不再命中");
+  assert.equal(eng.isDiving(), true, "旧键零行为（仍在钻取态）");
+  assert.equal(press("KeyH"), false, "无修饰 H 不命中组合键绑定");
+  assert.equal(press("KeyH", { altKey: true }), true, "Alt+H 精确命中 → preventDefault");
+  settle();
+  assert.equal(eng.isDiving(), false, "组合键飞回银河");
+  assert.equal(press("KeyH", { altKey: true, shiftKey: true }), false, "Shift+Alt+H 不触发（Shift 裁决跳过）");
+
+  /* ⑩ setShortcuts 部分写语义（非法值/缺席键保持原值；幂等；净房无重复） */
+  eng.setShortcuts({ goHome: "F5" });
+  assert.equal(eng.getShortcuts().goHome, "Alt+KeyH", "池外值被忽略（保持原值，不抛错）");
+  eng.setShortcuts({ goHome: 42 });
+  assert.equal(eng.getShortcuts().goHome, "Alt+KeyH", "非字符串被忽略");
+  eng.setShortcuts(null);
+  assert.equal(eng.getShortcuts().goHome, "Alt+KeyH", "null 入参不抛错");
+  eng.setShortcuts({ togglePan: "F2", goHome: "F2" });
+  const hot = eng.getShortcuts();
+  assert.equal(new Set(Object.values(hot)).size, 4, "热更后净房表恒无重复（冲突按优先序回落）");
+  assert.equal(hot.goHome, "F2", "goHome 按优先序保留 F2");
+  assert.notEqual(hot.togglePan, "F2", "togglePan 冲突回落缺省（KeyM）");
+
+  /* ⑪ 浮窗模态让位（D13）：浮窗打开时 goHome/togglePan 不分发；收起即恢复 */
+  assert.equal(eng.diveToWs("sc"), true, "再次钻取（让位断言前置）");
+  fakeNow += 1400;
+  step();
+  assert.equal(eng.isDiving(), true, "钻取态成立");
+  const togglesAtFloat = toggles.length;
+  floatOpen = true;
+  assert.equal(press("F2"), false, "浮窗打开 → goHome（F2）零分发");
+  assert.equal(press("KeyM"), false, "浮窗打开 → togglePan（M）零分发");
+  assert.equal(eng.isDiving(), true, "星空状态零变化（仍在钻取态）");
+  assert.equal(toggles.length, togglesAtFloat, "浮窗打开 → 零翻转");
+  floatOpen = false;
+  assert.equal(press("F2"), true, "浮窗关闭 → goHome 立即恢复");
+  settle();
+  assert.equal(eng.isDiving(), false, "恢复后完成飞回");
+  assert.equal(press("KeyM"), true, "浮窗关闭 → togglePan 恢复");
+  assert.equal(toggles.length, togglesAtFloat + 1, "恢复后完成一次翻转");
+
+  /* ⑫ 卸载零监听（整页关闭后 Cosmos 不持有键盘监听） */
+  eng.dispose();
+  assert.ok(
+    removed.some((entry) => entry.type === "keydown" && entry.fn === handlers[0]),
+    "dispose 真实移除本引擎的 window keydown 监听（页关零监听）"
+  );
+  assert.equal(windowListeners.keydown.length, before + 1, "创建时注册一个、卸载时移除同一函数（无监听面泄漏）");
+  assert.equal(press("F2"), false, "卸载后不再消费任何键位");
+  globalThis.window.removeEventListener = prevRemove;
+}
+
+/* ── 星胚移除（add-cosmos-embryo-dismiss 5.2 / spec cosmos-embryo-dismiss
+      「移除入口与确认交互」）──
+   覆盖：proto 星卡唯一按钮行 + ws/slug 钩子、正式提案星卡无按钮、两击确认（首击零派发 /
+   二击派发）、确认态经直接 DOM（内容签名不变 → 不整卡重渲染）、约 3s 无操作回弹、
+   per-目标在途门、响应与同步抛错解锁、回调未注入静默、独立窗口照常可用、
+   proto→created 同 id 翻转即移除按钮。 */
+{
+  assert.equal(DISMISS_CONFIRM_MS, 3000, "确认态回弹窗口 = 约 3s（D3）");
+
+  const dismissScene = (protoLifecycle = "proto") => ({
+    workspaces: [{
+      id: "emb", name: "embryo-ws", pos: [0, 0, 0],
+      stars: [
+        { id: "embryo-a", name: "embryo-a", lifecycle: protoLifecycle, setBy: "cosmos-explore", at: 1700000000000, tasks: [0, 0], age: "刚刚", act: 0, off: [-26, 0, 0] },
+        { id: "formal-b", name: "formal-b", lifecycle: "reviewed", setBy: "cosmos-review", at: 1700000000001, tasks: [1, 2], age: "刚刚", act: 0, off: [26, 0, 0] }
+      ],
+      links: [], planets: [], comets: [], archives: 0, satelliteCount: 0
+    }]
+  });
+
+  /** 引擎装配（每例独立实例；返回 hover/click/帧步进工具）。 */
+  const harness = (extra) => {
+    const container = stubEl("div");
+    const eng = createCosmosEngine({ container, style: createSkinD(), ...(extra ?? {}) });
+    const rootEl = container.children[0];
+    rafQ.length = 0;
+    fakeNow = 830000;
+    let tNow = fakeNow;
+    eng.setScene(dismissScene(), "rebuild");
+    eng.start();
+    const step = (n = 1) => { for (let i = 0; i < n; i++) { tNow += 50; stepFrame(tNow); } };
+    step(27); // 过冷启动序曲
+    const canvasEl = rootEl._by[".cos-canvas"];
+    const cardEl = rootEl._by[".cos-card"];
+    const fire = (type, ev) => { for (const fn of rootEl.listeners[type] ?? []) fn(ev); };
+    /* 世界 → 屏幕（与引擎 project 同式：默认 fov 60 / 视口 800×600 桩）。 */
+    const screenOf = (world) => {
+      const cam = eng.inspectFilter().camera;
+      const W = 800, H = 600;
+      let v = [world[0] - cam.target[0], world[1] - cam.target[1], world[2] - cam.target[2]];
+      const cy = Math.cos(-cam.yaw), sy = Math.sin(-cam.yaw);
+      v = [v[0] * cy + v[2] * sy, v[1], -v[0] * sy + v[2] * cy];
+      const cx = Math.cos(-cam.pitch), sx = Math.sin(-cam.pitch);
+      v = [v[0], v[1] * cx - v[2] * sx, v[1] * sx + v[2] * cx];
+      const vz = v[2] + cam.dist;
+      const f = (H * 1.1) / (2 * Math.tan(60 * Math.PI / 360));
+      const s = f / vz;
+      return { x: W / 2 + v[0] * s, y: H / 2 - v[1] * s };
+    };
+    const hoverStar = (id) => {
+      const star = eng.inspectEntities("emb").stars.find((s) => s.id === id);
+      const p = screenOf(star.wp);
+      fire("pointermove", { pointerId: 1, clientX: p.x, clientY: p.y, buttons: 0, target: canvasEl });
+      step(3); // 第 1 帧写入 E.hovered，第 2 帧起落卡
+    };
+    const click = (target) => { for (const fn of cardEl.listeners.click ?? []) fn({ target }); };
+    return { eng, rootEl, canvasEl, cardEl, step, hoverStar, click };
+  };
+
+  /** 信息卡按钮桩：命中 dismiss 分流所需的 data-action / data-ws / data-slug 钩子。 */
+  const dismissTargetOf = (wsId = "emb", slug = "embryo-a") => ({
+    disabled: false,
+    textContent: "",
+    classList: { contains: (cls) => cls === "cd-btn" },
+    getAttribute: (key) => ({
+      "data-action": "dismiss-embryo",
+      "data-ws": wsId,
+      "data-slug": slug
+    })[key] ?? null
+  });
+
+  /* ① proto 星卡唯一按钮行 + 钩子；正式提案星卡无按钮 */
+  {
+    const calls = [];
+    const h = harness({ onDismissEmbryo: (input) => { calls.push(input); } });
+    h.hoverStar("embryo-a");
+    const protoHtml = String(h.cardEl.innerHTML);
+    assert.ok(protoHtml.includes('data-action="dismiss-embryo"'), "星胚卡呈现「移除星胚」按钮");
+    assert.ok(protoHtml.includes('data-ws="emb"'), "按钮携带 data-ws（workspaceId 钩子）");
+    assert.ok(protoHtml.includes('data-slug="embryo-a"'), "按钮携带 data-slug（proto 星 id = 锚点 slug）");
+    assert.ok(protoHtml.includes(">移除星胚<"), "按钮初始文案「移除星胚」（E.labels 中文基线）");
+    assert.equal((protoHtml.match(/cd-actions/g) ?? []).length, 1, "星胚卡「唯一」按钮行");
+    assert.ok(!protoHtml.includes("disabled"), "按钮 markup 无 disabled（在途禁用只走直接 DOM）");
+    assert.ok(protoHtml.includes("待创建") && !protoHtml.includes("活力"), "星胚卡：生命周期待创建 + 豁免活力行（既有口径）");
+
+    h.hoverStar("formal-b");
+    const formalHtml = String(h.cardEl.innerHTML);
+    assert.ok(!formalHtml.includes("dismiss-embryo"), "正式提案恒星卡 MUST NOT 呈现移除按钮");
+    assert.ok(!formalHtml.includes("cd-actions"), "正式提案恒星卡保持无按钮行");
+    assert.deepEqual(calls, [], "仅 hover 零派发");
+    h.eng.dispose();
+  }
+
+  /* ② 两击确认：首击就地切确认态（零派发、内容签名不变）→ 二击派发 + 在途门 + 解锁 */
+  {
+    const calls = [];
+    const resolvers = [];
+    const h = harness({
+      onDismissEmbryo: (input) => {
+        calls.push(input);
+        return new Promise((resolve) => resolvers.push(resolve));
+      }
+    });
+    h.hoverStar("embryo-a");
+    const htmlBefore = String(h.cardEl.innerHTML);
+    const sigBefore = String(h.cardEl.dataset.sig);
+    const target = dismissTargetOf();
+    h.click(target);
+    assert.equal(target.textContent, "确认移除？", "首击就地变确认态文案「确认移除？」");
+    assert.deepEqual(calls, [], "首击 MUST NOT 派发请求（两击确认）");
+    assert.equal(String(h.cardEl.innerHTML), htmlBefore, "确认态不经 cardHtml 重渲染（整卡 markup 不变）");
+    assert.equal(String(h.cardEl.dataset.sig), sigBefore, "确认态 MUST NOT 进入内容签名");
+    h.step(3);
+    assert.equal(String(h.cardEl.innerHTML), htmlBefore, "确认态在帧循环中不被重建（sig 不变零重写）");
+    assert.equal(target.disabled, false, "确认态按钮仍可点（第二击是执行击）");
+
+    const second = dismissTargetOf();
+    h.click(second);
+    assert.deepEqual(calls, [{ workspaceId: "emb", slug: "embryo-a" }], "第二击经回调派发（ws.id + slug）");
+    assert.equal(second.disabled, true, "在途禁用态经直接 DOM 切换");
+    h.click(dismissTargetOf());
+    h.click(dismissTargetOf());
+    assert.equal(calls.length, 1, "在途门：每目标至多一个在途请求（重复点击忽略）");
+    resolvers[0]();
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.equal(second.disabled, false, "响应到达（无论 outcome）→ 解锁");
+    assert.equal(second.textContent, "移除星胚", "解锁同时文案回弹初始态");
+    h.click(dismissTargetOf()); // 解锁后可再次进入确认态（重试路径）
+    assert.equal(calls.length, 1, "重试第一击仍不派发（两击每轮重来）");
+    h.eng.dispose();
+  }
+
+  /* ③ 首击后约 DISMISS_CONFIRM_MS 无操作 → 自动回弹初始态且零请求 */
+  {
+    const calls = [];
+    const h = harness({ onDismissEmbryo: (input) => { calls.push(input); } });
+    h.hoverStar("embryo-a");
+    const realSetTimeout = globalThis.setTimeout;
+    const realClearTimeout = globalThis.clearTimeout;
+    const scheduled = [];
+    globalThis.setTimeout = (fn, ms) => { scheduled.push({ fn, ms }); return { unref() {} }; };
+    globalThis.clearTimeout = () => {};
+    try {
+      const target = dismissTargetOf();
+      h.click(target);
+      assert.equal(target.textContent, "确认移除？", "首击进入确认态");
+      assert.equal(scheduled.length, 1, "确认态登记一个回弹定时器");
+      assert.equal(scheduled[0].ms, DISMISS_CONFIRM_MS, "回弹定时器窗口 = DISMISS_CONFIRM_MS");
+      scheduled[0].fn();
+      assert.equal(target.textContent, "移除星胚", "无操作 → 按钮回弹初始态");
+      assert.deepEqual(calls, [], "回弹路径零请求");
+      h.click(target);
+      assert.equal(target.textContent, "确认移除？", "回弹后再次首击重新进入确认态");
+      assert.equal(scheduled.length, 2, "回弹后重新登记定时器");
+    } finally {
+      globalThis.setTimeout = realSetTimeout;
+      globalThis.clearTimeout = realClearTimeout;
+    }
+    assert.deepEqual(calls, [], "自动回弹全程零派发");
+    h.eng.dispose();
+  }
+
+  /* ④ 回调未注入 → 两击确认后静默 no-op（不派发、不抛错、按钮回弹） */
+  {
+    const h = harness();
+    h.hoverStar("embryo-a");
+    const target = dismissTargetOf();
+    assert.doesNotThrow(() => {
+      h.click(target);
+      h.click(target);
+    }, "未注入 onDismissEmbryo → 点击静默（不抛错）");
+    assert.equal(target.textContent, "移除星胚", "静默路径文案回弹初始态");
+    assert.equal(target.disabled, false, "静默路径不进入在途禁用");
+    h.eng.dispose();
+  }
+
+  /* ⑤ 回调同步抛错 → 解锁（不让一次失败永久卡死按钮） */
+  {
+    const originalWarn = console.warn;
+    console.warn = () => {};
+    try {
+      const h = harness({ onDismissEmbryo: () => { throw new Error("boom"); } });
+      h.hoverStar("embryo-a");
+      const target = dismissTargetOf();
+      h.click(target);
+      h.click(target);
+      assert.equal(target.disabled, false, "同步抛错 → 解锁");
+      assert.equal(target.textContent, "移除星胚", "同步抛错 → 文案回弹初始态");
+      h.eng.dispose();
+    } finally {
+      console.warn = originalWarn;
+    }
+  }
+
+  /* ⑥ 独立窗口态照常可用（服务端动词，不依赖主壳会话页；D8） */
+  {
+    const calls = [];
+    const h = harness({ sessionNavAvailable: false, onDismissEmbryo: (input) => { calls.push(input); } });
+    h.hoverStar("embryo-a");
+    const html = String(h.cardEl.innerHTML);
+    assert.ok(html.includes('data-action="dismiss-embryo"'), "独立窗口态星胚卡照常呈现移除按钮");
+    assert.ok(!html.includes("disabled"), "独立窗口态移除按钮非禁用（禁用例外只属「打开会话」）");
+    const target = dismissTargetOf();
+    h.click(target);
+    h.click(target);
+    assert.deepEqual(calls, [{ workspaceId: "emb", slug: "embryo-a" }], "独立窗口态点击照常派发");
+    h.eng.dispose();
+  }
+
+  /* ⑦ proto→created 同 id 翻转：lifecycle 进内容签名 → 卡片重建、移除按钮消失 */
+  {
+    const h = harness({ onDismissEmbryo: () => {} });
+    h.hoverStar("embryo-a");
+    assert.ok(String(h.cardEl.innerHTML).includes('data-action="dismiss-embryo"'), "翻转前：星胚卡有按钮");
+    h.eng.setScene(dismissScene("created"), "patch");
+    h.step(2);
+    const html = String(h.cardEl.innerHTML);
+    assert.ok(!html.includes("dismiss-embryo"), "锚点转正（proto→created）→ 移除按钮消失（lifecycle 在 sig 内）");
+    assert.ok(html.includes("已创建"), "卡片按新生命周期重建");
+    h.eng.dispose();
   }
 }
 

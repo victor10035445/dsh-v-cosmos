@@ -119,6 +119,24 @@ assert.equal(scene.workspaces[1].comets.length, 0, "ws2 无会话");
 /* ── act 活跃度：busy/waiting 计入，idle/done-unread 不计 ── */
 assert.equal(ws1.stars.find((s) => s.id === "add-a").act, 1, "关联会话 busy → act=1");
 assert.equal(ws1.stars.find((s) => s.id === "add-b").act, 1);
+
+/* ── 显式绑定的会话恰绕其绑定集（fix-cosmos-association-scope spec「显式绑定的审阅
+      会话单星轨道」）：骨架只剩 explicit 单边 → 单星轨道，act 只由真实关联驱动 ── */
+{
+  const boundSkeleton = skeletonFixture();
+  boundSkeleton.workspaces[0].associations = [
+    { proposal: "add-a", sessionId: "s-planet", origin: "explicit" }
+  ];
+  boundSkeleton.workspaces[0].links = [];
+  const boundScene = mergeScene({ skeleton: boundSkeleton, sessions: sessionsFixture(), workspaces: workspacesFixture(), now: NOW });
+  const boundWs = boundScene.workspaces[0];
+  assert.equal(boundWs.planets.length, 1, "绑定不改变会话分类（仍为行星）");
+  assert.deepEqual(boundWs.planets[0].stars, ["add-a"], "显式绑定 → 恰绕绑定提案（无联星）");
+  assert.equal(boundWs.stars.find((s) => s.id === "add-a").act, 1, "绑定恒星被忙碌会话点亮（act≥1）");
+  assert.equal(boundWs.stars.find((s) => s.id === "add-b").act, 0, "未绑定提案 act=0（沉睡暗星，preState 门控按钮可见）");
+  assert.deepEqual(boundWs.links, [], "单星关联 → 无联星连线");
+}
+
 const waitingScene = mergeScene({
   skeleton: skeletonFixture(),
   sessions: { ids: ["s-planet", "s-comet"], byId: { "s-planet": { displayTitle: "p", running: true, updatedAt: NOW }, "s-comet": { updatedAt: NOW } } },

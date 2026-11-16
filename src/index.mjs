@@ -6,7 +6,11 @@
  *                                 **会话不在其列**——会话事实走浏览器半区官方镜像）
  *  - GET  /api/dsh-v-cosmos/events SSE 轻帧广播：`proposals-changed` /
  *                                 `associations-changed`（帧体不带载荷，客户端收到
- *                                 后自行重拉 scene——hive 同款；心跳注释防代理断连）
+ *                                 后自行重拉 scene——hive 同款；心跳注释防代理断连）。
+ *                                 另：`role=cosmos-window` 连接 = Cosmos 独立窗口占位
+ *                                 （add-cosmos-standalone-window D2），占位计数经
+ *                                 `cosmos-presence-changed` 帧（`{type, count}`，计数即
+ *                                 载荷）在连接建立/增量/断开时广播；断开自动清位。
  *  - GET/PUT /api/dsh-v-cosmos/config 动作按钮配置（add-cosmos-proposal-actions）：
  *                                 GET 返回 `{status, revision, value, base, user, writable}`
  *                                 （base = 补丁层 entry config，user = 共享存储节，
@@ -31,9 +35,32 @@
  *                                 503 rename-unavailable（部署未挂载 session-title）/
  *                                 400 invalid / 500。sessionTitle 经 ctx.get 请求期惰性
  *                                 可选查找、**不入 inject**（design D9）。
+ *  - POST /api/dsh-v-cosmos/bind-session 显式会话关联绑定（fix-cosmos-association-scope）：
+ *                                 请求 `{sessionId, proposals}`（sessionId 原样保留；
+ *                                 proposals trim/去重/≤16）；工作区复用启发式归属同源解析
+ *                                 （registry sessionIds 反查优先 → 会话 cwd 相等兜底），
+ *                                 解析不到 400 `workspace/unknown`；写入 = **替换**
+ *                                 （该会话在该工作区的关联恰为清单，origin=explicit）；
+ *                                 仅实际变更时落盘 + 广播 `associations-changed`（幂等
+ *                                 重绑零写入零广播）；200 `{ok, bound}`。持有 explicit
+ *                                 条目的会话被启发式两条规则压制（见 runHeuristics）。
+ *  - POST /api/dsh-v-cosmos/dismiss-embryo 星胚移除（add-cosmos-embryo-dismiss 2.1 /
+ *                                 CONTRACT §6.3：**仅用户显式点击驱动**，禁止任何推导触发）：
+ *                                 请求 `{workspaceId, slug}`；守卫链依序执行 = workspace
+ *                                 解析（未在册 → missing-workspace，不碰文件系统）→ slug
+ *                                 白名单（`^[A-Za-z0-9][A-Za-z0-9._-]*$` 且不含 `..` 子串，
+ *                                 不匹配 → failed 且**不解析任何路径**）→ 同名提案目录守卫
+ *                                 （`changes/<slug>/` 存在 → guard-dir-exists，零删除）→
+ *                                 锚点存在性（缺失 → already-missing，幂等）→ `unlinkSync`
+ *                                 仅删 `pending-changes/<slug>.json`（捕 ENOENT 归
+ *                                 already-missing，其余删除异常归 failed）；**恒 200** +
+ *                                 `{outcome, reason?}`（deleted / already-missing /
+ *                                 guard-dir-exists / missing-workspace / failed）。
+ *                                 `.state.json` 与 `changes/<name>/` 恒不触碰。
  *  - 关联存储：$DSH_HOME/storages/dsh-v-cosmos.json（storage-json 同款语义：内存态即
  *    全量、temp 写 + rename 原子替换）。**MUST NOT 落盘到 openspec 工件**——
- *    工作区目录恒只读（零侵入纪律，任务 3.6 冒烟断言）。旧名 dsh-cosmos 的存量
+ *    工作区目录恒只读（零侵入纪律，任务 3.6 冒烟断言）；唯一例外 = `/dismiss-embryo`
+ *    的用户显式动词单文件删除（见上）。旧名 dsh-cosmos 的存量
  *    存储首启回读迁移（读取回落，写入恒走新名）。
  *  - 启发式 v1（design.md 优先级）：
  *      1. 会话归属该工作区（registry sessionIds / cwd）且近期上下文文本
@@ -51,7 +78,8 @@
  *    workspaceRegistry 无注册事件，这是「新增/注销工作区」在插件边界内的唯一收敛点。
  *
  * 数据源边界（对齐 hive 数据流原则）：宿主半区只读 registry/agents 头信息与
- * openspec 工件；displayTitle / pendingInteraction / todos 等投影字段只存在于
+ * openspec 工件（唯一写例外 = `/dismiss-embryo` 的锚点硬删除，仅用户点击驱动）；
+ * displayTitle / pendingInteraction / todos 等投影字段只存在于
  * 浏览器半区，宿主不产出也不需要。
  */
 
@@ -76,8 +104,14 @@ import {
   upsertAssociation,
   applyContextHeuristic,
   applyBirthtimeHeuristic,
-  resolveWorkspacePath
+  resolveWorkspacePath,
+  normalizeBindRequest,
+  applyBinding,
+  explicitBoundSessionIds
 } from "./associations.mjs";
+/* 独立窗口占位注册表（add-cosmos-standalone-window design D2）：纯逻辑模块，`/events` 的
+   `role=cosmos-window` 连接在此登记；计数帧经既有 SSE 通道广播（不另起通道）。 */
+import { createPresenceRegistry, isCosmosWindowRole, presenceFrameOf } from "./presence.mjs";
 
 export const name = "dsh-v-cosmos";
 
@@ -100,6 +134,22 @@ const SCAN_DEBOUNCE_MS = 2000;
 const CONTEXT_EVENT_WINDOW = 200;
 /** 单工作区活跃会话参与启发式的数量上限（异常大会话面兜底）。 */
 const HEURISTIC_SESSION_CAP = 64;
+
+/**
+ * 星胚移除的 slug 白名单（CONTRACT §6.3 / spec「星胚移除服务端端点」）：
+ * `^[A-Za-z0-9][A-Za-z0-9._-]*$` **且不含 `..` 子串**。首字符非点 + 无路径分隔符本已使
+ * 穿越不可达；显式拒 `..` 是防御纵深（并使「含 `..` 恒拒」的断言字面成立）。
+ * 校验 MUST 先于任何路径解析——不合法输入恒不触达文件系统。
+ * @param {unknown} slug
+ * @returns {boolean}
+ */
+export function isDismissableSlug(slug) {
+  return (
+    typeof slug === "string" &&
+    /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(slug) &&
+    !slug.includes("..")
+  );
+}
 
 /* ── 存储路径：$DSH_HOME（非空）优先，否则 ~/.dsh（对齐 hive storagePath 语义） ── */
 
@@ -188,7 +238,7 @@ export function parseStoredDoc(text) {
   }
 }
 
-/* ── 工作区目录读回调（宿主半区唯一触碰工作区文件的位置；只读） ── */
+/* ── 工作区目录读回调（宿主半区触碰工作区文件的位置；读 + dismiss 端点单文件删除） ── */
 
 const readers = {
   readChangesDir(workspacePath) {
@@ -303,6 +353,10 @@ export function apply(ctx, config) {
   /** 已执行过至少一次全量扫描（懒启动门）。 */
   let scanned = false;
   const sseClients = new Set();
+  /* 独立窗口占位登记（add-cosmos-standalone-window D2）：token = 该窗口的 `/events`
+     连接对象，连接断开即清位（无崩溃残留、无 TTL）。计数经 `cosmos-presence-changed`
+     轻帧广播；主壳座位据此禁用（入口互斥）。 */
+  const presence = createPresenceRegistry();
   let heartbeat = null;
   /** 提案目录首次检测时刻（birthMs 取不到时规则 2 的回落基准）。 */
   const firstSeenMs = new Map();
@@ -322,6 +376,9 @@ export function apply(ctx, config) {
       }
     }
   };
+
+  /** 占位计数全量帧广播（连接建立/占位增量/释放共用：客户端据此自愈，重连无需补发请求）。 */
+  const broadcastPresence = () => broadcast(presenceFrameOf(presence.count()));
 
   const startHeartbeat = () => {
     if (heartbeat) return;
@@ -408,6 +465,40 @@ export function apply(ctx, config) {
     }
   };
 
+  /** 会话 agent 对象容错解析（ctx.agents 镜像；缺席/抛错 → null）。 */
+  const agentOf = (sessionId) => {
+    try {
+      return ctx.agents?.get?.(sessionId) ?? null;
+    } catch {
+      return null;
+    }
+  };
+
+  /**
+   * 会话→工作区归属解析（bind-session 端点复用启发式同源逻辑）：
+   * registry `sessionIds` 反查优先，回落会话 cwd（`agent.session.header.cwd`）与工作区
+   * path 相等；解析不到 → null（宿主映射 400 workspace/unknown）。
+   */
+  const resolveSessionWorkspace = (sessionId) => {
+    const header = agentOf(sessionId)?.session?.header ?? null;
+    const cwd = typeof header?.cwd === "string" ? header.cwd : "";
+    return resolveWorkspacePath({ sessionId, cwd, workspaces: listWorkspaces() });
+  };
+
+  /**
+   * workspaceId → 工作区路径（dismiss 端点守卫链第一跳）：在册工作区按实体 id 反查，
+   * 未登记 / 路径空 → null（端点映射 missing-workspace，不触碰文件系统）。
+   */
+  const workspacePathOf = (workspaceId) => {
+    if (typeof workspaceId !== "string" || !workspaceId) return null;
+    for (const workspace of listWorkspaces()) {
+      if (workspaceEntityId(workspace) !== workspaceId) continue;
+      const path = typeof workspace?.path === "string" ? workspace.path : "";
+      if (path) return path;
+    }
+    return null;
+  };
+
   /**
    * 该工作区的活跃会话面（启发式输入）：registry sessionIds ∩ ctx.agents 在册、
    * 非子代理（header.origin）、非 blank（header 可见时）、未归档。
@@ -420,12 +511,7 @@ export function apply(ctx, config) {
     const out = [];
     for (const sessionId of ids) {
       if (archived.has(sessionId)) continue;
-      let agent = null;
-      try {
-        agent = ctx.agents?.get?.(sessionId) ?? null;
-      } catch {
-        agent = null;
-      }
+      const agent = agentOf(sessionId);
       if (!agent) continue;
       const header = agent?.session?.header ?? null;
       if (header?.origin === "subagent") continue; // 无人机不渲染也不计活跃度（v1）
@@ -437,13 +523,20 @@ export function apply(ctx, config) {
   };
 
   /** 启发式执行（单工作区）：规则 1（归属+slug）优先、规则 2（birthtime 窗口）兜底。
-      变更时落盘 + 广播 associations-changed；幂等条目不产生广播。 */
+      变更时落盘 + 广播 associations-changed；幂等条目不产生广播。
+
+      显式绑定压制（fix-cosmos-association-scope 2.2 / spec「显式会话关联绑定」）：
+      以存储中 explicit 条目为**唯一依据**（无内存标志，重启由回读恢复）——规则 1 循环
+      跳过被绑定会话；规则 2 的活跃集合先剔除被绑定会话再判唯一性。未绑定会话路径
+      逐字不变。 */
   const runHeuristics = (workspacePath, proposalNames, now) => {
     let changed = false;
     const active = activeSessionsOf(workspacePath, now);
+    const bound = explicitBoundSessionIds(entries, workspacePath);
+    const heuristicActive = active.filter((session) => !bound.has(session.sessionId));
     const before = projectionOf(entries).length;
-    /* 规则 1：逐活跃会话的近期上下文 × 提案 slug。 */
-    for (const session of active) {
+    /* 规则 1：逐活跃会话的近期上下文 × 提案 slug（被绑定会话跳过）。 */
+    for (const session of heuristicActive) {
       const text = contextTextOf(session.agent);
       if (!text) continue;
       const result = applyContextHeuristic({
@@ -457,7 +550,8 @@ export function apply(ctx, config) {
       entries = result.entries;
       if (result.added.length > 0) changed = true;
     }
-    /* 规则 2：提案目录出现窗口 × 唯一活跃会话（已有关联的提案跳过）。 */
+    /* 规则 2：提案目录出现窗口 × 唯一活跃会话（已有关联的提案跳过；被绑定会话不参与
+       唯一性判定——否则刚绑定的忙碌会话会误连后续新提案目录）。 */
     const associated = new Set(entries.filter((e) => e.workspace === workspacePath).map((e) => e.proposal));
     const wsSkeleton = skeleton.workspaces.find((ws) => ws.path === workspacePath);
     for (const proposal of wsSkeleton?.stars ?? []) {
@@ -469,7 +563,7 @@ export function apply(ctx, config) {
         workspacePath,
         proposal: { id: proposal.id, birthMs },
         detectedMs: birthMs ?? firstSeenMs.get(seenKey),
-        activeSessions: active.map((s) => ({ sessionId: s.sessionId, lastActivityMs: s.lastActivityMs })),
+        activeSessions: heuristicActive.map((s) => ({ sessionId: s.sessionId, lastActivityMs: s.lastActivityMs })),
         entries,
         now
       });
@@ -549,7 +643,8 @@ export function apply(ctx, config) {
   /* ── fs.watch 生命周期（懒启动 / 补挂 / 摘除，对齐 hive 请求期对账） ── */
 
   /** 受监听工作区清单：有 `openspec/` 目录且已登记 workspaceId（add-celestial-states 2.3：
-      watch 范围从 changes/ 扩至 openspec/ 根，覆盖 changes/ 与 pending-changes/）。 */
+      watch 范围从 changes/ 扩至 openspec/ 根，覆盖 changes/ 与 pending-changes/；星胚移除
+      的锚点 `unlink` 同样是该目录下的事件，零新增通道）。 */
   const watchableWorkspaces = () => {
     const out = [];
     for (const workspace of listWorkspaces()) {
@@ -812,7 +907,89 @@ export function apply(ctx, config) {
             return;
           }
 
-          /* ── SSE 轻帧广播 ── */
+          /* ── 显式会话关联绑定（fix-cosmos-association-scope 2.1 / spec「显式会话关联绑定」） ──
+             归一化失败 400 invalid；工作区复用启发式归属同源解析（registry sessionIds
+             反查 → 会话 cwd 兜底），解析不到 400 workspace/unknown（存储/广播零变化）；
+             替换语义写入后**仅 changed 时**落盘 + 广播（persistAssociations 无条件广播，
+             幂等重绑 MUST 跳过）；200 {ok, bound}（bound = 归一化后清单）。 */
+          if (route === "/bind-session" && req.method === "POST") {
+            const request = normalizeBindRequest(await readJsonBody(req));
+            if (!request.ok) {
+              json(res, 400, { error: "invalid", reason: request.reason });
+              return;
+            }
+            const workspace = resolveSessionWorkspace(request.sessionId);
+            if (!workspace) {
+              json(res, 400, { error: "workspace/unknown", sessionId: request.sessionId });
+              return;
+            }
+            const result = applyBinding(entries, {
+              workspace,
+              sessionId: request.sessionId,
+              proposals: request.proposals
+            });
+            entries = result.entries;
+            if (result.changed) {
+              /* 关联投影随骨架下发：已在册骨架需同拍重建（客户端收到
+                 associations-changed 后会重拉 /scene——不回填即返回旧边）。 */
+              if (scanned) {
+                skeleton = buildSkeleton(listWorkspaces(), readers, { now: Date.now(), associations: projectionOf(entries) });
+              }
+              persistAssociations();
+            }
+            json(res, 200, { ok: true, bound: request.proposals });
+            return;
+          }
+
+          /* ── 星胚移除（add-cosmos-embryo-dismiss 2.1 / CONTRACT §6.3） ──
+             dsh-v-cosmos 一等清理方：用户在星胚信息卡两击确认后，硬删除
+             `openspec/pending-changes/<slug>.json` 单文件。**仅用户显式点击驱动**——本端点
+             不挂任何定时/推导触发者。恒 200 + outcome 枚举（照 archive-sessions 口径）：
+             workspace 解析 → slug 白名单（零路径解析）→ 同名提案目录守卫 → 锚点存在性
+             幂等 → `unlinkSync`（捕 ENOENT 归幂等，其余异常 failed + reason）。 */
+          if (route === "/dismiss-embryo" && req.method === "POST") {
+            const body = await readJsonBody(req);
+            const workspacePath = workspacePathOf(body?.workspaceId);
+            if (!workspacePath) {
+              json(res, 200, { outcome: "missing-workspace" });
+              return;
+            }
+            const slug = body?.slug;
+            if (!isDismissableSlug(slug)) {
+              /* 白名单先于任何路径解析：路径穿越输入（/ \ ..）恒不可达文件系统。 */
+              json(res, 200, { outcome: "failed", reason: "非法 slug" });
+              return;
+            }
+            /* 目录守卫先行：同名真实提案目录存在 → 绝不触碰（锚点按目录优先本就被忽略）。 */
+            if (existsSync(join(workspacePath, "openspec", "changes", slug))) {
+              json(res, 200, { outcome: "guard-dir-exists" });
+              return;
+            }
+            const anchorPath = join(workspacePath, "openspec", "pending-changes", slug + ".json");
+            /* 锚点存在性：缺失 = 幂等（重复移除 / ff 已清理）。 */
+            if (!existsSync(anchorPath)) {
+              json(res, 200, { outcome: "already-missing" });
+              return;
+            }
+            try {
+              unlinkSync(anchorPath);
+            } catch (error) {
+              /* 存在性检查与删除之间被 ff / explore 并发清理 → 归幂等（恒 200 不破）。 */
+              if (error?.code === "ENOENT") {
+                json(res, 200, { outcome: "already-missing" });
+                return;
+              }
+              json(res, 200, { outcome: "failed", reason: String(error?.message || error) });
+              return;
+            }
+            json(res, 200, { outcome: "deleted" });
+            return;
+          }
+
+          /* ── SSE 轻帧广播（add-cosmos-standalone-window D2 扩 `role` 角色连接） ──
+             独立窗口以 `?role=cosmos-window` 连接 → 登记占位；连接建立（含重连）即广播
+             当前全量计数（客户端自愈）；占位增量/释放（连接 close）再广播一次。既有心跳、
+             proposals/associations 帧机制零改动。 */
           if (route === "/events" && req.method === "GET") {
             res.writeHead(200, {
               "content-type": "text/event-stream",
@@ -822,9 +999,16 @@ export function apply(ctx, config) {
             res.write("retry: 3000\n\n");
             res.write(": connected\n\n");
             sseClients.add(res);
+            const windowRole = isCosmosWindowRole(url.searchParams.get("role"));
+            if (windowRole) presence.add(res);
             startHeartbeat();
+            /* 连接建立即广播全量计数（含本连接）：任何客户端重连后按当前计数校正按钮态。 */
+            broadcastPresence();
             res.on("close", () => {
+              const wasWindow = presence.delete(res);
               sseClients.delete(res);
+              /* 占位释放 → 全体客户端（主壳座位）即时解锁。 */
+              if (wasWindow) broadcastPresence();
               maybeStopHeartbeat();
             });
             return;
@@ -853,6 +1037,8 @@ export function apply(ctx, config) {
         }
       }
       sseClients.clear();
+      /* 插件卸载清场：占位归零（连接随后全部 end；本集合是判定权威，MUST NOT 留残余）。 */
+      presence.reset();
       if (heartbeat) clearInterval(heartbeat);
     };
   }, "dsh-v-cosmos: api routes");

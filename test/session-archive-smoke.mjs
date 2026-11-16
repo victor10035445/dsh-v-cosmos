@@ -554,12 +554,18 @@ function buttonTarget(action, sessionId) {
   );
   assert.ok(actionsBody.length > 0, "cardActionsHtml 切片");
   assert.equal((actionsBody.match(/data-action="archive"/g) ?? []).length, 1, "归档按钮稳定钩子 data-action=archive");
-  assert.equal((actionsBody.match(/data-action="open"/g) ?? []).length, 1, "打开按钮稳定钩子 data-action=open");
+  /* 「打开会话」按导航可用性渲染两条分支（add-cosmos-standalone-window D6）：内嵌态带
+     `aria-keyshortcuts` + 快捷键 title；独立窗口态 `disabled` + 禁用提示 title。两分支都
+     保留 `data-action="open"` 稳定钩子，故切片内出现两次。 */
+  assert.equal((actionsBody.match(/data-action="open"/g) ?? []).length, 2, "打开按钮稳定钩子 data-action=open（可用 / 禁用两分支）");
+  assert.ok(actionsBody.includes("E.sessionNavAvailable"), "导航可用性分流（独立窗口态禁用）");
   assert.ok(actionsBody.includes('data-action="archive" data-session="'), "归档按钮与既有 data-session 钩子并存");
   assert.ok(actionsBody.includes(">打开会话<"), "按钮文案「打开会话」");
   assert.ok(actionsBody.includes(">归档会话<"), "按钮文案「归档会话」");
   assert.equal((engineSource.match(/\+\s*cardActionsHtml\(/g) ?? []).length, 2, "行星卡与彗星卡都挂双按钮组");
-  assert.ok(!/disabled/.test(actionsBody), "cardHtml 按钮组不渲染 disabled（禁用态只走直接 DOM 切换）");
+  /* 归档在途禁用态只走直接 DOM 切换；markup 内的唯一 disabled = 导航不可用分支
+     （页面生命周期常量，不进 sig 瞬态）。 */
+  assert.equal((actionsBody.match(/disabled/g) ?? []).length, 1, "markup 仅导航不可用分支渲染 disabled（归档在途仍走直接 DOM）");
 
   /* click 分流 + 权威门 + 直接 DOM 切换 */
   const clickBody = engineSource.slice(

@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import {
   ASSOC_VERSION,
   ASSOC_ENTRIES_LIMIT,
+  BIND_PROPOSALS_LIMIT,
   normalizeAssociations,
   upsertAssociation,
   pruneArchivedSessions,
@@ -15,7 +16,10 @@ import {
   applyContextHeuristic,
   applyBirthtimeHeuristic,
   multiProposalGroups,
-  projectionOf
+  projectionOf,
+  normalizeBindRequest,
+  applyBinding,
+  explicitBoundSessionIds
 } from "../src/associations.mjs";
 
 const entry = (workspace, proposal, sessionId, updatedAt, origin = "heuristic") => ({
@@ -128,5 +132,122 @@ assert.equal(rule2Miss.added, false, "多会话不关联");
 const projection = projectionOf(rule2.entries);
 assert.ok(projection.every((e) => typeof e.workspace === "string" && typeof e.proposal === "string"), "投影字段齐全");
 assert.equal(ASSOC_VERSION, 1, "version 字段契约");
+
+/* ── 显式绑定请求归一化（fix-cosmos-association-scope 1.1 / spec「显式会话关联绑定」） ── */
+{
+  const valid = normalizeBindRequest({ sessionId: " s1 ", proposals: [" add-a ", "add-a", " add-b "] });
+  assert.equal(valid.ok, true, "合法请求");
+  assert.equal(valid.sessionId, " s1 ", "sessionId 原样保留（registry 精确匹配用原文，仅 trim 判空）");
+  assert.deepEqual(valid.proposals, ["add-a", "add-b"], "条目以 trim 后值为准 + 去重保序");
+
+  const maxed = normalizeBindRequest({
+    sessionId: "s1",
+    proposals: Array.from({ length: BIND_PROPOSALS_LIMIT }, (_, index) => "p-" + index)
+  });
+  assert.equal(maxed.ok, true, `去重后 ${BIND_PROPOSALS_LIMIT} 条合法（上限内）`);
+
+  const invalidCases = [
+    ["缺失/非对象 body", undefined],
+    ["缺失 sessionId", { proposals: ["add-a"] }],
+    ["sessionId 空白串", { sessionId: "   ", proposals: ["add-a"] }],
+    ["sessionId 非字符串", { sessionId: 7, proposals: ["add-a"] }],
+    ["proposals 缺失", { sessionId: "s1" }],
+    ["proposals 非数组", { sessionId: "s1", proposals: "add-a" }],
+    ["proposals 空数组", { sessionId: "s1", proposals: [] }],
+    ["条目非字符串", { sessionId: "s1", proposals: ["add-a", 3] }],
+    ["条目 trim 后为空", { sessionId: "s1", proposals: ["add-a", "   "] }],
+    ["去重后超上限", { sessionId: "s1", proposals: Array.from({ length: BIND_PROPOSALS_LIMIT + 1 }, (_, index) => "p-" + index) }]
+  ];
+  for (const [label, body] of invalidCases) {
+    const result = normalizeBindRequest(body);
+    assert.equal(result.ok, false, "非法请求：" + label);
+    assert.equal(typeof result.reason, "string", "非法请求携带 reason：" + label);
+  }
+}
+
+/* ── 替换语义（1.2）：保留恰为清单的 explicit、清其余、origin 切换、范围隔离 ── */
+{
+  const seed = [
+    entry("C:/ws", "add-a", "s1", 10), // heuristic（将重建为 explicit）
+    entry("C:/ws", "add-b", "s1", 20), // heuristic（将被删除）
+    entry("C:/ws", "add-x", "s1", 40, "explicit"), // 过期 explicit（将被删除）
+    entry("C:/ws", "add-a", "s2", 50), // 其他会话（原样保留）
+    entry("C:/other", "add-a", "s1", 60, "explicit") // 其他工作区（原样保留）
+  ];
+  const replaced = applyBinding(seed, { workspace: "C:/ws", sessionId: "s1", proposals: ["add-a"] }, 500);
+  assert.equal(replaced.changed, true, "替换产生变更");
+  const scope = replaced.entries.filter((item) => item.workspace === "C:/ws" && item.sessionId === "s1");
+  assert.deepEqual(scope.map((item) => [item.proposal, item.origin]), [["add-a", "explicit"]], "范围条目恰为清单（origin 切换 = 变更）");
+  assert.equal(scope[0].createdAt, 500, "heuristic 重建为 explicit：createdAt = now");
+  assert.equal(scope[0].updatedAt, 500, "变更条目 updatedAt = now");
+  const outside = replaced.entries.filter((item) => !(item.workspace === "C:/ws" && item.sessionId === "s1"));
+  assert.deepEqual(
+    outside.map((item) => [item.workspace, item.proposal, item.sessionId, item.origin]),
+    [
+      ["C:/ws", "add-a", "s2", "heuristic"],
+      ["C:/other", "add-a", "s1", "explicit"]
+    ],
+    "范围外条目（其他会话 / 其他工作区）原样保留"
+  );
+
+  /* 幂等：同清单且集合无增删 → changed=false、条目原样（updatedAt 不动 → 宿主零写入零广播） */
+  const idempotent = applyBinding(replaced.entries, { workspace: "C:/ws", sessionId: "s1", proposals: ["add-a"] }, 900);
+  assert.equal(idempotent.changed, false, "同清单重绑幂等");
+  assert.deepEqual(idempotent.entries, replaced.entries, "条目原样（updatedAt 不刷新）");
+
+  /* 清单顺序变化但集合不变 → 仍幂等 */
+  const reordered = applyBinding(seed, { workspace: "C:/ws", sessionId: "s1", proposals: ["add-a", "add-b"] }, 500);
+  const reorderedAgain = applyBinding(reordered.entries, { workspace: "C:/ws", sessionId: "s1", proposals: ["add-b", "add-a"] }, 700);
+  assert.equal(reorderedAgain.changed, false, "集合等价（顺序不同）→ 幂等");
+
+  /* 新增提案：已存 explicit 条目 createdAt/updatedAt 原样，新条目取 now */
+  const extended = applyBinding(replaced.entries, { workspace: "C:/ws", sessionId: "s1", proposals: ["add-a", "add-d"] }, 900);
+  assert.equal(extended.changed, true, "新增提案 = 变更");
+  const keptA = extended.entries.find((item) => item.workspace === "C:/ws" && item.sessionId === "s1" && item.proposal === "add-a");
+  assert.equal(keptA.createdAt, 500, "已存 explicit 条目 createdAt 保留");
+  assert.equal(keptA.updatedAt, 500, "未实际变更的已存条目 updatedAt 不刷新");
+  const freshD = extended.entries.find((item) => item.workspace === "C:/ws" && item.sessionId === "s1" && item.proposal === "add-d");
+  assert.equal(freshD.origin, "explicit");
+  assert.equal(freshD.createdAt, 900, "补齐条目 createdAt = now");
+  assert.equal(freshD.updatedAt, 900);
+
+  /* 收缩清单：过期 explicit 条目删除（替换 = 撤销） */
+  const shrunk = applyBinding(extended.entries, { workspace: "C:/ws", sessionId: "s1", proposals: ["add-a"] }, 1200);
+  assert.equal(shrunk.changed, true);
+  assert.deepEqual(
+    shrunk.entries.filter((item) => item.workspace === "C:/ws" && item.sessionId === "s1").map((item) => item.proposal),
+    ["add-a"],
+    "过期 explicit 条目删除（绑定即完整声明）"
+  );
+
+  /* 空清单 → 清空该会话全部条目（端点面已禁止空清单，纯函数仍按集合语义处理） */
+  const cleared = applyBinding(seed, { workspace: "C:/ws", sessionId: "s1", proposals: [] }, 1500);
+  assert.equal(cleared.changed, true);
+  assert.equal(cleared.entries.filter((item) => item.workspace === "C:/ws" && item.sessionId === "s1").length, 0, "空清单清空范围");
+
+  /* 从零写入 */
+  const fromScratch = applyBinding(undefined, { workspace: "C:/ws", sessionId: "s9", proposals: ["add-a", "add-b"] }, 42);
+  assert.equal(fromScratch.changed, true);
+  assert.deepEqual(
+    fromScratch.entries.map((item) => [item.proposal, item.origin, item.createdAt]),
+    [["add-a", "explicit", 42], ["add-b", "explicit", 42]],
+    "从零写入按清单序"
+  );
+}
+
+/* ── 压制查询（1.3）：仅 explicit 条目、按工作区隔离 ── */
+{
+  const bound = explicitBoundSessionIds([
+    entry("C:/ws", "add-a", "s1", 1, "explicit"),
+    entry("C:/ws", "add-b", "s1", 2, "explicit"),
+    entry("C:/ws", "add-c", "s2", 3), // heuristic → 不压制
+    entry("C:/other", "add-a", "s3", 4, "explicit"), // 其他工作区 → 不压制
+    { workspace: "C:/ws", proposal: "add-d", sessionId: "s4", origin: "explicit" }, // 时间戳非法 → 丢弃
+    null
+  ], "C:/ws");
+  assert.deepEqual([...bound], ["s1"], "仅该工作区 explicit 条目的会话（去重）");
+  assert.equal(explicitBoundSessionIds(undefined, "C:/ws").size, 0, "无条目 → 空集");
+  assert.equal(explicitBoundSessionIds([entry("C:/ws", "add-a", "s1", 1)], "C:/ws").size, 0, "heuristic 不压制");
+}
 
 console.log("associations-smoke: all assertions passed");

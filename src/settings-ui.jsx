@@ -20,11 +20,16 @@
  * （`native` = 跳转会话页由原生 composer 承载 / `float` = 浮窗补写、星空保持）——
  * 独立轻量 face（navFace 同构，注入名 `preflight`）即时保存，不参与按钮暂存-保存
  * 草稿流，也不受按钮 writable/saving 门控（快捷动作页签不呈现）。
+ * add-cosmos-shortcuts 7.1–7.3：新增「快捷键」页签（order 4）——四个全局键位下拉
+ * （回到银河 / 移动开关 / 语音开关 / 关闭页面）+ 激活条件说明列 + 默认徽标 + 冲突即时
+ * 校验 + 失败「未生效」提示 + Ctrl+Q 风险注记与 Alt+Q 替代；两个动作页签行内新增
+ * 「快捷键」下拉（无 / 0–9 / F2/F4/F8/F9），漂移值回显「不可用」、跨域冲突行内错误。
  *
  * 由 client.jsx 注册为 `settings.section`（id `v-cosmos`，order 6——「技能管理」之后）+
- * 四条标签页「快捷动作」（order 0）/「星座动作」（order 1）/「皮肤」（order 2）/
- * 「导航」（order 3）。视觉参数照 skill-links 设置节（官方 settings section 形状、
- * `--dsw-alias-*` token），类名统一 `cs-` 前缀避免与其它插件样式互踩。
+ * 六条标签页「通用」（order -1，add-cosmos-standalone-window 2.2）/「快捷动作」（order 0）/
+ * 「星座动作」（order 1）/「皮肤」（order 2）/「界面」（order 3）/「快捷键」（order 4）。
+ * 视觉参数照 skill-links 设置节（官方 settings section 形状、`--dsw-alias-*` token），
+ * 类名统一 `cs-` 前缀避免与其它插件样式互踩。
  *
  * 纯 UI：状态与动作来自 `createButtonSettingsController`（button-settings.mjs）的 face
  * （两实例各自绑定自己的配置节），模型目录来自可选桥的 `{catalog}` 快照面（不可达时整体
@@ -38,6 +43,20 @@ import { buttonModelOf } from "./actions.mjs";
 import { PRE_STATES } from "./buttons.mjs";
 import { catalogOptions, describeButtonModel, highestEffort } from "./model-catalog.mjs";
 import { COSMOS_DEFAULT_SKIN, COSMOS_SKINS, skinCardOf } from "./cosmos/skin-registry.mjs";
+import { COSMOS_LAUNCH_MODES } from "./settings.mjs";
+import {
+  SHORTCUT_ALTERNATIVE_OF,
+  SHORTCUT_BUTTON_KEYS,
+  SHORTCUT_DEFAULTS,
+  SHORTCUT_GLOBAL_KEYS,
+  SHORTCUT_RISKY_KEYS,
+  SHORTCUT_UI_ORDER,
+  shortcutConflictOnFieldOf,
+  shortcutConflictOnRowOf,
+  shortcutConflictOf,
+  shortcutLabelOf,
+  shortcutsOf
+} from "./shortcuts.mjs";
 
 /** 标签页槽位名（client.jsx 注册与本节渲染共用）。 */
 export const SETTINGS_TAB_SLOT = "settings.v-cosmos.tab";
@@ -111,6 +130,55 @@ function selectFailureOf(snapshot) {
   const failure = snapshot.lastFailure;
   if (failure === null || typeof failure !== "object") return null;
   return typeof failure.face === "string" ? failure : null;
+}
+
+/* ── 快捷键文案/冲突定位辅助（add-cosmos-shortcuts 7.1–7.3） ── */
+
+/** 全局键位字段 → 词典键（「快捷键」页签行标签；行内错误定位提示复用）。 */
+const SHORTCUT_FIELD_LABEL_KEYS = Object.freeze({
+  closePage: "shortcutClosePage",
+  goHome: "shortcutGoHome",
+  togglePan: "shortcutTogglePan",
+  voiceToggle: "shortcutVoiceToggle"
+});
+
+/** 全局键位字段 → 兜底中文标签（词典未登记时直出可读文案）。 */
+const SHORTCUT_FIELD_LABELS = Object.freeze({
+  closePage: "关闭页面",
+  goHome: "回到银河",
+  togglePan: "移动开关",
+  voiceToggle: "语音开关（浮窗）"
+});
+
+/**
+ * 冲突对侧的可读名（行内错误「与该键重复」用）：
+ *  - `self` = 当前定位方（全局 {kind:"global", field} 或按钮 {kind:"button", list, index}）；
+ *  - 对侧为全局键 → 行标签；对侧为按钮 → 按钮名（空名回落 `#行号`）。
+ */
+function conflictOtherLabelOf(t, conflict, self) {
+  const sides = conflict !== null && typeof conflict === "object" && Array.isArray(conflict.sides) ? conflict.sides : [];
+  const other = sides.find((side) => {
+    if (side === null || typeof side !== "object") return false;
+    if (self.kind === "global") return !(side.kind === "global" && side.field === self.field);
+    return !(side.kind === "button" && side.list === self.list && side.index === self.index);
+  });
+  if (other === undefined) return "";
+  if (other.kind === "global") {
+    return tr(t, "cosmos.settings." + SHORTCUT_FIELD_LABEL_KEYS[other.field], SHORTCUT_FIELD_LABELS[other.field] ?? other.field);
+  }
+  const name = typeof other.name === "string" && other.name ? other.name : "#" + (Number(other.index) + 1);
+  return name;
+}
+
+/** 冲突行内文案（词典模板 + 对侧名；模板缺键时回落中文基线）。 */
+function conflictTextOf(t, conflict, self) {
+  const template = tr(t, "cosmos.settings.shortcutConflictRow", "冲突：该键与「{other}」重复");
+  return template.replace("{other}", conflictOtherLabelOf(t, conflict, self));
+}
+
+/** 全局快捷键净房投影（面板态：非对象/非法 → 四键缺省）。 */
+function shortcutsStateOf(snapshot) {
+  return shortcutsOf(snapshot);
 }
 
 /** 设置 CSS（照官方 settings 节形状：max-width 760 / 18px 标题 / 下边框标签行）。 */
@@ -227,6 +295,31 @@ export const COSMOS_SETTINGS_CSS = `
   border:1px solid var(--dsw-alias-border-l2);border-radius:10px}
 .cs-constPreflightField{display:flex;align-items:center;gap:8px;min-height:44px}
 .cs-constPreflightField .cs-label{flex:1;min-width:0;font-size:13px;line-height:18px;color:var(--dsw-alias-label-primary)}
+/* ── 快捷键页签（add-cosmos-shortcuts 7.1）：四行 = 标签 + 激活条件说明 + 键位下拉 +
+      默认徽标 + 冲突/风险注记。即时保存（无草稿-保存），触控目标 ≥44px。 ── */
+.cs-shortcuts{display:flex;flex-direction:column;gap:8px;margin-top:2px}
+.cs-shortcutRow{display:flex;flex-direction:column;gap:2px;padding:8px 9px;
+  border:1px solid var(--dsw-alias-border-l2);border-radius:10px}
+.cs-shortcutField{display:flex;align-items:center;gap:8px;min-height:44px}
+.cs-shortcutLabel{flex:1;min-width:0;font-size:13px;line-height:18px;color:var(--dsw-alias-label-primary)}
+.cs-shortcutHint{font-size:12px;line-height:16px;color:var(--dsw-alias-label-tertiary)}
+.cs-shortcutRisk{font-size:12px;line-height:16px;color:var(--dsw-alias-state-warning-primary)}
+.cs-shortcutBadge{flex:none;padding:0 6px;border-radius:999px;background:var(--dsw-alias-interactive-bg-hover-solid);
+  font-size:10px;line-height:16px;color:var(--dsw-alias-label-secondary)}
+.cs-shortcutCount{font-size:12px;line-height:16px;color:var(--dsw-alias-label-secondary)}
+/* 行内快捷键的生效条件注（带前置状态的按钮）：小字、不换行、可悬停看完整说明 */
+.cs-shortcutRowNote{flex:none;font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary);white-space:nowrap}
+/* ── 「通用」页签（add-cosmos-standalone-window 2.2）：打开方式单选（内嵌整页 / 独立窗口）。
+      即时保存（无草稿-保存模式）；桌面形态（file://）整组禁用 + 说明文案（design D7）。 ── */
+.cs-launch{display:flex;flex-direction:column;gap:2px;margin:2px 0 0;padding:8px 10px 6px;border:1px solid var(--dsw-alias-border-l2);border-radius:10px}
+.cs-launch[data-desktop=true]{opacity:.75}
+.cs-launchLegend{padding:0 4px;font-size:12px;line-height:16px;color:var(--dsw-alias-label-secondary)}
+.cs-launchRow{display:flex;align-items:flex-start;gap:8px;min-height:44px;padding:6px 0;cursor:pointer;color:var(--dsw-alias-label-primary);font-size:13px;line-height:18px}
+.cs-launchRow input{margin:2px 0 0;cursor:pointer;accent-color:var(--dsw-alias-border-inverted)}
+.cs-launch[data-desktop=true] .cs-launchRow{cursor:not-allowed;color:var(--dsw-alias-label-dimmed)}
+.cs-launch[data-desktop=true] .cs-launchRow input{cursor:not-allowed}
+.cs-launchText{display:flex;flex-direction:column;gap:2px;min-width:0}
+.cs-launchHint{font-size:12px;line-height:16px;color:var(--dsw-alias-label-tertiary)}
 `;
 
 /**
@@ -270,6 +363,91 @@ export function CosmosSettingsSection(props) {
   );
 }
 
+/** 「打开方式」两档（值 / 标签词典键 / 行内说明词典键；顺序 = 呈现顺序）。 */
+const LAUNCH_MODE_FIELDS = Object.freeze([
+  {
+    value: "embedded",
+    labelKey: "launchModeEmbedded",
+    fallback: "内嵌整页（默认）",
+    hintKey: "launchModeEmbeddedHint",
+    hintFallback: "在 DSH 主窗口内以整页覆盖层打开（与变更前一致）。"
+  },
+  {
+    value: "window",
+    labelKey: "launchModeWindow",
+    fallback: "独立窗口",
+    hintKey: "launchModeWindowHint",
+    hintFallback: "浏览器新开同源窗口，只显示 Cosmos；主壳入口在此期间禁用，分屏时数据实时同态。"
+  }
+]);
+
+/**
+ * 「通用」标签页（add-cosmos-standalone-window 2.2 / spec「launchMode 配置项」）：
+ *  - 「打开方式」单选：内嵌整页（缺省）/ 独立窗口——**即时保存**（无草稿-保存模式），
+ *    改动经 face.set → `applyLaunchMode`（净房持久化 + 受控镜像）；跨窗口即时生效由
+ *    同源 localStorage + `storage` 事件桥承接（座位按钮点击时现读配置）。
+ *  - 桌面形态（`file://`，无 HTTP origin，design D7）：整组禁用 + 说明文案——独立窗口
+ *    无处落地；注入 `desktop` 为浏览器侧可观察事实（MUST NOT 依赖宿主探测）。
+ *  - face 缺失（旧宿主未注入）→ 降级占位（不渲染可点却永不生效的控件，与其它页签同纪律）。
+ * @param {{t: Function, launch?: object, desktop?: boolean}} props
+ */
+export function CosmosGeneralPanel(props) {
+  const t = props.t;
+  const face = props.launch ?? null;
+  const desktop = props.desktop === true;
+  const snapshot = useSyncExternalStore(
+    face ? face.subscribe : noopSubscribe,
+    face ? face.getSnapshot : noopSnapshot
+  );
+  const current = snapshot !== null && typeof snapshot === "object" && COSMOS_LAUNCH_MODES.includes(snapshot.launchMode)
+    ? snapshot.launchMode
+    : "embedded";
+  const set = (mode) => {
+    try {
+      face?.set?.(mode);
+    } catch (error) {
+      console.error("[dsh-v-cosmos] launch mode setting failed:", error);
+    }
+  };
+  if (face === null) {
+    return (
+      <div className="dsh-cosmos-settings-panel" data-plugin-anchor="dsh-v-cosmos:settings-general">
+        <div className="cs-hint" data-state="face-missing">{tr(t, "cosmos.settings.generalUnavailable", "通用设置暂不可用：插件整页未就绪（刷新页面后重试）。")}</div>
+      </div>
+    );
+  }
+  return (
+    <div className="dsh-cosmos-settings-panel" data-plugin-anchor="dsh-v-cosmos:settings-general">
+      <div className="cs-hint">{tr(t, "cosmos.settings.launchModeHint", "内嵌整页 = 在当前 DSH 窗口内以整页覆盖层打开（现状）；独立窗口 = 以同源新窗口打开只有 Cosmos 内容的页面，可与主窗口分屏（同属一个 DSH、数据实时同态）。独立窗口存在期间主壳入口禁用，关闭窗口即解锁。")}</div>
+      <fieldset className="cs-launch" data-desktop={desktop ? "true" : undefined} disabled={desktop}>
+        <legend className="cs-launchLegend">{tr(t, "cosmos.settings.launchModeLabel", "打开方式")}</legend>
+        {LAUNCH_MODE_FIELDS.map((field) => (
+          <label key={field.value} className="cs-launchRow">
+            <input
+              type="radio"
+              name="cosmos-launch-mode"
+              value={field.value}
+              checked={current === field.value}
+              disabled={desktop}
+              onChange={() => set(field.value)}
+            />
+            <span className="cs-launchText">
+              <span>{tr(t, "cosmos.settings." + field.labelKey, field.fallback)}</span>
+              <span className="cs-launchHint">{tr(t, "cosmos.settings." + field.hintKey, field.hintFallback)}</span>
+            </span>
+          </label>
+        ))}
+      </fieldset>
+      {desktop ? (
+        <div className="cs-hint" role="status" data-notice="desktop">
+          {tr(t, "cosmos.settings.launchModeDesktop", "桌面形态（file://）无 HTTP origin，独立窗口不可用：入口固定为内嵌整页（历史配置保留，桌面形态忽略）。")}
+        </div>
+      ) : null}
+      <div className="cs-meta">{tr(t, "cosmos.settings.launchModeInstant", "改动立即生效并保存")}</div>
+    </div>
+  );
+}
+
 /**
  * 「快捷动作」/「星座动作」标签页（同一行交互骨架，variant 换文案与字段）：
  * 按钮行 CRUD（name / prompt / 自动发送 / 可选「提示词在前」/ 可选「执行后跳转」/
@@ -292,6 +470,19 @@ export function CosmosActionsPanel(props) {
     preflight ? preflight.subscribe : noopSubscribe,
     preflight ? preflight.getSnapshot : noopSnapshot
   );
+  /* 跨域冲突数据面（add-cosmos-shortcuts 7.2/7.3）：全局四键（受控镜像）+ 两列表当前
+     草稿（模块 store，任一控制器 publish 即同步）→ 行内错误定位 + 面板级提示 + 保存门。
+     hooks 必须先于下方「无状态/加载中」早退注册（Hook 顺序恒定）。 */
+  const shortcutsFace = props.shortcuts ?? null;
+  const shortcutsSnapshot = useSyncExternalStore(
+    shortcutsFace ? shortcutsFace.subscribe : noopSubscribe,
+    shortcutsFace ? shortcutsFace.getSnapshot : noopSnapshot
+  );
+  const draftsFace = props.drafts ?? null;
+  const draftsSnapshot = useSyncExternalStore(
+    draftsFace ? draftsFace.subscribe : noopSubscribe,
+    draftsFace ? draftsFace.getSnapshot : noopSnapshot
+  );
   /* 拖拽状态：from = 拖起行；overIndex/edge = 悬停行与上/下缘（松手才落位）。 */
   const [drag, setDrag] = useState(null);
 
@@ -309,6 +500,13 @@ export function CosmosActionsPanel(props) {
   const catalogReady = catalog !== null && typeof catalog === "object" && catalog.status === "ready";
   const catalogDegraded = models === null || catalog === null || !catalogReady;
   const { byKey: catalogByKey } = catalogOptions(catalogReady ? catalog.groups : []);
+
+  const draftListName = variant === "constellation" ? "constellations" : "proposals";
+  const conflict = shortcutConflictOf(shortcutsStateOf(shortcutsSnapshot), {
+    proposals: Array.isArray(draftsSnapshot?.proposals) ? draftsSnapshot.proposals : [],
+    constellations: Array.isArray(draftsSnapshot?.constellations) ? draftsSnapshot.constellations : []
+  });
+  const conflictBlocked = conflict !== null;
 
   /* 「发送前编辑」分支取值（净房后的枚举；face 缺失 / 快照形状非法 → 缺省 float，
      rework 星空保持优先）。
@@ -372,6 +570,64 @@ export function CosmosActionsPanel(props) {
     );
   };
 
+  /* 「快捷键」行内下拉（add-cosmos-shortcuts 7.2）：候选 = 无 + 按钮键域枚举（与键位池
+     常量同源）；漂移值（手工写入的池外字符串）原样回显「不可用」、MUST NOT 被静默改写
+     （保存由草稿校验拒绝）；跨域冲突在该行呈现行内错误（对侧可读名定位）。
+     真机反馈修订：悬停提示写明「需保存」与「前置状态门控」——带 preState 的按钮只在选中
+     提案生命周期匹配（且空闲）时渲染，按键与点击共用同一谓词（隐藏按钮无可触发通道）。 */
+  const shortcutField = (button, index) => {
+    const raw = typeof button.shortcut === "string" ? button.shortcut.trim() : "";
+    const known = raw === "" || SHORTCUT_BUTTON_KEYS.includes(raw);
+    const preStateLabel = typeof button.preState === "string" && PRE_STATES.includes(button.preState)
+      ? errorText("preState" + button.preState.charAt(0).toUpperCase() + button.preState.slice(1), button.preState)
+      : "";
+    const title = errorText("buttonShortcutSaveHint", "选择后需点击下方「保存」才生效")
+      + (preStateLabel
+        ? " · " + errorText("buttonShortcutPreStateHint", "仅当选中提案的前置状态为「{state}」且空闲（该按钮渲染出来）时按键才生效").replace("{state}", preStateLabel)
+        : "");
+    const options = [
+      <option key="@none" value="">{errorText("buttonShortcutNone", "无")}</option>
+    ];
+    for (const key of SHORTCUT_BUTTON_KEYS) {
+      options.push(<option key={key} value={key}>{shortcutLabelOf(key)}</option>);
+    }
+    if (!known) {
+      options.push(
+        <option key={"@drift:" + raw} value={raw}>
+          {raw + " · " + errorText("buttonShortcutUnavailable", "不可用")}
+        </option>
+      );
+    }
+    const rowConflict = conflict !== null && shortcutConflictOnRowOf(conflict, draftListName, index);
+    return (
+      <label className="cs-modelField" data-shortcut-conflict={rowConflict ? "true" : undefined}>
+        <span className="cs-modelCap">{errorText("buttonShortcutLabel", "快捷键")}</span>
+        <select
+          className="cs-select"
+          value={raw}
+          disabled={disabled}
+          aria-label={errorText("buttonShortcutLabel", "快捷键")}
+          title={title}
+          onChange={(event) => {
+            const next = event.target.value;
+            if (next === raw) return; // 漂移项被重选：保持原值
+            face.editButton(index, "shortcut", next === "" ? undefined : next);
+          }}
+        >
+          {options}
+        </select>
+        {preStateLabel && raw !== "" ? (
+          <span className="cs-shortcutRowNote" title={title}>
+            {errorText("buttonShortcutPreStateShort", "仅「{state}」时生效").replace("{state}", preStateLabel)}
+          </span>
+        ) : null}
+        {rowConflict ? (
+          <span className="cs-error">{conflictTextOf(t, conflict, { kind: "button", list: draftListName, index })}</span>
+        ) : null}
+      </label>
+    );
+  };
+
   const modelRow = (button, index) => {
     const bound = buttonModelOf(button.model);
     const view = describeButtonModel(bound, catalog);
@@ -422,6 +678,7 @@ export function CosmosActionsPanel(props) {
     return (
       <div className="cs-modelRow">
         {preStateField(button, index)}
+        {shortcutField(button, index)}
         <label className="cs-modelField">
           <span className="cs-modelCap">{errorText("buttonModelLabel", "模型")}</span>
           <select
@@ -506,6 +763,16 @@ export function CosmosActionsPanel(props) {
       ) : null}
       {catalogDegraded ? <div className="cs-modelHint">{errorText("modelCatalogFallback", "模型目录不可用：仅可选择「跟随会话（默认）」；绑定模型的按钮执行时跳过切换。")}</div> : null}
       {rowError ? <div className="cs-error">{rowError}</div> : null}
+      {/* 跨域唯一性（add-cosmos-shortcuts 7.2/D9）：冲突时面板级定位提示 + 保存拒绝；
+          行内同时按冲突双方高亮（`shortcutField` 的 data-shortcut-conflict + 文案）。 */}
+      {conflictBlocked ? (
+        <div className="cs-error" data-shortcut-conflict="true" role="status">
+          {errorText("shortcutDup", "快捷键冲突：与其它按键（全局键或其它按钮）重复，请改选其它键位")}
+          {" · "}
+          {conflictTextOf(t, conflict, conflict.sides?.[0] ?? { kind: "unknown" })}
+        </div>
+      ) : null}
+      <div className="cs-hint">{errorText("shortcutPanelHint", "按钮快捷键与全局键共享同一唯一性域：同一键只属于一个动作（保存时跨列表查重，重复会被拒绝）。")}</div>
       {state.buttonsDraft.map((button, index) => {
         const over = drag !== null && drag.overIndex === index ? drag.edge : null;
         /* 星胚行（preState=proto）：锁定方向翻转（不勾选「新增会话」）且「提示词在前」禁用。 */
@@ -641,7 +908,7 @@ export function CosmosActionsPanel(props) {
         <button className="cs-btn" type="button" disabled={!state.dirty || state.saving} onClick={() => face.discard()}>
           {errorText("discard", "放弃修改")}
         </button>
-        <button className="cs-btn cs-btnPrimary" type="button" disabled={!state.dirty || state.invalid || disabled} onClick={() => face.save()}>
+        <button className="cs-btn cs-btnPrimary" type="button" disabled={!state.dirty || state.invalid || conflictBlocked || disabled} onClick={() => face.save()}>
           {state.saving ? errorText("saving", "保存中…") : errorText("save", "保存")}
         </button>
       </div>
@@ -966,3 +1233,147 @@ export function CosmosSkinPanel(props) {
     </div>
   );
 }
+
+/**
+ * 「快捷键」标签页（add-cosmos-shortcuts 7.1 / spec cosmos-shortcuts「设置页『快捷键』页签」）：
+ * 四行 = 键位标签 + 激活条件说明列 + 键位下拉（`SHORTCUT_GLOBAL_KEYS` 单一常量表同源）+
+ * 缺省值「默认」徽标；行序 = `SHORTCUT_UI_ORDER`（回到银河 / 移动开关 / 语音开关 /
+ * 关闭页面——与读面冲突优先序刻意解耦）。
+ *
+ * **即时生效**（无草稿-保存模式）：改选即 `face.set` → 净房持久化 × 受控镜像 × 已打开
+ * 整页引擎 `setShortcuts` 热更；冲突即时拒绝（本地预判 + face 侧再校验，两处同源
+ * `shortcutConflictOf`）→ 行内错误 + 面板级提示，选择回弹当前生效值。
+ * `Ctrl+KeyQ` 标注浏览器保留组合风险并提供 `Alt+KeyQ` 替代（`SHORTCUT_RISKY_KEYS`）；
+ * 控制器缺失/写失败经 health store 呈现「未生效」（皮肤/导航同款口径）。
+ */
+export function CosmosShortcutsPanel(props) {
+  const t = props.t;
+  const face = props.shortcuts ?? null;
+  const state = useSyncExternalStore(face ? face.subscribe : noopSubscribe, face ? face.getSnapshot : noopSnapshot);
+  const health = props.selectHealth ?? null;
+  const healthState = useSyncExternalStore(health ? health.subscribe : noopSubscribe, health ? health.getSnapshot : noopSnapshot);
+  const failure = selectFailureOf(healthState);
+  const notApplied = failure !== null && failure.face === "shortcuts" ? failure : null;
+  const draftsFace = props.drafts ?? null;
+  const draftsSnapshot = useSyncExternalStore(
+    draftsFace ? draftsFace.subscribe : noopSubscribe,
+    draftsFace ? draftsFace.getSnapshot : noopSnapshot
+  );
+  /* 被拒绝的选择（值回弹 + 行内错误）；得到无冲突的写入后清除。 */
+  const [rejected, setRejected] = useState(null);
+
+  const errorText = (key, fallback) => tr(t, "cosmos.settings." + key, fallback);
+  const current = shortcutsStateOf(state);
+  const conflict = shortcutConflictOf(current, {
+    proposals: Array.isArray(draftsSnapshot?.proposals) ? draftsSnapshot.proposals : [],
+    constellations: Array.isArray(draftsSnapshot?.constellations) ? draftsSnapshot.constellations : []
+  });
+
+  const commit = (field, value) => {
+    const candidate = shortcutsOf({ ...current, [field]: value });
+    const hit = shortcutConflictOf(candidate, {
+      proposals: Array.isArray(draftsSnapshot?.proposals) ? draftsSnapshot.proposals : [],
+      constellations: Array.isArray(draftsSnapshot?.constellations) ? draftsSnapshot.constellations : []
+    });
+    if (hit !== null) {
+      setRejected({ field, value, conflict: hit });
+      return;
+    }
+    setRejected(null);
+    try {
+      face?.set?.({ [field]: value });
+    } catch (error) {
+      console.error("[dsh-v-cosmos] shortcut setting failed:", error);
+    }
+  };
+
+  /* face 缺失（宿主未注入 / 旧宿主）→ 降级占位，不渲染可选却永不生效的下拉（D4 同口径）。 */
+  if (face === null) {
+    return (
+      <div className="dsh-cosmos-settings-panel" data-plugin-anchor="dsh-v-cosmos:settings-shortcuts">
+        <div className="cs-hint" data-state="face-missing">{errorText("shortcutsUnavailable", "快捷键设置暂不可用：插件整页未就绪（刷新页面后重试）。")}</div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="dsh-cosmos-settings-panel" data-plugin-anchor="dsh-v-cosmos:settings-shortcuts">
+      <div className="cs-hint">{errorText("shortcutsHint", "四个全局键 + 两条动作条按钮的自定义快捷键：改动立即生效并保存。快捷键只在 Cosmos 整页打开时生效——输入框聚焦、输入法组字、浮窗打开时按纪律让位。键位按物理键位（ev.code）匹配，非 QWERTY 布局下印刷字母可能不同。")}</div>
+      {notApplied !== null ? (
+        <div className="cs-error" role="status" data-failure-code={notApplied.code}>
+          {notAppliedText(t, "cosmos.settings.shortcutsNotApplied", "快捷键未生效：插件整页控制器缺失，请重试或刷新页面后重新设置。", notApplied)}
+        </div>
+      ) : null}
+      {conflict !== null ? (
+        <div className="cs-error" data-shortcut-conflict="true" role="status">
+          {errorText("shortcutDup", "快捷键冲突：与其它按键（全局键或其它按钮）重复，请改选其它键位")}
+          {" · "}
+          {conflictTextOf(t, conflict, conflict.sides?.[0] ?? { kind: "unknown" })}
+        </div>
+      ) : null}
+      <div className="cs-shortcuts">
+        {SHORTCUT_UI_ORDER.map((field) => {
+          const value = current[field] ?? SHORTCUT_DEFAULTS[field];
+          const label = errorText("shortcut" + field.charAt(0).toUpperCase() + field.slice(1), SHORTCUT_FIELD_LABELS[field]);
+          const isDefault = value === SHORTCUT_DEFAULTS[field];
+          const risky = SHORTCUT_RISKY_KEYS.includes(value);
+          const rowConflict = conflict !== null && shortcutConflictOnFieldOf(conflict, field);
+          const rowRejected = rejected !== null && rejected.field === field ? rejected.conflict : null;
+          const alternative = risky ? SHORTCUT_ALTERNATIVE_OF[value] : "";
+          return (
+            <div className="cs-shortcutRow" key={field} data-shortcut-field={field}>
+              <div className="cs-shortcutField">
+                <label className="cs-shortcutLabel" htmlFor={"cosmos-shortcut-" + field}>{label}</label>
+                {isDefault ? <span className="cs-shortcutBadge">{errorText("shortcutsDefault", "默认")}</span> : null}
+                <select
+                  id={"cosmos-shortcut-" + field}
+                  className="cs-select"
+                  value={value}
+                  data-shortcut={value}
+                  aria-label={label}
+                  aria-describedby={"cosmos-shortcut-" + field + "-hint"}
+                  onChange={(event) => {
+                    const next = event.target.value;
+                    if (next === value) return;
+                    commit(field, next);
+                  }}
+                >
+                  {SHORTCUT_GLOBAL_KEYS.map((key) => (
+                    <option key={key} value={key}>
+                      {shortcutLabelOf(key) + (SHORTCUT_RISKY_KEYS.includes(key) ? " · " + errorText("shortcutRiskTag", "浏览器保留") : "")}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="cs-shortcutHint" id={"cosmos-shortcut-" + field + "-hint"}>
+                {errorText(SHORTCUT_FIELD_LABEL_KEYS[field] + "Hint", SHORTCUT_FIELD_HINTS[field])}
+              </div>
+              {risky ? (
+                <div className="cs-shortcutRisk" data-shortcut-risk="true">
+                  {errorText("shortcutRiskyHint", "Ctrl+Q 在部分浏览器是「退出浏览器」的保留组合、网页无法拦截：可改用 Alt+Q 等替代键。")
+                    + (alternative ? " · " + shortcutLabelOf(alternative) : "")}
+                </div>
+              ) : null}
+              {rowConflict || rowRejected !== null ? (
+                <div className="cs-error" data-shortcut-conflict="true">
+                  {conflictTextOf(t, rowConflict ? conflict : rowRejected, { kind: "global", field })}
+                </div>
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
+      <div className="cs-shortcutCount">
+        {errorText("shortcutsCount", "全局快捷键：") + SHORTCUT_UI_ORDER.length + " · " + errorText("shortcutInstant", "改动立即生效并保存")}
+      </div>
+    </div>
+  );
+}
+
+/** 四行激活条件说明兜底文案（词典同键 `shortcut<Field>Hint`；缺键时直出中文基线）。 */
+const SHORTCUT_FIELD_HINTS = Object.freeze({
+  goHome: "钻取态生效：飞回银河视图（与右下「回到银河」按钮等效）；银河态无动作。",
+  togglePan: "整页打开时生效：翻转右下「拖拽平移」开关（与点击按钮同一状态链，含持久化）。",
+  voiceToggle: "仅浮窗打开时生效：开始/停止语音录入；浮窗文本域聚焦时可用。",
+  closePage: "整页打开时生效：关闭/收起链——钻取返回 > 清空搜索 > 收起会话面板 > 退全屏 > 关闭整页。"
+});

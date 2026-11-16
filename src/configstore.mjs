@@ -95,13 +95,14 @@ const SECTION_NORMALIZERS = {
 };
 
 /**
- * 节**读面**归一化器表（add-cosmos-action-prestate-gate 4.1）：与写路径同口径，
- * 但 `preState` 手工编辑漂移（枚举外字符串）原样保留——设置页据 value 原样回显
- * 「不可用」并在保存时拒绝（写路径仍走严格表）。其余非法形状照旧丢弃该节。
+ * 节**读面**归一化器表（add-cosmos-action-prestate-gate 4.1；add-cosmos-shortcuts 起
+ * 同步容忍 `shortcut` 漂移）：与写路径同口径，但 `preState` 手工编辑漂移（枚举外字符串）
+ * 与 `shortcut` 池外字符串**原样保留**——设置页据 value 原样回显「不可用」并在保存时拒绝
+ * （写路径仍走严格表）。其余非法形状照旧丢弃该节。
  */
 const SECTION_READ_NORMALIZERS = {
-  buttons: (raw) => normalizeButtons(raw, { tolerateUnknownPreState: true }),
-  constellationButtons: (raw) => normalizeConstButtons(raw)
+  buttons: (raw) => normalizeButtons(raw, { tolerateUnknownPreState: true, tolerateUnknownShortcut: true }),
+  constellationButtons: (raw) => normalizeConstButtons(raw, { tolerateUnknownShortcut: true })
 };
 
 /** 归一化失败的兜底（组合层来源非法时不让插件激活失败）。 */
@@ -118,7 +119,7 @@ function safeNormalize(fn, fallback) {
  * 缺节 → 空数组；节级非法 → 按空处理（写入校验另有拦截）。
  * @param {unknown} raw 补丁层 entry config 或 settingsScope 解析值
  * @param {{tolerateUnknownPreState?: boolean}} [options] 读面容错（快照专用：
- *        `preState` 漂移值原样保留，供设置页回显；seed/upgrade 等写路径恒严格）
+ *        `preState` / `shortcut` 漂移值原样保留，供设置页回显；seed/upgrade 等写路径恒严格）
  * @returns {{buttons: Array<object>, constellationButtons: Array<object>}}
  */
 export function normalizeView(raw, options = {}) {

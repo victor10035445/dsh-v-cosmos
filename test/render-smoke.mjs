@@ -360,4 +360,40 @@ engine.dispose();
   assert.ok(!source.includes(".cos-hint"), "client.jsx 无 `.cos-hint` 覆盖样式");
 }
 
+/* ── 渲染循环启停只听页签可见性（fix-cosmos-blur-pause 2.1 / spec「渲染节能」失焦续播）：
+   effect 级监听只留 document.visibilitychange；**任何** window blur/focus 监听 MUST NOT 驱动
+   渲染启停（挂回即回到「切走程序 → 星图定格」的旧行为）。元素级 `.blur()`（Esc 失焦层）、
+   CSS `:focus-visible`、搜索框的 React onBlur/onFocus 回调，以及引擎侧 clearKeys（engine.mjs
+   键盘纪律，不在本断言文件的源码范围）均不构成误报——这里只钉 window 级监听与 setVisible
+   触发源。
+   **唯一豁免（fix-cosmos-const-float-voice 1.3 / spec「关窗释放麦克风」）**：星座浮窗录音中
+   窗口失焦须释放麦克风（handler = `halt`，只停在册 recorder / 音轨，零 controller/engine 触碰）。
+   豁免以「window blur/focus 监听集合恰为 {halt}（add/remove 成对）+ halt 体内零 setVisible /
+   engine 调用」钉住——其余任何 window blur/focus 监听仍属回归。 ── */
+{
+  const source = readFileSync(new URL("../src/client.jsx", import.meta.url), "utf8");
+  const focusHooks = (source.match(/window\.(?:add|remove)EventListener\(\s*["'](?:blur|focus)["']\s*,\s*([A-Za-z_$][\w$]*)/g) ?? [])
+    .map((line) => line.replace(/^.*,\s*/, ""));
+  assert.deepEqual(
+    focusHooks,
+    ["halt", "halt"],
+    "window blur/focus 监听集合恰为 {halt}（add/remove 成对，仅服务录音释放）"
+  );
+  const haltBody = source.slice(source.indexOf("const halt = () =>"), source.indexOf('window.addEventListener("blur", halt)'));
+  assert.ok(haltBody.includes("releaseVoice()"), "失焦处理器只释放采集资源（releaseVoice）");
+  assert.ok(!haltBody.includes("setVisible") && !haltBody.includes("engine."), "失焦处理器 MUST NOT 触碰渲染启停（失焦续播）");
+  assert.ok(!source.includes('const onBlur = () => controllerRef.current?.setVisible(false);'), "无「失焦 → setVisible(false)」处理器定义");
+  assert.ok(!source.includes('const onFocus = () => controllerRef.current?.setVisible(true);'), "无「回焦 → setVisible(true)」处理器定义");
+  assert.ok(source.includes('const onVisibility = () => controllerRef.current?.setVisible(!document.hidden);'), "可见性处理器 = 唯一 setVisible 触发源（document.hidden 取反）");
+  assert.ok(source.includes('document.addEventListener("visibilitychange", onVisibility);'), "visibilitychange 监听在位");
+  assert.ok(source.includes('document.removeEventListener("visibilitychange", onVisibility);'), "visibilitychange 清理成对移除（无泄漏）");
+  assert.equal((source.match(/controllerRef\.current\?\.setVisible\(/g) ?? []).length, 1, "页面层 setVisible 调用点恰好一处（防焦点分支复归）");
+  assert.ok(!source.includes("setVisible(false)") && !source.includes("setVisible(true)"), "无字面量 true/false 的 setVisible 调用（启停恒由可见性裁决）");
+  assert.ok(source.includes("窗口失焦不暂停"), "effect 注释钉住「窗口失焦不暂停」依据（spec「渲染节能」，防实现复归）");
+  /* 零改动面（1.2）：暂停触发集仍恰为「整页开合 × 页签可见性」两条——控制器裁决式未随删监听而变形。 */
+  assert.equal((source.match(/if \(open && visible\) engine\.start\(\);/g) ?? []).length, 2, "attach / setOpen 两处裁决式原样（open && visible）");
+  assert.ok(source.includes("if (visible && open) engine.start();"), "setVisible 恢复侧裁决式原样（visible && open）");
+  assert.equal((source.match(/else engine\.stop\(\);/g) ?? []).length, 2, "停侧恰好两处（整页关闭 / 页签不可见）");
+}
+
 console.log("render-smoke: all assertions passed");

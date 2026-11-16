@@ -203,4 +203,61 @@ const throwsWith = (fn, pattern, label) => {
   assert.deepEqual(constButtonsSectionOf({ constellationButtons: "x" }), [], "节非数组 → 空");
 }
 
+/* ── 10. 快捷键可选键（add-cosmos-shortcuts 3.2/3.4）：合法键落盘、键序尾部、
+      缺省不落键、池外拒绝、无键序列化逐字节不变 ── */
+{
+  /* 合法键落盘（spec 场景「合法 shortcut 被保存」） */
+  const [withKey] = normalizeConstButtons([{ name: "探索", prompt: "p", shortcut: "F4" }]);
+  assert.equal(withKey.shortcut, "F4", "F4 落键");
+  assert.deepEqual(
+    Object.keys(withKey),
+    ["name", "prompt", "autoSend", "newSession", "shortcut"],
+    "shortcut 追加尾部（model 之后）"
+  );
+  const [full] = normalizeConstButtons([
+    { name: "全键", prompt: "p", autoSend: true, model: { provider: "x", model: "y" }, shortcut: "Digit9" }
+  ]);
+  assert.deepEqual(
+    Object.keys(full),
+    ["name", "prompt", "autoSend", "newSession", "model", "shortcut"],
+    "键序固定：model → shortcut"
+  );
+  /* 缺省/null/空串 → 不落键 */
+  for (const absent of [undefined, null, "", "  "]) {
+    const [entry] = normalizeConstButtons([{ name: "a", prompt: "p", shortcut: absent }]);
+    assert.equal("shortcut" in entry, false, "缺省不落键：" + JSON.stringify(absent));
+  }
+  /* 无键序列化逐字节不变（spec 场景「无 shortcut 与提案动作同口径零迁移」） */
+  const legacy = { name: "旧", prompt: "p", autoSend: true, newSession: true, model: { provider: "x", model: "y" } };
+  assert.equal(
+    JSON.stringify(normalizeConstButtons([legacy])[0]),
+    JSON.stringify({ name: "旧", prompt: "p", autoSend: true, newSession: true, model: { provider: "x", model: "y" } }),
+    "既有条目（无 shortcut）序列化逐字节不变"
+  );
+  /* 池外拒绝（spec 场景「非法 shortcut 被拒绝」）：Backquote / 组合键 / 空对象 / 数字 */
+  for (const bad of ["Backquote", "Ctrl+KeyQ", "KeyQ", "Escape", "F1", {}, 2, true]) {
+    assert.throws(
+      () => normalizeConstButtons([{ name: "a", prompt: "p", shortcut: bad }]),
+      /shortcut must be (a string|one of)/,
+      "池外/非字符串拒绝：" + String(bad)
+    );
+  }
+  /* 读面容错：池外快捷键原样保留（漂移回显；设置页保存拒绝） */
+  const projected = constButtonsSectionOf({
+    constellationButtons: [
+      { name: "ok", prompt: "p", shortcut: "Digit4" },
+      { name: "drift", prompt: "p", shortcut: "KeyQ" }
+    ]
+  });
+  assert.equal(projected.length, 2, "池外快捷键条目保留（漂移回显，非静默丢弃）");
+  assert.equal(projected[0].shortcut, "Digit4", "读面保留合法快捷键");
+  assert.equal(projected[1].shortcut, "KeyQ", "读面容错保留漂移原值");
+  /* 与提案动作同域（按钮键域同表）——两节口径同源 */
+  assert.equal(
+    normalizeButtons([{ name: "p1", prompt: "p", shortcut: "F2" }])[0].shortcut,
+    normalizeConstButtons([{ name: "c1", prompt: "p", shortcut: "F2" }])[0].shortcut,
+    "两节共用同一按钮键域"
+  );
+}
+
 console.log("const-buttons-schema-smoke: all assertions passed");

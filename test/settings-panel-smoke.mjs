@@ -22,6 +22,11 @@ import {
 } from "../src/button-settings.mjs";
 import { catalogOptions, describeButtonModel, highestEffort, modelKeyOf } from "../src/model-catalog.mjs";
 import { buttonsSectionOf } from "../src/buttons.mjs";
+import {
+  shortcutConflictOf,
+  shortcutConflictOnRowOf,
+  shortcutsIssue
+} from "../src/shortcuts.mjs";
 
 /** 设置作用域桩：set/unset 可编程失败（模拟 CAS 409 / 只读拒绝）。 */
 function fakeScope(options = {}) {
@@ -573,7 +578,7 @@ const BUTTON = { name: "审查", prompt: "请使用 /cosmos-review 审查本提�
   const { COSMOS_DEFAULT_SKIN, COSMOS_SKINS, skinCardOf } = await import("../src/cosmos/skin-registry.mjs");
   const { COSMOS_SETTINGS_VERSION, loadCosmosSettings, sanitizeCosmosSettings, saveCosmosSettings } = await import("../src/settings.mjs");
 
-  assert.equal(COSMOS_SETTINGS_VERSION, 7, "设置面 v7（新增界面尺寸 12 键；跳转属按钮配置，不进偏好面）");
+  assert.equal(COSMOS_SETTINGS_VERSION, 9, "设置面 v9（v8 = shortcuts 子对象，v9 = launchMode；版本号只进不退）");
   const cards = COSMOS_SKINS.map(skinCardOf);
   assert.equal(cards.length, 12, "12 张卡片");
   assert.deepEqual(cards.map((c) => c.id), COSMOS_SKINS.map((s) => s.id), "卡片顺序 = 注册表顺序");
@@ -617,7 +622,7 @@ const BUTTON = { name: "审查", prompt: "请使用 /cosmos-review 审查本提�
     saveCosmosSettings
   } = await import("../src/settings.mjs");
 
-  assert.equal(COSMOS_SETTINGS_VERSION, 7, "设置面 v7（界面尺寸 12 键并入同一存储面）");
+  assert.equal(COSMOS_SETTINGS_VERSION, 9, "设置面 v9（快捷键子对象与 launchMode 并入同一存储面）");
   assert.deepEqual(
     [COSMOS_SETTINGS_DEFAULTS.zoomDiveRatio, COSMOS_SETTINGS_DEFAULTS.zoomFlyOutRatio, COSMOS_SETTINGS_DEFAULTS.zoomPointerFocus],
     [100, 25, true],
@@ -826,7 +831,7 @@ const BUTTON = { name: "审查", prompt: "请使用 /cosmos-review 审查本提�
     saveCosmosSettings
   } = await import("../src/settings.mjs");
 
-  assert.equal(COSMOS_SETTINGS_VERSION, 7, "设置面版本（拖拽平移键仍在册，尺寸键并入后 v7）");
+  assert.equal(COSMOS_SETTINGS_VERSION, 9, "设置面版本（拖拽平移键仍在册；v8 = 快捷键子对象，v9 = launchMode）");
   assert.equal(COSMOS_SETTINGS_DEFAULTS.dragPan, false, "出厂默认关闭（鼠标拖拽保持旋转）");
   assert.equal(sanitizeCosmosSettings({}).dragPan, false, "空载荷 → false");
   assert.equal(sanitizeCosmosSettings({ dragPan: true }).dragPan, true, "合法 true 透传（开启态）");
@@ -1050,8 +1055,8 @@ const BUTTON = { name: "审查", prompt: "请使用 /cosmos-review 审查本提�
   /* 注册与词典（client.jsx 源码面） */
   const client = readFileSync(new URL("../src/client.jsx", import.meta.url), "utf8");
   assert.ok(
-    client.includes('inject: () => ({ face: constButtonSettings, models: modelsFace, variant: "constellation", preflight: preflightFace })'),
-    "星座动作页签注入 preflight face（与按钮 face 正交）"
+    client.includes('inject: () => ({ face: constButtonSettings, models: modelsFace, variant: "constellation", preflight: preflightFace, shortcuts: shortcutsFace, drafts: buttonDraftsFace })'),
+    "星座动作页签注入 preflight face（与按钮 face 正交；add-cosmos-shortcuts 起并注入快捷键/跨域数据面）"
   );
   const pfFace = client.slice(client.indexOf("const preflightFace = {"), client.indexOf('id: "constellation-actions"'));
   assert.ok(pfFace.includes("controllerRef.current == null"), "控制器存活前置检查同款");
@@ -1067,7 +1072,10 @@ const BUTTON = { name: "审查", prompt: "请使用 /cosmos-review 审查本提�
     client.indexOf("const constExecutor = createConstellationExecutor({"),
     client.indexOf("const clearPendingDive")
   );
-  assert.ok(constExecutorBody.includes("preflight: () => loadCosmosSettings().constPreflight,"), "执行器现读设置面（MUST NOT 构造期缓存）");
+  assert.ok(
+    constExecutorBody.includes('preflight: () => (STANDALONE ? "float" : loadCosmosSettings().constPreflight),'),
+    "执行器现读设置面（独立窗口态强制 float：add-cosmos-standalone-window D6；MUST NOT 构造期缓存）"
+  );
   assert.ok(constExecutorBody.includes("closePage: () => cosmosOpenStore.set(false),"), "native 分支关整页 = 整页开合 store（与提案动作同通道）");
   assert.ok(constExecutorBody.includes("pending: heroMarkers,") && constExecutorBody.includes("floats: floatMarkers,"), "双通道注入不变（native 复用 hero / float 保留浮窗）");
   /* 回归确认（3.2）：hero 消费器零改动即承接 native 落稿；浮窗组件承载增强（不读 preflight 设置——分流在执行器） */
@@ -1102,6 +1110,229 @@ const BUTTON = { name: "审查", prompt: "请使用 /cosmos-review 审查本提�
   /* 提示口径核对：缺省 = 浮窗（星空保持）；旧「浮动原生窗口」死设计口径零残留 */
   assert.ok(client.includes('未勾选时按下方「发送前编辑」分流'), "词典 zh：星座 hint 与开关语义对齐");
   assert.ok(!/浮动原生输入窗口/.test(client) && !/原生窗口呈现通道/.test(client), "词典不得残留「浮动原生窗口」死设计口径");
+}
+
+/* ── 全局快捷键净房 v8（add-cosmos-shortcuts 2.1/2.2 / spec cosmos-shortcuts
+      「缺省键位与净房」）：v8 净房、v7 补默认、漂移回落、读面冲突固定优先序
+      （设置面随后升 v9 = add-cosmos-standalone-window 的 launchMode；本块键面无变化）。 ── */
+{
+  const {
+    COSMOS_SETTINGS_DEFAULTS,
+    COSMOS_SETTINGS_VERSION,
+    loadCosmosSettings,
+    sanitizeCosmosSettings,
+    saveCosmosSettings
+  } = await import("../src/settings.mjs");
+  const {
+    SHORTCUT_DEFAULTS,
+    SHORTCUT_FIELDS,
+    SHORTCUT_GLOBAL_KEYS,
+    shortcutLabelOf
+  } = await import("../src/shortcuts.mjs");
+
+  assert.equal(COSMOS_SETTINGS_VERSION, 9, "设置面 v9（shortcuts 子对象 + launchMode 并入）");
+  assert.deepEqual(
+    COSMOS_SETTINGS_DEFAULTS.shortcuts,
+    { closePage: "Escape", goHome: "Backquote", togglePan: "KeyM", voiceToggle: "Ctrl+KeyQ" },
+    "四键缺省遵用户裁决"
+  );
+  assert.deepEqual(Object.keys(COSMOS_SETTINGS_DEFAULTS.shortcuts), SHORTCUT_FIELDS, "子对象键序 = 冲突优先序");
+  assert.ok(Object.isFrozen(COSMOS_SETTINGS_DEFAULTS.shortcuts), "缺省子对象冻结（防误改）");
+  /* 构造头注记：v9 = add-cosmos-standalone-window（v8 = add-cosmos-shortcuts） */
+  const settingsSource = readFileSync(new URL("../src/settings.mjs", import.meta.url), "utf8");
+  assert.ok(settingsSource.includes("设置面（version 9"), "文档头版本注记同步 v9");
+  assert.ok(settingsSource.includes("shortcutsOf(source.shortcuts)"), "净房接线 shortcutsOf（单一来源）");
+
+  /* v8 净房：空载荷 → 四键缺省；合法值透传；与 shortcutsOf 同源 */
+  assert.deepEqual(sanitizeCosmosSettings({}).shortcuts, { ...SHORTCUT_DEFAULTS }, "空载荷 → 四键缺省");
+  const custom = { closePage: "F2", goHome: "Alt+KeyH", togglePan: "Digit7", voiceToggle: "Alt+KeyQ" };
+  assert.deepEqual(sanitizeCosmosSettings({ shortcuts: custom }).shortcuts, custom, "合法四键透传");
+  /* v7 载荷（无 shortcuts 键）→ 补默认（零迁移） */
+  const v7 = {
+    panSpeed: 120, panShiftBoost: 3, skin: "deepspace", zoomDiveRatio: 100, zoomFlyOutRatio: 25,
+    zoomPointerFocus: true, sessionPanelOpen: true, constPreflight: "float", dragPan: false
+  };
+  assert.deepEqual(sanitizeCosmosSettings(v7).shortcuts, { ...SHORTCUT_DEFAULTS }, "v7 载荷读出补默认四键");
+  /* 漂移值净化（池外 / 非字符串 / 空串 → 回落缺省，不抛错） */
+  assert.equal(sanitizeCosmosSettings({ shortcuts: { goHome: "F5" } }).shortcuts.goHome, "Backquote", "池外回落缺省");
+  assert.equal(sanitizeCosmosSettings({ shortcuts: { goHome: 123 } }).shortcuts.goHome, "Backquote", "非字符串回落缺省");
+  assert.equal(sanitizeCosmosSettings({ shortcuts: { closePage: "" } }).shortcuts.closePage, "Escape", "空串回落缺省");
+  /* 读面冲突固定优先序（spec 场景「手工冲突读面确定性」） */
+  const conflicted = sanitizeCosmosSettings({ shortcuts: { closePage: "KeyN", goHome: "KeyN" } }).shortcuts;
+  assert.equal(conflicted.closePage, "KeyN", "closePage 优先保留");
+  assert.equal(conflicted.goHome, "Backquote", "goHome 冲突回落缺省");
+  assert.equal(new Set(Object.values(conflicted)).size, 4, "净房结果恒无重复（分发器零仲裁）");
+  /* 池同源：设置页下拉候选 = SHORTCUT_GLOBAL_KEYS（单一常量表导出） */
+  assert.ok(SHORTCUT_GLOBAL_KEYS.includes("Ctrl+KeyQ"), "缺省语音键在池内");
+  assert.equal(shortcutLabelOf("Ctrl+KeyQ"), "Ctrl+Q", "下拉/说明标签同源");
+
+  /* 写穿数据链：save → 落盘 → 读回（轻量偏好即时保存语义） */
+  const store = new Map();
+  globalThis.localStorage = {
+    getItem: (key) => (store.has(key) ? store.get(key) : null),
+    setItem: (key, value) => store.set(key, String(value)),
+    removeItem: (key) => store.delete(key)
+  };
+  try {
+    assert.deepEqual(loadCosmosSettings().shortcuts, { ...SHORTCUT_DEFAULTS }, "无存储 → 缺省");
+    const saved = saveCosmosSettings({ shortcuts: { goHome: "F2" } });
+    assert.equal(saved.shortcuts.goHome, "F2", "写侧落新值");
+    assert.equal(saved.shortcuts.togglePan, "KeyM", "部分写：其余键保持缺省");
+    assert.equal(loadCosmosSettings().shortcuts.goHome, "F2", "读回生效");
+    assert.deepEqual(
+      JSON.parse(store.get("dsh-v-cosmos:settings")).shortcuts,
+      { closePage: "Escape", goHome: "F2", togglePan: "KeyM", voiceToggle: "Ctrl+KeyQ" },
+      "落盘形状 = v8 净房结果"
+    );
+    /* 手工改坏子对象（非对象 / 字符串）→ 读面回落缺省（SHALL NOT 抛错） */
+    store.set("dsh-v-cosmos:settings", JSON.stringify({ shortcuts: "nope" }));
+    assert.deepEqual(loadCosmosSettings().shortcuts, { ...SHORTCUT_DEFAULTS }, "子对象非对象 → 四键缺省");
+    store.set("dsh-v-cosmos:settings", JSON.stringify({ shortcuts: { goHome: "KeyW" } }));
+    assert.equal(loadCosmosSettings().shortcuts.goHome, "Backquote", "WASD 保留键落回缺省");
+  } finally {
+    delete globalThis.localStorage;
+  }
+}
+
+/* ── 按钮快捷键字段（add-cosmos-shortcuts 3.3/3.4/7.2/7.3 / spec cosmos-button-settings
+      「按钮快捷键设置字段」）：草稿尾部落键 / 漂移保留 / 枚举校验 / 保存写穿 /
+      跨域并集查重（controller crossIssue 保存门）/ 设置页源码锚点。 ── */
+{
+  /* 1) 草稿构造：尾部落键（preState 之后）；「无」= 不落键；漂移值原样保留 */
+  assert.deepEqual(buttonDraftOf({ name: "a", prompt: "p", shortcut: "Digit1" }), {
+    name: "a",
+    prompt: "p",
+    autoSend: false,
+    newSession: true,
+    shortcut: "Digit1"
+  }, "草稿尾部落 shortcut（键序）");
+  assert.equal("shortcut" in buttonDraftOf({ name: "a", prompt: "p", shortcut: "" }), false, "「无」（空串）不落键");
+  assert.equal("shortcut" in buttonDraftOf({ name: "a", prompt: "p" }), false, "缺省不落键（存储最小形）");
+  assert.deepEqual(
+    Object.keys(buttonDraftOf({ name: "a", prompt: "p", preState: "reviewed", model: { provider: "x", model: "y" }, shortcut: "F4" })),
+    ["name", "prompt", "autoSend", "newSession", "model", "preState", "shortcut"],
+    "键序：shortcut 恒在尾部（preState 之后）"
+  );
+  assert.equal(buttonDraftOf({ name: "a", prompt: "p", shortcut: "  F8  " }).shortcut, "F8", "trim 后落键");
+  assert.equal(buttonDraftOf({ name: "a", prompt: "p", shortcut: "KeyQ" }).shortcut, "KeyQ", "漂移值原样保留（回显「不可用」）");
+  assert.deepEqual(
+    Object.keys(constButtonDraftOf({ name: "a", prompt: "p", model: { provider: "x", model: "y" }, shortcut: "Digit2" })),
+    ["name", "prompt", "autoSend", "newSession", "model", "shortcut"],
+    "星座草稿键序：model → shortcut"
+  );
+
+  /* 2) 校验：仅按钮键域枚举合法（漂移值可回显、保存拒绝） */
+  for (const good of ["Digit0", "Digit9", "F2", "F4", "F8", "F9"]) {
+    assert.equal(buttonIssue([{ name: "a", prompt: "p", shortcut: good }]), "", "合法快捷键：" + good);
+    assert.equal(constButtonIssue([{ name: "a", prompt: "p", shortcut: good }]), "", "星座合法快捷键：" + good);
+  }
+  for (const bad of ["KeyQ", "Ctrl+KeyQ", "Backquote", "Escape", "F5", "", 1]) {
+    assert.equal(
+      buttonIssue([{ name: "a", prompt: "p", shortcut: bad }]),
+      bad === "" ? "" : "buttonShortcutInvalid",
+      "池外/非法拒绝（空串按「无」）：" + String(bad)
+    );
+    if (bad !== "") {
+      assert.equal(constButtonIssue([{ name: "a", prompt: "p", shortcut: bad }]), "constButtonShortcutInvalid", "星座池外拒绝：" + String(bad));
+    }
+  }
+
+  /* 3) 保存写穿：选择 → 草稿 dirty → save 写节（键序尾部）；无键条目不落键 */
+  const scope = fakeScope({ buttons: [BUTTON] });
+  const face = createButtonSettingsController(scope);
+  face.editButton(0, "shortcut", "Digit1");
+  let state = face.getSnapshot();
+  assert.equal(state.buttonsDirty, true, "选键即 dirty（参与暂存-保存流）");
+  assert.equal(state.buttonsInvalid, false, "合法值不阻断保存");
+  await face.save();
+  const written = scope.calls.filter((call) => call.op === "set").pop();
+  assert.deepEqual(written.value[0].shortcut, "Digit1", "保存写穿快捷键（键序尾部）");
+  assert.deepEqual(Object.keys(written.value[0]), ["name", "prompt", "autoSend", "newSession", "shortcut"], "落盘键序尾部追加");
+  face.dispose();
+
+  /* 改回「无」→ 删键（存储最小形：序列化与无快捷键条目逐字同形） */
+  const clearScope = fakeScope({ buttons: [{ ...BUTTON, shortcut: "Zip" }] });
+  const clearFace = createButtonSettingsController(clearScope);
+  assert.equal(clearFace.getSnapshot().buttonsDraft[0].shortcut, "Zip", "漂移值回显保留");
+  assert.equal(clearFace.getSnapshot().buttonsInvalid, true, "漂移值使草稿非法（保存拒绝）");
+  await clearFace.save();
+  assert.equal(clearScope.calls.filter((call) => call.op === "set").length, 0, "漂移值保存被拒绝（零写入）");
+  clearFace.editButton(0, "shortcut", undefined);
+  assert.equal("shortcut" in clearFace.getSnapshot().buttonsDraft[0], false, "改「无」即删键");
+  assert.equal(clearFace.getSnapshot().buttonsInvalid, false, "修正后恢复合法");
+  await clearFace.save();
+  const cleared = clearScope.calls.filter((call) => call.op === "set").pop();
+  assert.equal("shortcut" in cleared.value[0], false, "无快捷键不落键（逐字节同形）");
+  clearFace.dispose();
+
+  /* 4) 跨域并集查重（controller crossIssue 保存门）：与全局键冲突 / 两按钮同键 均拒绝 */
+  const conflictScope = fakeScope({ buttons: [{ ...BUTTON, shortcut: "F2" }] });
+  const localShortcuts = { closePage: "Escape", goHome: "F2", togglePan: "KeyM", voiceToggle: "Ctrl+KeyQ" };
+  const conflictFace = createButtonSettingsController(conflictScope, {
+    crossIssue: (entries) => shortcutsIssue(localShortcuts, { proposals: entries, constellations: [] })
+  });
+  assert.equal(conflictFace.getSnapshot().buttonsInvalid, true, "构造期即按跨域冲突判非法（与全局 goHome=F2 冲突）");
+  await conflictFace.save();
+  assert.equal(conflictScope.calls.filter((call) => call.op === "set").length, 0, "冲突保存被拒绝（零写入）");
+  /* 改选唯一键 → 保存恢复可用 */
+  conflictFace.editButton(0, "shortcut", "Digit7");
+  assert.equal(conflictFace.getSnapshot().buttonsInvalid, false, "冲突解除 → 保存恢复可用");
+  await conflictFace.save();
+  assert.equal(conflictScope.calls.filter((call) => call.op === "set").length, 1, "解除后保存成功");
+  conflictFace.dispose();
+
+  /* 5) 两按钮同键：行内定位（shortcutConflictOnRowOf） */
+  const drafts = {
+    proposals: [{ name: "甲", prompt: "p", shortcut: "Digit1" }, { name: "乙", prompt: "p", shortcut: "Digit1" }],
+    constellations: []
+  };
+  const hit = shortcutConflictOf(localShortcuts, drafts);
+  assert.ok(hit !== null, "两按钮同键 → 冲突");
+  assert.equal(shortcutConflictOnRowOf(hit, "proposals", 0), true, "第一行定位");
+  assert.equal(shortcutConflictOnRowOf(hit, "proposals", 1), true, "第二行定位");
+  assert.equal(shortcutConflictOnRowOf(hit, "constellations", 0), false, "无关列表不定位");
+
+  /* 6) 设置页源码锚点（7.1/7.2/7.3）：快捷键页签结构 + 行内下拉 + 冲突/漂移/风险 */
+  const ui = readFileSync(new URL("../src/settings-ui.jsx", import.meta.url), "utf8");
+  const client = readFileSync(new URL("../src/client.jsx", import.meta.url), "utf8");
+  assert.ok(ui.includes("export function CosmosShortcutsPanel"), "「快捷键」页签组件");
+  assert.ok(ui.includes('data-plugin-anchor="dsh-v-cosmos:settings-shortcuts"'), "快捷键页签插件锚点");
+  assert.ok(ui.includes("SHORTCUT_UI_ORDER.map((field) =>"), "四行由 UI 行序常量驱动（回到银河/移动开关/语音开关/关闭页面）");
+  assert.ok(ui.includes("SHORTCUT_GLOBAL_KEYS.map((key) =>"), "键位下拉与键位池同源（单一常量表）");
+  assert.ok(ui.includes("SHORTCUT_RISKY_KEYS.includes(key)"), "Ctrl+Q 选项标注浏览器保留风险");
+  assert.ok(ui.includes("SHORTCUT_ALTERNATIVE_OF[value]"), "风险键提供替代键建议（Alt+Q）");
+  assert.ok(ui.includes("{errorText(\"shortcutsDefault\", \"默认\")}"), "缺省值「默认」徽标");
+  assert.ok(ui.includes("shortcutConflictOf(candidate"), "改选即时冲突预判（拒写 + 行内错误）");
+  assert.ok(ui.includes("notAppliedText(t, \"cosmos.settings.shortcutsNotApplied\""), "写失败「未生效」提示（health 口径）");
+  assert.ok(ui.includes("const commit = (field, value) => {"), "即时保存（无草稿-保存）");
+  assert.ok(ui.includes("shortcutField(button, index)"), "动作行内「快捷键」下拉挂载");
+  assert.ok(ui.includes("SHORTCUT_BUTTON_KEYS") && ui.includes("shortcutLabelOf(key)"), "行内候选 = 按钮键域同源 + 标签");
+  assert.ok(ui.includes("errorText(\"buttonShortcutUnavailable\", \"不可用\")"), "漂移值回显「不可用」");
+  assert.ok(ui.includes("conflictTextOf(t, conflict,"), "冲突行内定位文案（对侧可读名）");
+  assert.ok(ui.includes("conflictBlocked"), "冲突阻断保存按钮（面板级）");
+  /* 真机反馈补强：保存提示 + 前置状态门控说明（「新建」绑键但当前无星胚 → 该按钮不渲染） */
+  assert.ok(ui.includes("errorText(\"buttonShortcutSaveHint\""), "行内提示「需点击下方保存才生效」");
+  assert.ok(ui.includes("errorText(\"buttonShortcutPreStateHint\""), "前置状态门控的悬停说明");
+  assert.ok(ui.includes("cs-shortcutRowNote"), "带前置状态且已配键的行显示「仅「X」时生效」小字注");
+  assert.ok(ui.includes("errorText(\"buttonShortcutPreStateShort\""), "条件小字注文案");
+  /* 注册与词典（client.jsx） */
+  assert.ok(client.includes('id: "shortcuts"'), "「快捷键」标签页注册");
+  assert.ok(client.includes("order: 4,"), "排于「界面」之后（order 4）");
+  assert.ok(client.includes('label: () => sectionT("cosmos.settings.tabShortcuts")'), "标签文案走词典");
+  assert.ok(client.includes("inject: () => ({ shortcuts: shortcutsFace, drafts: buttonDraftsFace, selectHealth: selectHealthFace })"), "快捷键页签注入 face + 草稿数据面 + health");
+  for (const key of [
+    "shortcutGoHome", "shortcutTogglePan", "shortcutVoiceToggle", "shortcutClosePage",
+    "shortcutRiskTag", "shortcutRiskyHint", "buttonShortcutLabel", "buttonShortcutNone",
+    "buttonShortcutUnavailable", "buttonShortcutInvalid", "constButtonShortcutInvalid",
+    "shortcutDup", "shortcutConflictRow", "shortcutPanelHint", "buttonShortcutSaveHint",
+    "buttonShortcutPreStateHint", "buttonShortcutPreStateShort"
+  ]) {
+    assert.equal(
+      (client.match(new RegExp('"cosmos\\.settings\\.' + key + '"', "g")) ?? []).length,
+      2,
+      "词典 zh/en 成对：cosmos.settings." + key
+    );
+  }
 }
 
 console.log("settings-panel-smoke: all assertions passed");

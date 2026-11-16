@@ -10,7 +10,7 @@ metadata:
   contractVersion: "1"
 ---
 
-使用 /openspec-explore 技能，探索并讨论功能需求
+使用 C:\project\dsh-plugin-v\dsh-v-skill-links\.trae\skills\openspec-explore\SKILL.md 技能，探索并讨论功能需求，如果建议多提案的时候，多个提案如有先后依赖顺序，则在提案命名前缀上体现出来。
 
 并且按以下流程调整提案状态：
 **状态步骤：探索结论建议创建提案时，写待创建锚点**
@@ -35,6 +35,28 @@ metadata:
 
 **红线**（CONTRACT §4/§8）：只写锚点文件，不改 openspec CLI 任何工件；不做其他
 推导写入。
+
+## 关联绑定（写完本轮锚点之后执行；可选，依赖 cosmos 插件）
+
+声明本会话的提案工作面（星图关联，不写任何 openspec 工件）：
+
+- 端点：`POST <base>/api/dsh-v-cosmos/bind-session`
+  （base = 当前 DSH Web loopback 地址，如 `http://127.0.0.1:3080`；端口以实际部署为准）；
+- 请求：`{ "sessionId": $env:DSH_SESSION_ID, "proposals": ["<slug>", ...] }`
+  （请求体须为 UTF-8 字节）——清单 = **本轮建议的全部 slug**（多轮探索时重绑
+  累计全量清单）；
+- 语义：**替换**（该会话的关联恰为本清单，重复绑定同清单幂等）——探索会话一稿
+  多案时行星恰绕建议集做联星轨道。
+
+```powershell
+$body = [Text.Encoding]::UTF8.GetBytes((ConvertTo-Json @{ sessionId = $env:DSH_SESSION_ID; proposals = @("<slug>") } -Compress))
+Invoke-RestMethod -Method Post -Uri "$base/api/dsh-v-cosmos/bind-session" `
+  -ContentType "application/json; charset=utf-8" -Body $body
+```
+
+**降级（MUST NOT 阻断状态步骤）**：端点不可达（404 / 连接拒绝 / 超时）或返回失败 =
+插件未安装或未升级 → 跳过绑定并在回复中**注明**（关联退回启发式推断，星图可能过度
+关联；不影响锚点写入），MUST NOT 报错或回滚。
 
 **自改名**：`POST <base>/api/dsh-v-cosmos/rename-session`，请求
    `{ "sessionId": $env:DSH_SESSION_ID, "prefix": "创意-" }`。原题为空 →

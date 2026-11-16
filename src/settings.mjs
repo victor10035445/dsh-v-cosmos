@@ -13,7 +13,8 @@
  * （Node/隐私模式缺席 → 缺省），键 `dsh-v-cosmos:settings`（旧名 `dsh-cosmos:settings`
  * 存量读取回落迁移，写入恒走新键）。
  *
- * 设置面（version 7）：
+ * 设置面（version 9，add-cosmos-standalone-window 1.1 引入 `launchMode` v8 → v9；
+ * v8 = add-cosmos-shortcuts 2.1 的 `shortcuts` 子对象，版本号只进不退）：
  *  - panSpeed：WASD 基础平移速度（世界单位/秒），缺省 120；
  *  - panShiftBoost：Shift 加速倍率，缺省 3；
  *  - skin：内置皮肤 id（枚举 = `COSMOS_SKIN_IDS`），缺省 `rosepine`（design D2）；
@@ -40,18 +41,38 @@
  *    高）、`constActionHeight`（星座动作按钮高；宽恒等于面板内容宽）、`searchWidth` /
  *    `searchHeight`（顶部中央搜索框宽 / 最小高度，0 = 自适应）、`wsTitleSize`（顶部
  *    中央星座标题字号）。整页经 `cosmosLayoutTokensOf` 投影为 CSS 变量下发。
+ *  - shortcuts：全局快捷键四键（add-cosmos-shortcuts 2.1；`{ closePage, goHome,
+ *    togglePan, voiceToggle }`，缺省 `Escape` / `Backquote` / `KeyM` / `Ctrl+KeyQ`）。
+ *    净房口径 = `shortcutsOf`（键位池校验回落缺省 + 读面固定优先序冲突回落，恒无重复），
+ *    纯逻辑在 `shortcuts.mjs`；v7 及更早载荷读出补默认（零迁移）。
+ *  - launchMode：Cosmos 入口打开方式（add-cosmos-standalone-window 1.1/D4）——
+ *    枚举 `COSMOS_LAUNCH_MODES`：`embedded`（缺省，现状：shell.overlay 内嵌整页）/
+ *    `window`（同源独立窗口，语义见 src/standalone.mjs）。净房 = 枚举校验回落缺省；
+ *    v8 及更早载荷读出补缺省（零迁移，渲染零变化）。桌面形态（`file://`）的降级判定
+ *    不落在设置面（持久值照存，读取侧按协议分流，见 standalone.mjs）。
  * 后续设置 UI 直接调 `saveCosmosSettings`（写侧净房内置），引擎经 `engine.setTuning` /
- * `engine.setSkin` 热更新（无需重开整页）。
+ * `engine.setShortcuts` / `engine.setSkin` 热更新（无需重开整页）。
  */
 
 import { COSMOS_DEFAULT_SKIN, COSMOS_SKIN_IDS } from "./cosmos/skin-registry.mjs";
+import { SHORTCUT_DEFAULTS, shortcutsOf } from "./shortcuts.mjs";
 
 const SETTINGS_KEY = "dsh-v-cosmos:settings";
 /** 品牌更名前的 localStorage 键（仅读取回落，SHALL NOT 写入）。 */
 const LEGACY_SETTINGS_KEY = "dsh-cosmos:settings";
 export const COSMOS_SETTINGS_KEY = SETTINGS_KEY;
-/** 设置面版本（v7 = add-cosmos-layout-tuning 新增界面尺寸 12 键；v1–v6 载荷读出补默认）。 */
-export const COSMOS_SETTINGS_VERSION = 7;
+/** 设置面版本（v9 = add-cosmos-standalone-window 新增 `launchMode`；v8 = 快捷键子对象；
+    v1–v8 载荷读出补默认）。 */
+export const COSMOS_SETTINGS_VERSION = 9;
+
+/**
+ * Cosmos 入口打开方式枚举（add-cosmos-standalone-window D4）：
+ *  - `embedded`（缺省）：shell.overlay 内嵌整页（现状，渲染零变化）；
+ *  - `window`：同源独立窗口（`window.open(origin + "/?cosmos=window")`）。
+ */
+export const COSMOS_LAUNCH_MODES = Object.freeze(["embedded", "window"]);
+/** 该键的缺省值（净房与入口分流同源；默认保持现状 = 内嵌）。 */
+export const COSMOS_DEFAULT_LAUNCH_MODE = "embedded";
 
 /**
  * 「发送前编辑」呈现分支枚举（add-cosmos-native-composer D1/D5；rework 语义重注）：
@@ -88,7 +109,14 @@ export const COSMOS_SETTINGS_DEFAULTS = Object.freeze({
   constActionHeight: 40,
   searchWidth: 320,
   searchHeight: 0,
-  wsTitleSize: 13
+  wsTitleSize: 13,
+  /* ── 全局快捷键四键（add-cosmos-shortcuts 2.1/D11）：缺省遵用户裁决
+     `closePage=Escape` / `goHome=Backquote` / `togglePan=KeyM` / `voiceToggle=Ctrl+KeyQ`；
+     净房走 `shortcutsOf`（池校验 + 读面冲突固定优先序回落），子对象冻结防误改。 ── */
+  shortcuts: Object.freeze({ ...SHORTCUT_DEFAULTS }),
+  /* ── 入口打开方式（add-cosmos-standalone-window 1.1/D4）：缺省 embedded = 现状
+     （内嵌整页，渲染零变化）；`window` = 同源独立窗口（仅 web 形态可用）。 ── */
+  launchMode: COSMOS_DEFAULT_LAUNCH_MODE
 });
 
 /** 界（写侧 400 的前置净房界；越界值落回界内端点，SHALL NOT 抛错）。
@@ -166,11 +194,24 @@ function preflightOf(value) {
 }
 
 /**
+ * 入口打开方式净房（add-cosmos-standalone-window 1.1）：枚举外值（含缺失、非字符串、
+ * 未知 id）一律回落缺省 `embedded`，与 `skinOf` / `preflightOf` 枚举分支同构，SHALL NOT 抛错。
+ * @param {unknown} value
+ * @returns {"embedded"|"window"}
+ */
+function launchModeOf(value) {
+  return typeof value === "string" && COSMOS_LAUNCH_MODES.includes(value)
+    ? value
+    : COSMOS_DEFAULT_LAUNCH_MODE;
+}
+
+/**
  * 设置净房（纯函数）：未知键剥离、非法/越界值落回缺省或界内端点。
  * @param {unknown} raw 原始设置对象（v1 载荷无 `skin` 键、v2 载荷无缩放导航三键、
  *        v3 载荷无会话面板展开态、v4 载荷无 `constPreflight`、v5 载荷无 `dragPan`、
- *        v6 载荷无界面尺寸 12 键 → 逐键补默认）
- * @returns {{ panSpeed: number, panShiftBoost: number, skin: string, zoomDiveRatio: number, zoomFlyOutRatio: number, zoomPointerFocus: boolean, sessionPanelOpen: boolean, constPreflight: "native"|"float", dragPan: boolean, sessionPanelWidth: number, sessionPanelHeight: number, constPanelWidth: number, constPanelHeight: number, addBtnSize: number, hudBtnSize: number, actionBtnWidth: number, actionBtnHeight: number, constActionHeight: number, searchWidth: number, searchHeight: number, wsTitleSize: number }}
+ *        v6 载荷无界面尺寸 12 键、v7 载荷无 `shortcuts` 子对象、v8 载荷无 `launchMode` →
+ *        逐键补默认）
+ * @returns {{ panSpeed: number, panShiftBoost: number, skin: string, zoomDiveRatio: number, zoomFlyOutRatio: number, zoomPointerFocus: boolean, sessionPanelOpen: boolean, constPreflight: "native"|"float", dragPan: boolean, sessionPanelWidth: number, sessionPanelHeight: number, constPanelWidth: number, constPanelHeight: number, addBtnSize: number, hudBtnSize: number, actionBtnWidth: number, actionBtnHeight: number, constActionHeight: number, searchWidth: number, searchHeight: number, wsTitleSize: number, shortcuts: {closePage: string, goHome: string, togglePan: string, voiceToggle: string}, launchMode: "embedded"|"window" }}
  */
 export function sanitizeCosmosSettings(raw) {
   const source = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
@@ -199,8 +240,40 @@ export function sanitizeCosmosSettings(raw) {
     constActionHeight: clampTo("constActionHeight", source.constActionHeight, COSMOS_SETTINGS_DEFAULTS.constActionHeight),
     searchWidth: clampTo("searchWidth", source.searchWidth, COSMOS_SETTINGS_DEFAULTS.searchWidth),
     searchHeight: clampTo("searchHeight", source.searchHeight, COSMOS_SETTINGS_DEFAULTS.searchHeight),
-    wsTitleSize: clampTo("wsTitleSize", source.wsTitleSize, COSMOS_SETTINGS_DEFAULTS.wsTitleSize)
+    wsTitleSize: clampTo("wsTitleSize", source.wsTitleSize, COSMOS_SETTINGS_DEFAULTS.wsTitleSize),
+    /* 全局快捷键（add-cosmos-shortcuts 2.1/D11）：子对象净房走 `shortcutsOf`——池外值 /
+       非字符串 / 空串逐键回落缺省，读面冲突按固定优先序回落（返回表恒无重复）；v7 及更早
+       载荷（无该子对象）补默认，旧配置零迁移。 */
+    shortcuts: shortcutsOf(source.shortcuts),
+    /* 入口打开方式（add-cosmos-standalone-window 1.1/D4）：枚举净房；v8 及更早载荷
+       （无该键）补缺省 `embedded`，默认行为与渲染零变化。 */
+    launchMode: launchModeOf(source.launchMode)
   };
+}
+
+/**
+ * `storage` 事件 → 设置投影（add-cosmos-standalone-window 2.1；跨窗口即时生效的纯函数面）。
+ *
+ * 同源 localStorage 是全部窗口共享的唯一设置面：窗口 A 的「通用」页签写入后，窗口 B
+ * 收到 `storage` 事件——本函数只负责「是否与本设置面相关 + 净房后的完整设置」，
+ * 监听绑定/store 同步留在 client.jsx。与本面无关的键（官方设置、其它插件）→ `null`。
+ * `newValue === null`（clear）与坏 JSON 一律按「净房空载荷」= 出厂缺省（与读面同语义）。
+ * @param {{key?: unknown, newValue?: unknown}|null|undefined} event StorageEvent 形状子集
+ * @returns {object|null} 净房后的完整设置；null = 与本设置面无关
+ */
+export function settingsFromStorageEvent(event) {
+  if (event === null || typeof event !== "object") return null;
+  const key = event.key;
+  if (key !== SETTINGS_KEY && key !== LEGACY_SETTINGS_KEY) return null;
+  let raw = {};
+  if (typeof event.newValue === "string" && event.newValue) {
+    try {
+      raw = JSON.parse(event.newValue);
+    } catch {
+      raw = {};
+    }
+  }
+  return sanitizeCosmosSettings(raw);
 }
 
 /**

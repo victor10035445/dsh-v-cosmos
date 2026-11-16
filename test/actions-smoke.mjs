@@ -599,6 +599,146 @@ const button = { name: "审查", prompt: "请使用 /cosmos-review 审查本提�
   }
 }
 
+/* ── 4d. 显式关联绑定（fix-cosmos-association-scope 3.2 / spec cosmos-actions ⑤） ── */
+{
+  /* 成功路径：取得 SessionId 后调用（create → bind → open），proposals = 目标提案清单。 */
+  {
+    const calls = [];
+    const executor = createActionExecutor({
+      pending: createPendingActionStore(),
+      createSession: async () => {
+        calls.push("create");
+        return "sess-bind";
+      },
+      bindSession: (input) => {
+        calls.push("bind");
+        calls.push(input);
+        return Promise.resolve({ ok: true, bound: ["add-a"] });
+      },
+      openSession: () => calls.push("open"),
+      closePage: () => calls.push("close"),
+      now: () => 200_000
+    });
+    const run = await executor.run({ button, card });
+    assert.equal(run.ok, true, "绑定不改变链路成功语义");
+    assert.deepEqual(calls.slice(0, 2), ["create", "bind"], "取得新会话 id 后立即绑定（先于导航）");
+    assert.deepEqual(calls[2], { sessionId: "sess-bind", proposals: ["add-a"] }, "请求 = {sessionId, proposals:[目标提案名]}");
+    assert.equal(calls[3], "open", "绑定非阻断：导航照常紧随");
+    assert.equal(calls.filter((item) => item === "bind").length, 1, "每次点击恰一次绑定");
+  }
+
+  /* 非阻断：bindSession 返回悬决 Promise → run 照常完成；拒绝被吞（无 toast、无未处理拒绝）。 */
+  {
+    let unhandled = null;
+    const onUnhandled = (reason) => {
+      unhandled = reason;
+    };
+    process.on("unhandledRejection", onUnhandled);
+    const calls = [];
+    const executor = createActionExecutor({
+      pending: createPendingActionStore(),
+      createSession: async () => "sess-hang",
+      bindSession: () => new Promise(() => {}), // 永悬决：若被 await，run 不会返回
+      openSession: () => calls.push("open"),
+      closePage: () => {},
+      notify: (text) => calls.push("notify:" + text),
+      now: () => 300_000
+    });
+    const run = await executor.run({ button, card });
+    assert.equal(run.ok, true, "悬决的绑定不阻塞链路（不 await 呈现）");
+    assert.deepEqual(calls, ["open"], "链路其余步骤照常呈现（零绑定相关 toast）");
+
+    const rejecting = createActionExecutor({
+      pending: createPendingActionStore(),
+      createSession: async () => "sess-reject",
+      bindSession: () => Promise.reject(new Error("endpoint 404")),
+      openSession: () => {},
+      closePage: () => {},
+      now: () => 400_000
+    });
+    const rejectedRun = await rejecting.run({ button, card });
+    assert.equal(rejectedRun.ok, true, "绑定拒绝不改变链路结果");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    process.removeListener("unhandledRejection", onUnhandled);
+    assert.equal(unhandled, null, "绑定拒绝被吞（无未处理 Promise 拒绝噪声）");
+
+    let thrown = 0;
+    const throwing = createActionExecutor({
+      pending: createPendingActionStore(),
+      createSession: async () => "sess-throw",
+      bindSession: () => {
+        thrown += 1;
+        throw new Error("sync failure");
+      },
+      openSession: () => {},
+      closePage: () => {},
+      notify: () => {},
+      now: () => 500_000
+    });
+    const thrownRun = await throwing.run({ button, card });
+    assert.equal(thrown, 1, "同步抛错的绑定确实被调用");
+    assert.equal(thrownRun.ok, true, "同步抛错同样静默（不影响链路）");
+  }
+
+  /* 降级路径跳过绑定：create 失败回落 startSession（无新会话 id）→ bindSession 零调用。 */
+  {
+    let bound = 0;
+    const executor = createActionExecutor({
+      pending: createPendingActionStore(),
+      createSession: async () => {
+        throw new Error("create unavailable");
+      },
+      bindSession: () => {
+        bound += 1;
+        return Promise.resolve({ ok: true });
+      },
+      startSession: () => {},
+      closePage: () => {},
+      notify: () => {},
+      now: () => 600_000
+    });
+    const run = await executor.run({ button, card });
+    assert.equal(run.ok, true);
+    assert.equal(run.degraded, true, "降级路径照常");
+    assert.equal(bound, 0, "降级路径 MUST 跳过绑定");
+
+    let legacyBound = 0;
+    const legacy = createActionExecutor({
+      pending: createPendingActionStore(),
+      bindSession: () => {
+        legacyBound += 1;
+        return Promise.resolve({ ok: true });
+      },
+      startSession: () => {},
+      notify: () => {},
+      now: () => 700_000
+    });
+    const legacyRun = await legacy.run({ button, card });
+    assert.equal(legacyRun.degraded, true, "老宿主（无恒新建通道）→ 降级");
+    assert.equal(legacyBound, 0, "老宿主降级同样不绑定");
+  }
+
+  /* 缺目标提案名（卡片无 id）→ 不发起绑定（不产生空清单请求）。 */
+  {
+    let bound = 0;
+    const executor = createActionExecutor({
+      pending: createPendingActionStore(),
+      createSession: async () => "sess-noid",
+      bindSession: () => {
+        bound += 1;
+        return Promise.resolve({ ok: true });
+      },
+      openSession: () => {},
+      closePage: () => {},
+      now: () => 800_000
+    });
+    const noIdCard = { ...card, id: "" };
+    const run = await executor.run({ button, card: noIdCard });
+    assert.equal(run.ok, true);
+    assert.equal(bound, 0, "缺目标提案名不绑定（端点面禁止空清单）");
+  }
+}
+
 /* ── 5. hero 消费（spec「自动发送 hero 接力」「按钮模型绑定执行语义」） ── */
 {
   /* 未登记 → idle */

@@ -261,6 +261,9 @@ export const ENGINE_CSS = `
 `;
 
 import { relativeTime, starPlanetIdsOf } from "../merge.mjs";
+/* 快捷键纯逻辑（add-cosmos-shortcuts 4.1）：引擎侧只消费「规范形匹配 + 净房」两件事——
+   goHome / togglePan 的键位值与 WASD/空格共享同一 handler 分支（零新增监听面）。 */
+import { SHORTCUT_DEFAULTS, SHORTCUT_FIELDS, isGlobalShortcut, shortcutMatches, shortcutsOf } from "../shortcuts.mjs";
 
 const TAU = Math.PI * 2;
 
@@ -339,8 +342,18 @@ const PLAN_KIND_LABEL = { approval: '审批', 'plan-review': '方案审查', que
    - vitality：恒星活力两态（沉睡 = act=0 / 活跃 = act≥1）行标与取值。 */
 const DEFAULT_LABELS = Object.freeze({
   decide: Object.freeze({ approval: '待批准', 'plan-review': '计划待审', question: '待回答', fallback: '待决策' }),
-  vitality: Object.freeze({ label: '活力', active: '活跃', sleep: '沉睡' })
+  vitality: Object.freeze({ label: '活力', active: '活跃', sleep: '沉睡' }),
+  /* card：会话卡按钮文案（add-cosmos-standalone-window D6）——`openDisabled` =
+     「打开会话」在独立窗口态（无主壳会话页）的禁用提示（title）。 */
+  card: Object.freeze({ openDisabled: '独立窗口内无法跳转会话页（请在主窗口操作）' }),
+  /* dismiss：星胚（proto 恒星）卡「移除星胚」按钮文案（add-cosmos-embryo-dismiss D9）——
+     `remove` = 初始动作文案、`confirm` = 首击后的内联确认态文案。outcome toast 文案归
+     client 词典（请求组装/呈现全在客户端），不进引擎。 */
+  dismiss: Object.freeze({ remove: '移除星胚', confirm: '确认移除？' })
 });
+
+/** 星胚移除两击确认的回弹窗口（add-cosmos-embryo-dismiss D3「约 3s 无操作回弹」）。 */
+export const DISMISS_CONFIRM_MS = 3000;
 
 /** 转场时长（demo/states FX 已验证参数：点燃 2.2s / 落印 1.6s / 查看渐熄 2.2s×0.72 渐变段）；
     add-transition-choreography 扩 birth（实体出生，kind 级时长见 FX_BIRTH_DUR）与
@@ -1544,6 +1557,11 @@ function inheritTrails(prevScene, nextScene) {
  * @param {(sessionId: string) => (void|Promise<void>)} [opts.onArchiveSession]
  *        信息卡「归档会话」回调（add-cosmos-session-archive-action D4）；返回 Promise 时
  *        引擎以它作为在途窗口（响应到达 → 恢复按钮），同步返回值视为立即完成。
+ * @param {(input: {workspaceId: string, slug: string}) => (void|Promise<void>)} [opts.onDismissEmbryo]
+ *        星胚卡「移除星胚」回调（add-cosmos-embryo-dismiss 3.3 / D5）：载荷 = 该星实体的
+ *        `ws.id` 与 `data.id`（proto 恒星 id 即锚点 slug）；返回 Promise 时引擎以它作为
+ *        per-`ws:slug` 在途窗口（响应到达无论 outcome 均解锁），同步返回值视为立即完成，
+ *        同步抛错亦解锁。未注入 → 两击确认后静默 no-op（与 onOpenSession 守卫同口径）。
  * @param {(info: {kind: string, wsId: string, id: string, lifecycle?: string}|null) => void} [opts.onSelectChange]
  *        选中态变更回调（add-cosmos-selection-linkage D6）：**幂等**——以 `kind:wsId:id`
  *        键比较，键变才回调一次（置空亦然）；载荷恒星附 `lifecycle` 供客户端排除星胚。
@@ -1555,13 +1573,28 @@ function inheritTrails(prevScene, nextScene) {
  *        「拖拽平移」开关回调（add-cosmos-drag-pan-toggle D4）：点击开关后引擎已本地翻转
  *        `E.dragPanMode` 与视觉，再以目标态调用本回调（客户端链路 = 净房持久化 +
  *        既有 `setTuning` 热更回读，值恒等幂等）；未注入 → 静默 no-op（只做本地切换）。
- * @param {{dragPan?: boolean}} [opts.settings]
+ * @param {() => boolean} [opts.isFloatOpen]
+ *        浮窗打开态探针（add-cosmos-shortcuts 4.2/D13 模态让位）：浮窗（星座补写卡片）
+ *        打开时 `goHome` / `togglePan` MUST NOT 分发——浮窗是模态上下文（backdrop 挡住
+ *        星空），补写途中误触切换星空状态无意义。未注入 → 恒按未打开（引擎侧零拦截）。
+ * @param {{dragPan?: boolean, shortcuts?: {closePage?: string, goHome?: string,
+ *        togglePan?: string, voiceToggle?: string}}} [opts.settings]
  *        设置面初值（settings.mjs 净房产物）：`dragPan` 为拖拽平移开关缺省态
- *        （非显式 `true` 一律按关闭 = 默认关闭；后续热更走 `setTuning`）。
- * @param {{decide?: object, vitality?: object}} [opts.labels]
+ *        （非显式 `true` 一律按关闭 = 默认关闭）；`shortcuts` 为全局快捷键表
+ *        （add-cosmos-shortcuts D11，净房由 `shortcutsOf` 二次兜底；改绑走
+ *        `setShortcuts` 热更，无需重开整页）。
+ * @param {{decide?: object, vitality?: object, card?: object, dismiss?: object}} [opts.labels]
  *        信息卡文案注入位（locale 同源，任务 5.4）：`decide` = 决策按钮 pendingKind 映射
  *        （键域 approval / plan-review / question + fallback），`vitality` = 活力状态行
- *        行标（label）与两态取值（active / sleep）；缺省 = 引擎内 DEFAULT_LABELS。
+ *        行标（label）与两态取值（active / sleep），`card` = 会话卡按钮禁用提示
+ *        （`openDisabled`，add-cosmos-standalone-window D6），`dismiss` = 星胚卡「移除星胚」
+ *        按钮与确认态文案（`remove` / `confirm`，add-cosmos-embryo-dismiss D9）；
+ *        缺省 = 引擎内 DEFAULT_LABELS。
+ * @param {boolean} [opts.sessionNavAvailable]
+ *        会话导航可用性（add-cosmos-standalone-window D6）：`false` = 独立窗口态
+ *        （无主壳右侧系统会话页）——信息卡「打开会话」呈禁用态 + title 提示，空格
+ *        快捷键同款静默 no-op（MUST NOT 报错、MUST NOT 关窗）；缺省/非 `true` 之外
+ *        一律按可用（内嵌态行为零变化）。
  */
 export function createCosmosEngine(opts) {
   if (!opts?.container) throw new TypeError("createCosmosEngine: container required");
@@ -1577,14 +1610,25 @@ export function createCosmosEngine(opts) {
     /* 信息卡「决策」回调（cosmos-session-decide D6）：与 onOpenSession/onArchiveSession
        同模式；构造缺失 → 决策按钮点击静默 no-op。 */
     onDecideSession: typeof opts.onDecideSession === "function" ? opts.onDecideSession : null,
+    /* 星胚卡「移除星胚」回调（add-cosmos-embryo-dismiss 3.3）：与 onOpenSession /
+       onArchiveSession 同模式注入；构造缺失 → 两击确认后静默 no-op（不派发、不抛错）。 */
+    onDismissEmbryo: typeof opts.onDismissEmbryo === "function" ? opts.onDismissEmbryo : null,
     /* 信息卡文案注入位（5.4）：locale 同源文案覆盖缺省表（缺键/非字符串回落下沉）。 */
     labels: {
       decide: Object.assign({}, DEFAULT_LABELS.decide, textRecordOf(opts.labels?.decide)),
-      vitality: Object.assign({}, DEFAULT_LABELS.vitality, textRecordOf(opts.labels?.vitality))
+      vitality: Object.assign({}, DEFAULT_LABELS.vitality, textRecordOf(opts.labels?.vitality)),
+      card: Object.assign({}, DEFAULT_LABELS.card, textRecordOf(opts.labels?.card)),
+      dismiss: Object.assign({}, DEFAULT_LABELS.dismiss, textRecordOf(opts.labels?.dismiss))
     },
+    /* 会话导航可用性（add-cosmos-standalone-window D6）：独立窗口态注入 false——信息卡
+       「打开会话」禁用 + title 提示、空格快捷键早退；缺省 true（内嵌态行为零变化）。 */
+    sessionNavAvailable: opts.sessionNavAvailable !== false,
     /* 归档按钮在途会话 id（权威防重入门，D6）：per-session 单飞——卡片在途重渲染会
        抹掉按钮的 disabled 属性，DOM 只是呈现层，本集合才是「重复点击被忽略」的依据。 */
     archiveInFlight: new Set(),
+    /* 星胚移除在途目标键集合（权威防重入门，add-cosmos-embryo-dismiss D7）：键 =
+       `wsId:slug`——画布每 slug 一颗星，per-target 单飞与「移除这一个提案」粒度一致。 */
+    dismissInFlight: new Set(),
     /* 钻取态订阅（add-cosmos-proposal-actions 3.4/3.6）：React 面板据当前星座过滤与
        让位顶部中央标牌；polish-cosmos-drilled-hud 起同一信号亦门控搜索框的钻取态隐藏。
        只在钻取态**真正变化**时回调（幂等），null = 回到银河。 */
@@ -1602,6 +1646,13 @@ export function createCosmosEngine(opts) {
        平移调参面）；初始化读持久化设置——非显式 true 一律 false（「默认关闭」），
        `setTuning` 热更时同步。 */
     dragPanMode: opts.settings?.dragPan === true,
+    /* 全局快捷键表（add-cosmos-shortcuts 4.1/D11）：引擎侧只消费 `goHome` / `togglePan`；
+       构造经 `shortcutsOf` 二次净房（池校验 + 读面冲突回落 → 表恒无重复），热更走
+       `setShortcuts`（守卫形态对齐 `setTuning`：部分写、非法忽略、幂等）。 */
+    shortcuts: shortcutsOf(opts.settings?.shortcuts),
+    /* 浮窗打开态探针（D13 模态让位）：客户端注入模块级探针（浮窗 armed 即 true）；
+       未注入 → 恒按未打开（引擎侧不新增依赖面）。 */
+    isFloatOpen: typeof opts.isFloatOpen === "function" ? opts.isFloatOpen : null,
     cam: { target: [0, 0, 0], yaw: -0.7, pitch: 0.5, dist: 430, fov: 60 },
     tween: null,
     focusWs: null, focusMix: 0, diveSel: null, diveSelKind: null,
@@ -2918,6 +2969,35 @@ export function createCosmosEngine(opts) {
     btn.setAttribute('aria-pressed', E.dragPanMode === true ? 'true' : 'false');
   }
 
+  /* ---------- 快捷键键位入口（add-cosmos-shortcuts 4.1/D4/D5） ----------
+
+     与右下两个常驻按钮**同一状态链、同一函数**：
+      - `goHome`（缺省 `~`）→ `goHomeByKey()`：钻取态 = `flyOut()`（与「回到银河」按钮 /
+        关闭键第一层完全等效）；银河态 MUST no-op（清选中是关闭键第一层的职责，两键
+        MUST NOT 竞争同一「后退」语义）；
+      - `togglePan`（缺省 `M`）→ `toggleDragPanMode()`：状态权威翻转 → `aria-pressed`
+        同步 → 持久化回调写穿（按钮/键盘/设置三入口恒一致）。
+     守卫在 `bindPanKeys` 内按 D12 分档套用（repeat / IME / 可编辑 / chrome 聚焦；
+     **无按钮类聚焦一道**——`~`/`M` 非原生激活键，保留会把「点击右下按钮后按键」主流程
+     判死），浮窗打开时整表让位（D13）。 */
+
+  /** 「回到银河」键盘入口（D4）：钻取态 flyOut → true；银河态 no-op → false。 */
+  function goHomeByKey() {
+    if (E.focusMix > 0.05 || E.focusWs) {
+      flyOut();
+      return true;
+    }
+    return false;
+  }
+
+  /** 拖拽平移开关翻转（D5 状态链唯一实现）：右下按钮点击与 `M` 键共用同一条链路
+      （本地翻转 → 视觉/a11y 同步 → 注入回调持久化写穿）。 */
+  function toggleDragPanMode() {
+    E.dragPanMode = E.dragPanMode !== true; // 本地翻转（拖拽进行中则自下一个 move 生效）
+    syncDragPanButton();
+    if (E.onDragPanToggle) E.onDragPanToggle(E.dragPanMode === true);
+  }
+
   /* ---------- DOM 覆盖层（容器内挂载，去 document.body） ---------- */
 
   function ensureDom() {
@@ -2972,19 +3052,19 @@ export function createCosmosEngine(opts) {
     dragPanBtn.setAttribute('title', '拖拽平移');
     dragPanBtn.innerHTML = DRAG_PAN_ICON_SVG;
     dragPanBtn.addEventListener('click', function () {
-      E.dragPanMode = E.dragPanMode !== true; // 本地翻转（拖拽进行中则自下一个 move 生效）
-      syncDragPanButton();
-      if (E.onDragPanToggle) E.onDragPanToggle(E.dragPanMode === true);
+      toggleDragPanMode(); // 与键盘 `M` 共用同一条状态链（D5）
     });
     E.el.overlay.appendChild(dragPanBtn);
     E.el.dragPanBtn = dragPanBtn;
     syncDragPanButton(); // 初值视觉（持久化 true → 冷启动即点亮）
 
     E.el.card.addEventListener('click', function (ev) {
-      /* 信息卡按钮分流（add-cosmos-session-archive-action D4；cosmos-session-decide D6）：
+      /* 信息卡按钮分流（add-cosmos-session-archive-action D4；cosmos-session-decide D6；
+         add-cosmos-embryo-dismiss 3.2）：
          - `data-action="open"` → 既有 onOpenSession（行为零变化：先关整页再导航）；
          - `data-action="decide"` → onDecideSession（与打开同链路，决策面由 DSH 原生呈现）；
          - `data-action="archive"` → onArchiveSession（新回调，整页保持打开）；
+         - `data-action="dismiss-embryo"` → 星胚移除两击确认（handleDismissClick）；
          - `data-action` 缺席 → 回落 open（旧渲染/外部注入 markup 兼容）。
          归档防重入（D6）：权威门 = E.archiveInFlight（per-session）——重复点击直接忽略；
          禁用态经直接 DOM 切换（cardHtml 不渲染 disabled，见上方 CSS 注释），响应到达
@@ -2993,14 +3073,22 @@ export function createCosmosEngine(opts) {
          （导航动词幂等，D6）。回调未注入 → 静默 no-op（同 onOpenSession 守卫）。 */
       const target = ev.target;
       if (!target || !target.classList || !target.classList.contains('cd-btn')) return;
-      const sessionId = target.getAttribute('data-session');
-      if (!sessionId) return;
       const action = target.getAttribute('data-action') || 'open';
+      /* 星胚移除分流 MUST 先于 `data-session` 早退守卫：dismiss 按钮不携会话 id 钩子
+         （`data-ws` / `data-slug` 语义），照旧先读 `data-session` 会静默 no-op。 */
+      if (action === 'dismiss-embryo') {
+        handleDismissClick(target);
+        return;
+      }
+      const sessionId = target.getAttribute('data-session');
+      if (!sessionId) return; // 会话类动作缺 id → 静默（既有守卫；dismiss 已在上面分流）
       if (action === 'decide') {
         if (E.onDecideSession) E.onDecideSession(sessionId);
         return;
       }
       if (action !== 'archive') {
+        /* 独立窗口态：导航不可用（按钮已 disabled，此处为 markup 之外的兜底）→ 静默。 */
+        if (!E.sessionNavAvailable) return;
         if (E.onOpenSession) E.onOpenSession(sessionId);
         return;
       }
@@ -3037,6 +3125,89 @@ export function createCosmosEngine(opts) {
     if (!card || typeof card.querySelector !== 'function') return;
     const button = card.querySelector('.cd-btn[data-action="archive"]');
     if (button) button.disabled = disabled === true;
+  }
+
+  /* ── 星胚移除的内联两击确认（add-cosmos-embryo-dismiss 3.2 / D3 / D7） ── */
+
+  /** 处于确认态的目标键 `wsId:slug`（`''` = 无确认态）。 */
+  let dismissConfirmKey = '';
+  /** 确认态回弹定时器（随卡片内容签名变更 / 收卡 / 执行清理）。 */
+  let dismissConfirmTimer = null;
+
+  /** 确认态清理：恒清定时器与键；`resetDom === true` 时把当前卡内按钮回弹初始文案并
+      解锁（呈现层尽力而为——卡已切到别的实体则查无此按钮）。`E.dismissInFlight` 不动：
+      在途请求的解锁归属其响应回调，收卡 MUST NOT 取消服务端动词。 */
+  function clearDismissConfirm(resetDom) {
+    if (dismissConfirmTimer) {
+      clearTimeout(dismissConfirmTimer);
+      dismissConfirmTimer = null;
+    }
+    dismissConfirmKey = '';
+    if (!resetDom) return;
+    const card = E.el.card;
+    if (!card || typeof card.querySelector !== 'function') return;
+    const button = card.querySelector('.cd-btn[data-action="dismiss-embryo"]');
+    if (!button) return;
+    button.disabled = false;
+    button.textContent = E.labels.dismiss.remove;
+  }
+
+  /**
+   * 星胚移除点击处理器（内联两击确认 + per-`ws:slug` 在途门）：
+   *  - 首击：按钮**就地**切确认态（直接 DOM 切 textContent，不经 cardHtml 重渲染——
+   *    确认态 MUST NOT 进内容签名），约 DISMISS_CONFIRM_MS 无操作回弹初始态；
+   *  - 第二击：清确认态 → 经 `E.onDismissEmbryo({workspaceId, slug})` 派发；回调未注入
+   *    → 静默 no-op（按钮回弹，不派发、不抛错）；
+   *  - 在途门：`E.dismissInFlight`（per 目标）拦截重复派发；响应到达（无论 outcome）
+   *    或回调同步抛错即解锁并回弹按钮；每目标至多一个在途请求。
+   * @param {HTMLElement} target 命中的 `.cd-btn[data-action="dismiss-embryo"]`
+   */
+  function handleDismissClick(target) {
+    const wsId = target.getAttribute('data-ws') || '';
+    const slug = target.getAttribute('data-slug') || '';
+    if (!wsId || !slug) return; // 钩子残缺（外部注入 markup）→ 静默
+    const key = wsId + ':' + slug;
+    if (E.dismissInFlight.has(key)) return; // 在途门：MUST NOT 派发第二个请求
+    if (dismissConfirmKey !== key) {
+      /* 首击：确认态（直接 DOM；sig 不变 ⇒ 卡片不重建，后续点击仍可派发）。 */
+      dismissConfirmKey = key;
+      target.textContent = E.labels.dismiss.confirm;
+      if (dismissConfirmTimer) clearTimeout(dismissConfirmTimer);
+      dismissConfirmTimer = setTimeout(function () {
+        dismissConfirmTimer = null;
+        dismissConfirmKey = '';
+        if (!E.disposed) target.textContent = E.labels.dismiss.remove;
+      }, DISMISS_CONFIRM_MS);
+      dismissConfirmTimer?.unref?.(); // Node 冒烟：SHALL NOT 拖着事件循环
+      return;
+    }
+    /* 第二击：执行（确认态先行清除；在途门保证每目标至多一个请求）。 */
+    clearDismissConfirm(false);
+    if (!E.onDismissEmbryo) {
+      target.textContent = E.labels.dismiss.remove;
+      return;
+    }
+    E.dismissInFlight.add(key);
+    target.disabled = true;
+    const done = function () {
+      E.dismissInFlight.delete(key);
+      if (E.disposed) return;
+      /* 响应到达：星胚通常已被骨架差分收卡；按钮仍在册则解锁 + 文案回弹初始态。 */
+      target.disabled = false;
+      target.textContent = E.labels.dismiss.remove;
+    };
+    let pending;
+    try {
+      pending = E.onDismissEmbryo({ workspaceId: wsId, slug: slug });
+    } catch (error) {
+      if (typeof console !== 'undefined' && typeof console.warn === 'function') {
+        console.warn('[dsh-v-cosmos] dismiss embryo failed:', error);
+      }
+      done(); // 同步抛错也解锁（一次失败不永久卡死按钮）
+      return;
+    }
+    if (pending && typeof pending.then === 'function') pending.then(done, done);
+    else done();
   }
 
   /** 空星座判定（D6：「空」= 恒星/行星/彗星均为空且无归档星云）。出生高亮只对空星座
@@ -3161,19 +3332,25 @@ export function createCosmosEngine(opts) {
   }
 
   /** 会话卡按钮组（add-cosmos-session-archive-action 2.1 / D4；cosmos-session-decide D5
-      / cosmos-session-archive delta 重钉顺序）：行星与彗星信息卡「打开会话」与「归档会话」
-      并列，行星待决策时在两者之间插入决策按钮（`lead`，空串 = 两颗）。按钮共用 `.cd-btn`
-      一类（同排布区、8px 间距、≥40px 触屏目标）；`data-action` 为程序化分流钩子，
-      `data-session` 沿用既有会话 id 钩子——「打开会话」行为零变化（spec「打开会话行为
-      不变」）。卫星无信息卡 ⇒ 无入口。MUST NOT 在此渲染 `disabled`：禁用态是点击处理器
-      的直接 DOM 职责（D6）。「打开会话」按钮标注空格快捷键
-      （add-cosmos-session-open-hotkey 2.1/D4）：`aria-keyshortcuts` + title 为静态 markup
-      属性增量（行为不变；归档按钮无快捷键 ⇒ 不标注），sig 差分守卫据此仍按同串比较、
-      无逐帧重建问题。 */
+      / cosmos-session-archive delta 重钉顺序；add-cosmos-standalone-window D6 独立窗口
+      禁用态）：行星与彗星信息卡「打开会话」与「归档会话」并列，行星待决策时在两者之间
+      插入决策按钮（`lead`，空串 = 两颗）。按钮共用 `.cd-btn` 一类（同排布区、8px 间距、
+      ≥40px 触屏目标）；`data-action` 为程序化分流钩子，`data-session` 沿用既有会话 id
+      钩子——「打开会话」行为零变化（spec「打开会话行为不变」）。卫星无信息卡 ⇒ 无入口。
+      **归档**在途禁用态 MUST NOT 在此渲染：那是点击处理器的直接 DOM 职责（D6）。
+      **导航可用性**（独立窗口态，D6 例外）：`sessionNavAvailable === false` 时「打开会话」
+      渲染 `disabled` + title 提示（动作依赖主壳右侧会话页，独立窗口无会话页）——该态是
+      页面生命周期常量，故直接进 markup（与归档在途的瞬态禁用语义不同，sig 无需豁免）。
+      「打开会话」按钮标注空格快捷键（add-cosmos-session-open-hotkey 2.1/D4）：
+      `aria-keyshortcuts` + title 为静态 markup 属性增量（行为不变；归档按钮无快捷键 ⇒
+      不标注），sig 差分守卫据此仍按同串比较、无逐帧重建问题。 */
   function cardActionsHtml(sessionId, lead) {
     const id = escapeHtml(sessionId);
+    const open = E.sessionNavAvailable
+      ? '<button class="cd-btn" type="button" data-action="open" data-session="' + id + '" aria-keyshortcuts="Space" title="打开会话（空格）">打开会话</button>'
+      : '<button class="cd-btn" type="button" data-action="open" data-session="' + id + '" title="' + escapeHtml(E.labels.card.openDisabled) + '" disabled>打开会话</button>';
     return '<div class="cd-actions">' +
-      '<button class="cd-btn" type="button" data-action="open" data-session="' + id + '" aria-keyshortcuts="Space" title="打开会话（空格）">打开会话</button>' +
+      open +
       (lead || '') +
       '<button class="cd-btn" type="button" data-action="archive" data-session="' + id + '">归档会话</button>' +
       '</div>';
@@ -3191,6 +3368,19 @@ export function createCosmosEngine(opts) {
       const vitalityRow = s.lifecycle === 'proto' ? '' :
         '<span>' + escapeHtml(E.labels.vitality.label) + '</span><b>' +
         escapeHtml((s.act || 0) > 0 ? E.labels.vitality.active : E.labels.vitality.sleep) + '</b>';
+      /* 星胚移除按钮行（add-cosmos-embryo-dismiss 3.1 / spec「移除入口与确认交互」）：
+         proto 卡**唯一**按钮行；正式提案恒星卡 MUST NOT 呈现（lifecycle 在内容签名内 ⇒
+         proto→created 同 id 翻转即重建卡片、按钮消失）。钩子 `data-action="dismiss-embryo"`
+         + `data-ws`（实体 ws.id = workspaceId）+ `data-slug`（proto 星 id = 锚点 slug）——
+         与 `data-session` 会话钩子互斥语义（星胚不是会话）。按钮文案走 E.labels（locale
+         同源）；确认态文案只由点击处理器直接 DOM 切换，不进本函数。 */
+      const dismissRow = s.lifecycle === 'proto'
+        ? '<div class="cd-actions">' +
+          '<button class="cd-btn cd-btn-dismiss" type="button" data-action="dismiss-embryo"' +
+          ' data-ws="' + escapeHtml(e.ws?.id ?? '') + '" data-slug="' + escapeHtml(s.id) + '">' +
+          escapeHtml(E.labels.dismiss.remove) + '</button>' +
+          '</div>'
+        : '';
       return '<div class="cd-title">✦ ' + escapeHtml(s.name) + '</div>' +
         '<div class="cd-grid">' +
         '<span>状态</span><b>' + (LIFECYCLE_LABEL[s.lifecycle] || s.lifecycle) + '</b>' +
@@ -3199,7 +3389,7 @@ export function createCosmosEngine(opts) {
         '<span>任务</span><b>' + s.tasks[0] + '/' + s.tasks[1] + '</b>' +
         '<span>年龄</span><b>' + escapeHtml(s.age ?? '—') + '</b>' +
         '<span>活跃会话</span><b>' + (s.act || 0) + '</b>' +
-        '</div>';
+        '</div>' + dismissRow;
     }
     if (e.kind === 'planet') {
       const p = e.data;
@@ -3341,19 +3531,28 @@ export function createCosmosEngine(opts) {
 
     // 信息卡
     const ent = E.hovered || E.selected;
+    const key2 = ent ? entKey(ent) : '';
+    const scr2 = ent ? E.screens[key2] : null;
+    /* 收卡清理（add-cosmos-embryo-dismiss 3.2 / D7）：无 hover/选中或投影缺失 → 卡片不再
+       呈现，星胚移除的确认态定时器与键就地清理（瞬态按钮态 SHALL NOT 跨卡片生命周期残留；
+       `E.dismissInFlight` 不在此清——服务端动词不因收卡取消）。 */
+    if (!scr2 && (dismissConfirmKey || dismissConfirmTimer)) clearDismissConfirm(true);
     if (!ent) { E.el.card.classList.remove('on'); return; }
-    const key2 = entKey(ent);
-    const scr2 = E.screens[key2];
     if (!scr2) { E.el.card.classList.remove('on'); return; }
     /* 内容签名差分（data-sig = kind:id + state + pendingKind）：hover 中状态翻转
        即时刷新状态行——data-key = kind:id 恒不变导致文案滞留旧态（修复点与本
        change 的彗星状态行特性直接相关）；签名不变零重写。
        恒星分支追加 act（cosmos-relation-focus D4 修正）：恒星实体无 state/pendingKind
        字段，仅凭既有签名 act 翻转不会触发重渲染 → 活力状态行滞留旧态；行星/彗星分支
-       sig 不变（其 waiting 翻转已由 state|pendingKind 覆盖）。 */
+       sig 不变（其 waiting 翻转已由 state|pendingKind 覆盖）。
+       恒星分支再追加 lifecycle（add-cosmos-embryo-dismiss 3.1）：星胚（proto）卡的
+       「移除星胚」按钮行只在 proto 呈现——锚点转正后同 id 恒星的 lifecycle 翻转必须
+       触发重建，否则按钮会滞留在正式提案卡上（sig 其余分量不变）。 */
     let sig = key2 + '|' + (ent.data?.state ?? '') + '|' + (ent.data?.pendingKind ?? '');
-    if (ent.kind === 'star') sig += '|act:' + (ent.data?.act || 0);
+    if (ent.kind === 'star') sig += '|act:' + (ent.data?.act || 0) + '|life:' + (ent.data?.lifecycle ?? '');
     if (E.el.card.dataset.sig !== sig) {
+      /* 卡片重建会抹掉确认态（瞬态不进签名）→ 定时器先行清理，MUST NOT 写进新 markup。 */
+      if (dismissConfirmKey || dismissConfirmTimer) clearDismissConfirm(false);
       E.el.card.innerHTML = cardHtml(ent);
       E.el.card.dataset.sig = sig;
       E.el.card.setAttribute('data-key', key2);
@@ -3875,15 +4074,49 @@ export function createCosmosEngine(opts) {
       const key = code.slice(3).toLowerCase(); // KeyW → "w"（键位布局无关）
       return PAN_KEYS.indexOf(key) >= 0 ? key : null;
     };
+    /* 快捷键键位分派（add-cosmos-shortcuts 4.1–4.2 / D8b / D12）：goHome / togglePan 与
+       WASD / 空格共享**同一** window keydown handler（空格键先例：零新增监听面/泄漏面）。
+       修饰键裁决按分支下沉（D8b 修正）：WASD 分支保留「Ctrl/Meta/Alt 整表跳过」，
+       本分支改交 canonical **精确**匹配——配置含 Ctrl/Alt 的组合键绑定位（如 `Alt+KeyH`）
+       照常可达，Shift/Meta 由 `shortcutMatches` 恒跳过。
+       守卫（D12 分档）：repeat / IME 组字 / **可编辑元素聚焦**；**不含 chrome 聚焦守卫**
+       ——`isUiChromeTarget` 覆盖提案面板与会话面板，而「点击卡片选中提案/会话后按键」正是
+       主流程（焦点滞留在卡片按钮上）；新键位非原生激活、面板内数字/功能键/`~` 无面板语义
+       （WASD / 空格两支保留各自的 chrome 守卫不变）。浮窗打开 → 模态让位（D13）。
+       命中且**确有动作**才 preventDefault（银河态 `~` = no-op，不拦截宿主默认行为）。 */
+    const applyShortcut = function (ev) {
+      if (!ev || typeof ev.code !== "string" || ev.code === "") return false;
+      const table = E.shortcuts ?? SHORTCUT_DEFAULTS;
+      let action = "";
+      if (shortcutMatches(ev, table.goHome)) action = "goHome";
+      else if (shortcutMatches(ev, table.togglePan)) action = "togglePan";
+      if (action === "") return false;
+      if (ev.repeat === true) return false;
+      if (ev.isComposing || ev.keyCode === 229) return false;
+      const active = document.activeElement;
+      if (isEditableTarget(active)) return false;
+      /* 浮窗模态让位（D13）：浮窗是模态上下文（backdrop 挡住星空），补写途中误触
+         切换星空状态无意义；探针未注入 → 按未打开处理（引擎侧零新增依赖）。 */
+      if (E.isFloatOpen && E.isFloatOpen()) return false;
+      if (action === "goHome") {
+        if (goHomeByKey()) ev.preventDefault();
+        return true; // 键位已命中（银河态 no-op 亦不再进入后续分支）
+      }
+      toggleDragPanMode();
+      ev.preventDefault();
+      return true;
+    };
     const onKeyDown = function (ev) {
-      if (ev.ctrlKey || ev.metaKey || ev.altKey) return; // 组合键（Ctrl+W / Ctrl+Space 等）不劫持
       const key = panKeyOf(ev);
       if (key) {
+        if (ev.ctrlKey || ev.metaKey || ev.altKey) return; // 组合键（Ctrl+W / Ctrl+Space 等）不劫持
         if (ev.isComposing || isEditableTarget(document.activeElement) || isUiChromeTarget(document.activeElement)) return;
         E.panKeys.add(key);
         ev.preventDefault(); // 吞掉宿主同键默认行为（快速查找等）
         return;
       }
+      /* 全局快捷键分支（goHome / togglePan）：组合键交 canonical 裁决（D8b）。 */
+      if (applyShortcut(ev)) return;
       /* 会话打开快捷键（add-cosmos-session-open-hotkey D1，同一 handler 分支——零新增
          监听面/泄漏面）：空格对**当前选中**的行星/彗星触发与信息卡「打开会话」按钮
          同一回调链（`E.onOpenSession` —— 先关整页再导航，语义零分叉）。守卫按序早退，
@@ -3895,7 +4128,11 @@ export function createCosmosEngine(opts) {
          ⑤ 按钮类聚焦跳过（空格是原生激活，MUST NOT 双触发）；
          ⑥ 选中非会话（恒星 = 提案 / 无选中）静默 no-op（不弹提示，HUD 极简口径）。
          六道全过才 `preventDefault`（抑制宿主页面滚动）+ 触发。 */
+      if (ev.ctrlKey || ev.metaKey || ev.altKey) return; // 组合键不劫持空格（D8b 下沉后原位保留）
       if (String(ev.code ?? "") !== SESSION_OPEN_KEY) return;
+      /* 独立窗口态（add-cosmos-standalone-window D6）：导航不可用 → 静默 no-op（不
+         preventDefault，空格回到宿主默认语义；信息卡按钮同款禁用）。 */
+      if (!E.sessionNavAvailable) return;
       if (ev.repeat === true) return;
       if (ev.isComposing) return;
       const active = document.activeElement;
@@ -4767,9 +5004,33 @@ export function createCosmosEngine(opts) {
         zoomPointerFocus: E.tuning.pointerFocus
       };
     },
+    /**
+     * 全局快捷键热更（add-cosmos-shortcuts 4.1/D11）：设置页改绑后调用，无需重开整页。
+     * **部分写语义**（`setTuning` 同款守卫形态）：仅池内字符串值被采纳（非字符串 /
+     * 池外值 / 缺席键保持原值，SHALL NOT 抛错）；合并后再经 `shortcutsOf` 净房
+     * （读面冲突按固定优先序回落）→ `E.shortcuts` 恒无重复值，分发器零仲裁。
+     * @param {{closePage?: string, goHome?: string, togglePan?: string, voiceToggle?: string}} shortcuts
+     */
+    setShortcuts(shortcuts) {
+      if (!shortcuts || typeof shortcuts !== "object") return;
+      const next = { ...E.shortcuts };
+      for (const field of SHORTCUT_FIELDS) {
+        const value = shortcuts[field];
+        if (typeof value === "string" && isGlobalShortcut(value)) next[field] = value;
+      }
+      E.shortcuts = shortcutsOf(next);
+    },
+    /** 当前生效快捷键表（只读副本；冒烟/设置页回显观测面）。 */
+    getShortcuts() {
+      return { ...E.shortcuts };
+    },
     dispose() {
       E.disposed = true;
       engine.stop();
+      /* 星胚移除瞬态（add-cosmos-embryo-dismiss 3.2）：确认态定时器与在途门随实例销毁
+         （SHALL NOT 跨实例残留；在途请求的呈现回弹由 disposed 守卫短路）。 */
+      clearDismissConfirm(false);
+      E.dismissInFlight.clear();
       E.keyListeners?.(); // WASD window 监听卸载（SHALL NOT 泄漏宿主按键面）
       E.panKeys.clear();
       E.captures.clear();

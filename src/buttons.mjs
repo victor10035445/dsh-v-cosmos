@@ -4,7 +4,7 @@
  * 独立纯逻辑模块——宿主半区（configstore 节归一化 + 设置命名空间校验）与浏览器半区
  * （设置页草稿校验 / 动作条投影）共用，test/buttons-schema-smoke.mjs 直测。
  *
- * 模型：`{ name, prompt, autoSend, newSession, jumpNewSession?, prepend?, model?, preState? }`
+ * 模型：`{ name, prompt, autoSend, newSession, jumpNewSession?, prepend?, model?, preState?, shortcut? }`
  *  - `name`   显示名（非空，trim 后去重；允许中文，不套用 commands 的小写正则）；
  *  - `prompt` 提示词（非空）；
  *  - `autoSend` **必填布尔，归一化恒输出**：缺省/null 视为 false，其余非布尔值拒绝；
@@ -22,12 +22,19 @@
  *  - `preState` 可选枚举 `proto | created | reviewed | executed`（提案前置状态）：
  *    **仅设置时输出该键**（缺省/null = 未提供），枚举外值保存拒绝；**无唯一性约束**
  *    （同一状态可配置多个按钮）。读面容错模式（`tolerateUnknownPreState`）保留未知
- *    字符串原值（手工编辑漂移 → 设置页原样回显，保存路径恒严格）。
+ *    字符串原值（手工编辑漂移 → 设置页原样回显，保存路径恒严格）；
+ *  - `shortcut` 可选键盘快捷键（add-cosmos-shortcuts 3.1 / spec cosmos-actions「按钮配置
+ *    模型」）：值为**按钮键域**枚举（`shortcuts.mjs`：`Digit0`–`Digit9` + `F2/F4/F8/F9`）。
+ *    **仅设置时输出该键**（缺省/null/`""` = 未提供 → 存储最小形「无快捷键」）；池外值 /
+ *    组合键 / 非字符串保存拒绝。跨条目及与全局键的并集查重由**保存面**统一执行
+ *    （`shortcuts.mjs` `shortcutsIssue`），宿主单节 normalize 保持「单条枚举校验」口径。
  *
  * 键序固定 name → prompt → autoSend → newSession → jumpNewSession → prepend → model
- * → preState（`preState` 追加尾部，既有条目序列化逐字节不变；客户端 `JSON.stringify`
- * 比较依赖键序稳定）。
+ * → preState → shortcut（`preState` / `shortcut` 依次追加尾部，既有条目序列化逐字节
+ * 不变；客户端 `JSON.stringify` 比较依赖键序稳定）。
  */
+
+import { SHORTCUT_BUTTON_KEYS, isButtonShortcut } from "./shortcuts.mjs";
 
 /** 前置状态枚举（spec「按钮配置模型」；顺序即设置页下拉顺序）。 */
 export const PRE_STATES = Object.freeze(["proto", "created", "reviewed", "executed"]);
@@ -81,17 +88,20 @@ export function normalizeButtonModel(raw, name) {
  * 的显式决策（spec 场景要求拒绝而非静默）。`preState` 不参与去重。
  *
  * @param {unknown} raw
- * @param {{tolerateUnknownPreState?: boolean}} [options] 读面容错（默认严格）：
- *        true = 未知 `preState` 字符串原样保留（不回写、不丢弃该条）；保存路径 MUST NOT
- *        使用该模式（写入校验恒严格，见 configstore.writeSections）。
+ * @param {{tolerateUnknownPreState?: boolean, tolerateUnknownShortcut?: boolean}} [options]
+ *        读面容错（默认严格）：`tolerateUnknownPreState` = true → 未知 `preState` 字符串原样
+ *        保留（不回写、不丢弃该条）；`tolerateUnknownShortcut` = true → 池外 `shortcut`
+ *        字符串原样保留（设置页回显「不可用」）；保存路径 MUST NOT 使用任一模态
+ *        （写入校验恒严格，见 configstore.writeSections）。
  * @returns {Array<{name: string, prompt: string, autoSend: boolean, newSession: boolean,
  *          jumpNewSession?: false, prepend?: true,
  *          model?: {provider: string, model: string, reasoningEffort?: string},
- *          preState?: string}>}
+ *          preState?: string, shortcut?: string}>}
  * @throws {TypeError} 形状非法 / 名称重复 / 超上限
  */
 export function normalizeButtons(raw, options = {}) {
   const tolerateUnknownPreState = options?.tolerateUnknownPreState === true;
+  const tolerateUnknownShortcut = options?.tolerateUnknownShortcut === true;
   let list = [];
   if (Array.isArray(raw)) list = raw;
   else if (raw && typeof raw === "object" && Array.isArray(raw.buttons)) list = raw.buttons;
@@ -156,6 +166,26 @@ export function normalizeButtons(raw, options = {}) {
       throw new TypeError(`button "${name}" prepend must be a boolean`);
     }
     const model = normalizeButtonModel(item.model, name);
+    /* 快捷键（add-cosmos-shortcuts 3.1）：仅按钮键域枚举合法；缺省/null/空串按未提供
+       （存储最小形，「无快捷键」为缺省）；池外值保存拒绝。读面容错模式
+       （`tolerateUnknownShortcut`）保留池外字符串原值——设置页据「不可用」回显并拒绝保存，
+       分发器只认池内值（漂移值不可触发）。 */
+    let shortcut;
+    if (item.shortcut !== undefined && item.shortcut !== null) {
+      if (typeof item.shortcut !== "string") {
+        throw new TypeError(`button "${name}" shortcut must be a string`);
+      }
+      const value = item.shortcut.trim();
+      if (value !== "") {
+        if (isButtonShortcut(value)) shortcut = value;
+        else if (tolerateUnknownShortcut) shortcut = value;
+        else {
+          throw new TypeError(
+            `button "${name}" shortcut must be one of ${SHORTCUT_BUTTON_KEYS.join(", ")}`
+          );
+        }
+      }
+    }
     if (seen.has(name)) throw new TypeError(`button name "${name}" is duplicated`);
     seen.add(name);
     const entry = { name, prompt, autoSend: item.autoSend === true, newSession };
@@ -164,6 +194,8 @@ export function normalizeButtons(raw, options = {}) {
     if (item.prepend === true) entry.prepend = true;
     if (model !== undefined) entry.model = model;
     if (preState !== undefined) entry.preState = preState;
+    /* 快捷键键序恒在尾部（preState 之后）：无键条目序列化逐字节不变。 */
+    if (shortcut !== undefined) entry.shortcut = shortcut;
     out.push(entry);
     if (out.length > MAX_BUTTONS) throw new TypeError(`buttons exceeds ${MAX_BUTTONS} entries`);
   }
@@ -173,8 +205,9 @@ export function normalizeButtons(raw, options = {}) {
 /**
  * 浏览器半区的**容错投影**（读面，不抛错）：非法/残缺条目直接跳过，条目重建走
  * `normalizeButtons` 的同款键序与条件键口径（单条失败即丢弃该条，SHALL NOT 波及其余）。
- * 读面容错模式（`tolerateUnknownPreState`）保留未知 `preState` 原值——设置页据此
- * 「原样回显标不可用」，动作条门控对未知状态恒不命中（自然隐藏）。
+ * 读面容错模式（`tolerateUnknownPreState` / `tolerateUnknownShortcut`）保留未知
+ * `preState` / 池外 `shortcut` 原值——设置页据此「原样回显标不可用」，动作条门控/分发
+ * 对未知值恒不命中（自然隐藏 / 不可触发）。
  * @param {unknown} section 设置节（`scope.getSnapshot().value` 或 `/config` 的 value）
  * @returns {Array<object>}
  */
@@ -186,7 +219,7 @@ export function buttonsSectionOf(section) {
     if (typeof item.name !== "string" || typeof item.prompt !== "string") continue;
     if (!item.name.trim() || !item.prompt.trim()) continue;
     try {
-      const [entry] = normalizeButtons([item], { tolerateUnknownPreState: true });
+      const [entry] = normalizeButtons([item], { tolerateUnknownPreState: true, tolerateUnknownShortcut: true });
       if (entry) out.push(entry);
     } catch {
       /* 单条非法：跳过（读面容错） */
@@ -221,6 +254,8 @@ export function actionButtonVisible(button, target) {
  * 设置命名空间 schema（宿主 `settings.register` 用；形状对齐 schemastery 最小契约：
  * 可调用 + type/dict + toJSON）。本插件不注册宿主 settings 命名空间（design D7 的
  * 「自营 API 首选」决策），此函数保留给宿主设置服务 fallback 的完整性校验与冒烟。
+ * 条目可选键：`jumpNewSession` / `prepend` / `model` / `preState` / `shortcut`
+ * （add-cosmos-shortcuts 3.1 尾部追加；口径由 `normalizeButtons` 单条枚举校验）。
  * @returns {(value: unknown) => { buttons: Array<object> }}
  */
 export function buttonsSchema() {

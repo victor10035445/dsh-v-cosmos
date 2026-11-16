@@ -38,11 +38,15 @@ try {
   /** 可变工作区清单（注册/注销对账测试需要运行时增删行）。 */
   let workspaceRows = [{ id: "ws1", title: "WS One", path: wsRoot, sessionIds: [SESSION_ID] }];
   const registered = [];
+  /** ctx.effect 返回的清理函数（插件卸载清场断言用）。 */
+  const cleanups = [];
   const ctx = {
     logger: { warn() {} },
     effect(fn) {
       registered.push(fn);
-      return fn();
+      const off = fn();
+      if (typeof off === "function") cleanups.push(off);
+      return off;
     },
     webServer: {
       register(def) {
@@ -84,6 +88,13 @@ try {
   const sseRes = stubRes(sseWrites);
   /** SSE 数据帧计数（注册对账断言：指纹一致 → 无新增 proposals-changed 广播）。 */
   const dataFrameCount = () => sseWrites.filter((line) => line.trim().startsWith("data: ")).length;
+  /** SSE 数据帧解析（任意 sink）。 */
+  const framesOf = (sink) => sink
+    .map((line) => line.trim())
+    .filter((line) => line.startsWith("data: "))
+    .map((line) => JSON.parse(line.slice(6)));
+  /** 占位计数帧（add-cosmos-standalone-window D2）。 */
+  const presenceFrames = (sink) => framesOf(sink).filter((frame) => frame.type === "cosmos-presence-changed");
   await capturedHandler({ method: "GET", url: "/api/dsh-v-cosmos/events" }, sseRes);
   await capturedHandler({ method: "GET", url: "/api/dsh-v-cosmos/scene" }, stubRes([]));
   await capturedHandler({ method: "GET", url: "/api/dsh-v-cosmos/scene" }, stubRes([]));
@@ -319,6 +330,51 @@ try {
     ], "两节并存各自独立");
   }
 
+  /* ── 独立窗口占位（add-cosmos-standalone-window 1.1–1.3 / design D2）：
+      `role=cosmos-window` 连接登记占位 → 全量计数帧；第二条 → count 2（双窗容忍）；
+      连接断开（= 关窗）→ 清位并广播；无 role 连接（主壳）不登记但同样收到计数。 ── */
+  {
+    const winSink = [];
+    const win = stubSseRes(winSink);
+    await capturedHandler({ method: "GET", url: "/api/dsh-v-cosmos/events?role=cosmos-window" }, win);
+    assert.equal(presenceFrames(winSink).at(-1)?.count, 1, "独立窗口连接建立 → 全量计数 1（重连自愈同路径）");
+
+    const win2Sink = [];
+    const win2 = stubSseRes(win2Sink);
+    await capturedHandler({ method: "GET", url: "/api/dsh-v-cosmos/events?role=cosmos-window" }, win2);
+    await drain();
+    assert.equal(presenceFrames(winSink).at(-1)?.count, 2, "第二个独立窗口 → 既有客户端收到 count 2（双窗提示判据）");
+    assert.equal(presenceFrames(win2Sink).at(-1)?.count, 2, "新连接收到当前计数");
+
+    const mainSink = [];
+    const mainRes = stubSseRes(mainSink);
+    await capturedHandler({ method: "GET", url: "/api/dsh-v-cosmos/events" }, mainRes);
+    await drain();
+    assert.equal(presenceFrames(mainSink).at(-1)?.count, 2, "主壳（无 role）连接不登记占位、但收到当前计数（座位禁用判据）");
+
+    /* 关窗 = 连接断开：清位 + 广播（主壳自动解锁） */
+    win2.emitClose();
+    await drain();
+    assert.equal(presenceFrames(winSink).at(-1)?.count, 1, "一条窗口关闭 → 占位回落 1 并广播");
+    win.emitClose();
+    await drain();
+    assert.equal(presenceFrames(mainSink).at(-1)?.count, 0, "全部窗口关闭 → 占位归零（无崩溃残留）");
+    mainRes.emitClose();
+  }
+
+  /* ── 插件卸载清场（1.3）：dispose 归还 SSE 流并把占位归零（新连接从零起算） ── */
+  for (const off of cleanups.reverse()) {
+    try {
+      off();
+    } catch {
+      /* 单个清理失败不影响其余（与插件 dispose 纪律同源） */
+    }
+  }
+  const afterDisposeSink = [];
+  await capturedHandler({ method: "GET", url: "/api/dsh-v-cosmos/events?role=cosmos-window" }, stubSseRes(afterDisposeSink));
+  await drain();
+  assert.equal(presenceFrames(afterDisposeSink).at(-1)?.count, 1, "卸载清场后占位从零起算（dispose 端流即归零）");
+
   /* ── 未知路由 404 ── */
   const nfRes = captureJson();
   await capturedHandler({ method: "GET", url: "/api/dsh-v-cosmos/nope" }, nfRes.res);
@@ -341,6 +397,25 @@ function stubRes(sink) {
     },
     end() {},
     on() {}
+  };
+}
+
+/** SSE 连接桩（add-cosmos-standalone-window 1.x）：记录写入并暴露 close 事件派发
+    （真实 Node `res` 的 close 在连接断开/窗口关闭时触发一次）。 */
+function stubSseRes(sink) {
+  const closeHandlers = [];
+  return {
+    writeHead() {},
+    write(chunk) {
+      sink.push(String(chunk));
+    },
+    end() {},
+    on(event, fn) {
+      if (event === "close" && typeof fn === "function") closeHandlers.push(fn);
+    },
+    emitClose() {
+      for (const fn of closeHandlers.splice(0)) fn();
+    }
   };
 }
 

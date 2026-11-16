@@ -18,18 +18,23 @@
  * 每按钮可选 `jumpNewSession`（「执行后跳转」，缺省 true）：行内可切换、参与暂存-保存。
  * 每按钮可选 `preState`（「前置状态」，缺省不落键）：行内下拉、参与暂存-保存；proto 行
  * 「提示词在前」不落键（发送链路恒忽略 prepend）。
+ * 每按钮可选 `shortcut`（add-cosmos-shortcuts 3.3：键盘快捷键，缺省不落键）：行内下拉，
+ * 候选 = 按钮键域枚举（`shortcuts.mjs`，与设置页下拉同源）；漂移值原样回显「不可用」并
+ * 由 `buttonIssue` / `constButtonIssue` 拒绝保存；**跨域并集查重**由注入的 `crossIssue`
+ * 回调在保存门（publish 计算的 invalid / save 前置判据）执行（`shortcutsIssue` 风格）。
  */
 import { MAX_BUTTONS, PRE_STATES } from "./buttons.mjs";
 import { MAX_CONST_BUTTONS } from "./const-buttons.mjs";
 import { buttonModelOf } from "./actions.mjs";
+import { isButtonShortcut } from "./shortcuts.mjs";
 
 /**
  * 按钮草稿条目构造（键序固定 name → prompt → autoSend → newSession → jumpNewSession →
- * prepend → model → preState；`buttonsEqual` 的 JSON 串比较依赖键序稳定）。与宿主
+ * prepend → model → preState → shortcut；`buttonsEqual` 的 JSON 串比较依赖键序稳定）。与宿主
  * 归一化同口径：未勾选前插 MUST NOT 输出 prepend 键、跳转开启（缺省）MUST NOT 输出
  * jumpNewSession 键、未绑定 MUST NOT 输出 model 键、未选前置状态 MUST NOT 输出
- * preState 键。`preState: "proto"` 行：`newSession` 恒 false（星胚动作固定发往探索
- * 会话），且 `prepend` 无语义（星胚消息无 @引用）→ 草稿不落该键。
+ * preState 键、未选快捷键 MUST NOT 输出 shortcut 键。`preState: "proto"` 行：`newSession`
+ * 恒 false（星胚动作固定发往探索会话），且 `prepend` 无语义（星胚消息无 @引用）→ 草稿不落该键。
  * 漂移值（枚举外字符串）原样保留在草稿（设置页回显「不可用」，保存由 `buttonIssue` 拒绝）。
  * @param {object} source
  * @returns {object}
@@ -51,6 +56,9 @@ export function buttonDraftOf(source) {
   const model = buttonModelOf(source?.model);
   if (model !== undefined) entry.model = model;
   if (rawPreState !== undefined) entry.preState = rawPreState;
+  /* 快捷键（add-cosmos-shortcuts 3.3）：仅非空字符串落键；漂移值原样保留供回显。 */
+  const rawShortcut = typeof source?.shortcut === "string" && source.shortcut.trim() ? source.shortcut.trim() : undefined;
+  if (rawShortcut !== undefined) entry.shortcut = rawShortcut;
   return entry;
 }
 
@@ -78,15 +86,24 @@ export function buttonIssue(list) {
     if (!isProto && button?.newSession !== undefined && button?.newSession !== null && button?.newSession !== true) {
       return "buttonNewSessionFixed";
     }
+    /* 快捷键：仅按钮键域枚举内字符串合法（漂移值可回显，但保存 MUST 拒绝）；空串按
+       「无」（未提供）处理，与宿主 normalize 口径一致。 */
+    const shortcut = button?.shortcut;
+    if (shortcut !== undefined && shortcut !== null) {
+      if (typeof shortcut !== "string") return "buttonShortcutInvalid";
+      const trimmed = shortcut.trim();
+      if (trimmed !== "" && !isButtonShortcut(trimmed)) return "buttonShortcutInvalid";
+    }
   }
   if ((Array.isArray(list) ? list : []).length > MAX_BUTTONS) return "tooManyButtons";
   return "";
 }
 
 /**
- * 星座按钮草稿条目构造（键序固定 name → prompt → autoSend → newSession → model；
- * **恒无 prepend 键**——星座动作无「提示词在前」语义）。与 `normalizeConstButtons` 同口径：
- * 未绑定 MUST NOT 输出 model 键。
+ * 星座按钮草稿条目构造（键序固定 name → prompt → autoSend → newSession → model →
+ * shortcut；**恒无 prepend 键**——星座动作无「提示词在前」语义）。与
+ * `normalizeConstButtons` 同口径：未绑定 MUST NOT 输出 model 键、未选快捷键 MUST NOT
+ * 输出 shortcut 键（漂移值原样保留供回显）。
  * @param {object} source
  * @returns {object}
  */
@@ -100,13 +117,15 @@ export function constButtonDraftOf(source) {
   };
   const model = buttonModelOf(source?.model);
   if (model !== undefined) entry.model = model;
+  const rawShortcut = typeof source?.shortcut === "string" && source.shortcut.trim() ? source.shortcut.trim() : undefined;
+  if (rawShortcut !== undefined) entry.shortcut = rawShortcut;
   return entry;
 }
 
 /**
  * 校验一份星座按钮草稿；返回 "" 表示通过，否则返回错误词典键。
  * 额外口径：`prepend` 键不允许出现（spec「prepend 键拒绝」——UI 不产生该字段，
- * 但草稿可能来自加载的配置层，故在保存前显式拦截）。
+ * 但草稿可能来自加载的配置层，故在保存前显式拦截）；`shortcut` 仅按钮键域枚举合法。
  * @param {Array<object>} list
  * @returns {string}
  */
@@ -121,6 +140,12 @@ export function constButtonIssue(list) {
     if (button?.prepend !== undefined) return "constButtonPrependRejected";
     if (button?.newSession !== undefined && button?.newSession !== null && button?.newSession !== true) {
       return "constButtonNewSessionFixed";
+    }
+    const shortcut = button?.shortcut;
+    if (shortcut !== undefined && shortcut !== null) {
+      if (typeof shortcut !== "string") return "constButtonShortcutInvalid";
+      const trimmed = shortcut.trim();
+      if (trimmed !== "" && !isButtonShortcut(trimmed)) return "constButtonShortcutInvalid";
     }
   }
   if ((Array.isArray(list) ? list : []).length > MAX_CONST_BUTTONS) return "tooManyConstButtons";
@@ -179,8 +204,10 @@ const buttonsEqual = (a, b) => JSON.stringify(a) === JSON.stringify(b);
  * @param {object} scope 归一后的设置作用域（通道作用域 / 合成只读）
  * @param {{section?: string, supportsPrepend?: boolean, supportsJump?: boolean,
  *          supportsPreState?: boolean, draftOf?: Function, issue?: Function,
- *          maxEntries?: number}} [profile]
- *        节键与草稿/校验口径
+ *          crossIssue?: Function, maxEntries?: number}} [profile]
+ *        节键与草稿/校验口径；`crossIssue(draft)` 为可选**跨域附加校验**
+ *        （add-cosmos-shortcuts 3.3：快捷键并集查重，返回 "" 或词典键），与单列表
+ *        `issue` 同一保存门（publish 的 invalid 判定与 save 前置判据共用）。
  * @returns {object} face：getSnapshot/subscribe + add/remove/edit/move/reset/save/discard/dispose
  */
 export function createButtonSettingsController(scope, profile) {
@@ -191,12 +218,27 @@ export function createButtonSettingsController(scope, profile) {
   const supportsPreState = raw.supportsPreState !== false;
   const draftOf = typeof raw.draftOf === "function" ? raw.draftOf : DEFAULT_PROFILE.draftOf;
   const issue = typeof raw.issue === "function" ? raw.issue : DEFAULT_PROFILE.issue;
+  const crossIssue = typeof raw.crossIssue === "function" ? raw.crossIssue : null;
   const maxEntries = Number.isInteger(raw.maxEntries) && raw.maxEntries > 0 ? raw.maxEntries : DEFAULT_PROFILE.maxEntries;
   const listeners = new Set();
   let state = null;
   let staged = null; // Array | null：按钮草稿；null = 跟随生效值
   let saving = false;
   let failed = false;
+
+  /** 单列表校验 + 跨域附加校验（后者缺席/抛错按无附加错误处理，不阻断既有校验链）。 */
+  const issueOf = (draft) => {
+    const local = issue(draft);
+    if (local !== "") return local;
+    if (crossIssue === null) return "";
+    try {
+      const extra = crossIssue(draft);
+      return typeof extra === "string" ? extra : "";
+    } catch (error) {
+      console.error("[dsh-v-cosmos] button cross-issue failed:", error);
+      return "";
+    }
+  };
 
   /** 读取视图里**本控制器所属节**的列表并投影为草稿（只读自己的节）。 */
   const listOf = (view) => {
@@ -210,7 +252,7 @@ export function createButtonSettingsController(scope, profile) {
     const snapshot = scope.getSnapshot();
     const effectiveButtons = listOf(snapshot?.value);
     const draft = staged === null ? effectiveButtons.map((button) => draftOf(button)) : staged;
-    const invalidReason = issue(draft);
+    const invalidReason = issueOf(draft);
     const dirty = staged !== null && !buttonsEqual(staged, effectiveButtons);
     const user = snapshot?.user;
     state = Object.freeze({
@@ -275,11 +317,11 @@ export function createButtonSettingsController(scope, profile) {
       commitDraft(draftBase().filter((_button, i) => i !== index));
     },
     /**
-     * 编辑第 index 条的字段（name/prompt/autoSend/jumpNewSession/prepend/model/preState）。
-     * `model`/`prepend`/`jumpNewSession`/`preState` 走 draftOf 特判：取消勾选/解绑/清空
-     * MUST 删键（否则草稿残留显式 false/undefined，与存储条目不再逐字同形，dirty 永不回清）。
-     * `prepend`/`jumpNewSession`/`preState` 在对应 `supports*: false` 的 profile
-     * （星座动作）里是空操作。
+     * 编辑第 index 条的字段（name/prompt/autoSend/jumpNewSession/prepend/model/preState/shortcut）。
+     * `model`/`prepend`/`jumpNewSession`/`preState`/`shortcut` 走 draftOf 特判：取消勾选/
+     * 解绑/清空 MUST 删键（否则草稿残留显式 false/undefined，与存储条目不再逐字同形，
+     * dirty 永不回清）。`prepend`/`jumpNewSession`/`preState` 在对应 `supports*: false` 的
+     * profile（星座动作）里是空操作。
      */
     editButton(index, field, value) {
       if (field === "prepend" && !supportsPrepend) return;
@@ -290,6 +332,9 @@ export function createButtonSettingsController(scope, profile) {
         if (field === "model") return draftOf({ ...button, model: value });
         if (field === "prepend") return draftOf({ ...button, prepend: value });
         if (field === "preState") return draftOf({ ...button, preState: value });
+        /* 快捷键（add-cosmos-shortcuts 3.3）：值 = 规范形字符串，`undefined`/`""` = 无
+           （草稿删键，存储最小形）；漂移值原样保留供回显。 */
+        if (field === "shortcut") return draftOf({ ...button, shortcut: value });
         /* 锁定项：newSession 方向的唯一决定因素是 preState（proto → false，其余 → true）。 */
         if (field === "newSession") return draftOf(button);
         return draftOf({ ...button, [field]: value });
@@ -320,11 +365,21 @@ export function createButtonSettingsController(scope, profile) {
     /** 写全部暂存草稿；失败保留草稿供修正（宿主是唯一裁决者）。 */
     async save() {
       const current = state;
-      if (!current || !current.writable || current.invalid || !current.dirty) return false;
+      if (!current || !current.writable || !current.dirty) return false;
+      /* 保存前**同步重算**校验（add-cosmos-shortcuts 3.3/D9）：跨域冲突可能来自另一列表
+         的草稿变化——controller 的 `invalid` 只在本控制器 publish 时刷新，可能滞后。此处
+         以当前草稿现算 `issueOf`，冲突/非法一律拒绝并 publish 出错误态（UI 行内提示）。 */
+      const before = draftBase();
+      const recomputed = issueOf(before);
+      if (recomputed !== "") {
+        failed = false;
+        publish();
+        return false;
+      }
       saving = true;
       publish();
       try {
-        const entries = draftBase().map((button) => {
+        const entries = before.map((button) => {
           /* 前置状态：仅本 profile 支持时落键；空值不落键（存储最小形）。 */
           const preState = supportsPreState && typeof button.preState === "string" && button.preState.trim()
             ? button.preState.trim()
@@ -343,6 +398,9 @@ export function createButtonSettingsController(scope, profile) {
           const model = buttonModelOf(button.model);
           if (model !== undefined) entry.model = model;
           if (preState !== undefined) entry.preState = preState;
+          /* 快捷键（add-cosmos-shortcuts 3.3）：键序尾部；无键不落（存储最小形）。 */
+          const shortcut = typeof button.shortcut === "string" ? button.shortcut.trim() : "";
+          if (shortcut !== "") entry.shortcut = shortcut;
           return entry;
         });
         await scope.set(section, entries);

@@ -10,7 +10,7 @@ metadata:
   contractVersion: "1"
 ---
 
-汇总提案最终主要交付内容，在提案目录创建archive.md文档，并使用 /openspec-archive-change 技能，同步spec（包括delta 如有需要）归档这个提案。
+汇总提案最终主要交付内容，在提案目录创建archive.md文档，并使用 C:\project\dsh-plugin-v\dsh-v-skill-links\.trae\skills\openspec-archive-change\SKILL.md 技能，同步spec（包括delta 如有需要）归档这个提案。
 
 然后按以下流程调整提案状态：
 **状态步骤：无需动作**

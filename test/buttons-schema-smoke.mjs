@@ -244,4 +244,71 @@ const throwsWith = (fn, pattern, label) => {
   assert.throws(() => schema({ buttons: "x" }), /must be an array/, "节非数组 → 抛错");
 }
 
+/* ── 11. 快捷键可选键（add-cosmos-shortcuts 3.1/3.4 / spec cosmos-actions「按钮配置模型」）：
+      合法键落盘、键序尾部、缺省不落键、池外拒绝、无键序列化逐字节不变 ── */
+{
+  /* 合法键落盘（spec 场景「合法 shortcut 被保存」） */
+  const [withKey] = normalizeButtons([{ name: "审查", prompt: "p", shortcut: "Digit1" }]);
+  assert.equal(withKey.shortcut, "Digit1", "Digit1 落键");
+  assert.deepEqual(
+    Object.keys(withKey),
+    ["name", "prompt", "autoSend", "newSession", "shortcut"],
+    "shortcut 追加尾部（无 preState 时紧随 newSession）"
+  );
+  /* 键序：preState 之后（全键最大值） */
+  const [full] = normalizeButtons([{
+    name: "全键",
+    prompt: "p",
+    autoSend: true,
+    jumpNewSession: false,
+    prepend: true,
+    model: { provider: "x", model: "y" },
+    preState: "reviewed",
+    shortcut: "F4"
+  }]);
+  assert.deepEqual(
+    Object.keys(full),
+    ["name", "prompt", "autoSend", "newSession", "jumpNewSession", "prepend", "model", "preState", "shortcut"],
+    "键序固定：shortcut 恒在尾部（preState 之后）"
+  );
+  /* trim 后落键 */
+  assert.equal(normalizeButtons([{ name: "a", prompt: "p", shortcut: " F8 " }])[0].shortcut, "F8", "trim 后落键");
+  /* 全部按钮键域值可用 */
+  for (const value of ["Digit0", "Digit9", "F2", "F4", "F8", "F9"]) {
+    assert.equal(normalizeButtons([{ name: "a", prompt: "p", shortcut: value }])[0].shortcut, value, "按钮键域值：" + value);
+  }
+  /* 缺省/null/空串 → 不落键（存储最小形） */
+  for (const absent of [undefined, null, "", "   "]) {
+    const [entry] = normalizeButtons([{ name: "a", prompt: "p", shortcut: absent }]);
+    assert.equal("shortcut" in entry, false, "缺省不落键：" + JSON.stringify(absent));
+  }
+  /* 无键序列化逐字节不变（spec 场景「无 shortcut 序列化逐字节不变」） */
+  const legacy = { name: "旧", prompt: "p", autoSend: true, newSession: true, model: { provider: "x", model: "y" } };
+  assert.equal(
+    JSON.stringify(normalizeButtons([legacy])[0]),
+    JSON.stringify({ name: "旧", prompt: "p", autoSend: true, newSession: true, model: { provider: "x", model: "y" } }),
+    "既有条目（无 shortcut）序列化逐字节不变"
+  );
+  /* 池外拒绝（spec 场景「非法 shortcut 被拒绝」）：字母 / 组合键 / 数字 / 保留键 */
+  for (const bad of ["KeyQ", "Ctrl+KeyQ", "Backquote", "Escape", "F1", "F3", "F5", "F12", "Space", 1, {}, true]) {
+    assert.throws(
+      () => normalizeButtons([{ name: "a", prompt: "p", shortcut: bad }]),
+      /shortcut must be (a string|one of)/,
+      "池外/非字符串拒绝：" + String(bad)
+    );
+  }
+  /* 读面容错投影：池外快捷键**原样保留**（设置页回显「不可用」，分发器不可触发） */
+  const projected = buttonsSectionOf({
+    buttons: [
+      { name: "ok", prompt: "p", shortcut: "Digit3" },
+      { name: "drift", prompt: "p", shortcut: "KeyQ" },
+      { name: "ok2", prompt: "q" }
+    ]
+  });
+  assert.equal(projected.length, 3, "池外快捷键条目保留（漂移回显，非静默丢弃）");
+  assert.equal(projected[0].shortcut, "Digit3", "读面保留合法快捷键");
+  assert.equal(projected[1].shortcut, "KeyQ", "读面容错保留漂移原值（设置页「不可用」）");
+  assert.equal("shortcut" in projected[2], false, "无键条目不落键");
+}
+
 console.log("buttons-schema-smoke: all assertions passed");

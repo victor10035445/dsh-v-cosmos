@@ -329,10 +329,12 @@ const engineSource = readFileSync(new URL("../src/cosmos/engine.mjs", import.met
   assert.ok(engineSource.includes("setSelection({ kind: kind, ws: ws, data: body });"), "同星座钻取态立即选中");
   assert.ok(engineSource.includes("dive(ws, body);"), "银河/他星座 → dive 落地选中");
 
-  /* Esc 分层：清空搜索 > 收起面板 > 退全屏/关页；折叠态跳过本层 */
-  const escStart = clientSource.indexOf("if (engine?.consumeEscape?.()) return;");
+  /* Esc 分层：清空搜索 > 收起面板 > 退全屏/关页；折叠态跳过本层。
+     add-cosmos-shortcuts 5.1 起关闭键参数化（canonical 匹配 + 配置经模块 store 读）。 */
+  const escStart = clientSource.indexOf("if (engine?.consumeEscape?.()) {");
   const escEnd = clientSource.indexOf('window.addEventListener("keydown", onKey);', escStart);
   const escBody = clientSource.slice(escStart, escEnd);
+  assert.ok(escStart > 0 && escBody.length > 0, "关闭链分支切片可定位");
   assert.ok(escBody.indexOf("if (queryRef.current.trim())") < escBody.indexOf("if (sessionPanelOpenOf())"), "清空搜索层先于收起面板层");
   assert.ok(escBody.indexOf("if (sessionPanelOpenOf())") < escBody.indexOf("if (fullscreen)"), "收起面板层先于退全屏/关页");
   assert.ok(escBody.includes("setSessionPanelOpen(false);"), "Esc 收起走同一 action 通道（含持久化）");
@@ -686,12 +688,14 @@ function constFloatBody(source) {
   assert.ok(clientSource.includes('window.addEventListener("keydown", onKey, true);'), "Esc 最高优先层（capture）");
   assert.ok(clientSource.includes("if (armed === null || typeof window === \"undefined\") return undefined;"), "浮窗未打开 → 不注册（既有分层零变化）");
   const floatBody = clientSource.slice(clientSource.indexOf("function ConstellationFloatDock(props)"), clientSource.indexOf("/* ------------------------------------------------------------------ *\n * 星胚动作消费条目"));
-  assert.ok(/event\.key !== "Escape"[\s\S]*?event\.stopPropagation\(\)/.test(floatBody), "浮窗 Esc 阻断冒泡（不触发钻取返回/清搜索/关页）");
-  /* Esc 组字守卫口径统一（add-cosmos-const-float-send-key 2.1）：window capture 回调收到的
+  /* add-cosmos-shortcuts 5.1/D3：收卡键参数化 = 全局关闭键的 canonical 匹配（缺省 Esc），
+     命中后 capture 阶段阻断冒泡（不触发钻取返回/清搜索/关页）。 */
+  assert.ok(/shortcutMatches\(event, closeKey\)[\s\S]*?event\.stopPropagation\(\)/.test(floatBody), "浮窗收卡键（配置键）阻断冒泡（不触发钻取返回/清搜索/关页）");
+  /* 组字守卫口径统一（add-cosmos-const-float-send-key 2.1）：window capture 回调收到的
      本就是原生事件 → 读原生 `isComposing`；补 `keyCode === 229` 与 Enter 守卫/宿主同源。 */
   assert.ok(
-    floatBody.includes('if (event.key !== "Escape" || event.isComposing || event.keyCode === 229) return;'),
-    "Esc 守卫读原生 isComposing + keyCode 229 双保险（口径与 Enter 守卫、宿主 isComposingEvent 同源）"
+    floatBody.includes("if (event.isComposing === true || event.keyCode === 229) return;"),
+    "收卡键守卫读原生 isComposing + keyCode 229 双保险（口径与 Enter 守卫、宿主 isComposingEvent 同源）"
   );
   assert.ok(!/event\.nativeEvent\?\.isComposing/.test(floatBody.slice(floatBody.indexOf("const onKey = (event) => {"), floatBody.indexOf("window.addEventListener(\"keydown\", onKey, true);"))), "Esc 守卫不读合成事件字段（原生监听器里 nativeEvent 恒 undefined 的死读取）");
   assert.ok(!/cosmosOpenStore/.test(floatBody), "浮窗不触碰整页开合 store（不关页）");
@@ -733,16 +737,19 @@ function constFloatBody(source) {
   assert.ok(keydownBody.indexOf("isComposing") < keydownBody.indexOf("event.preventDefault();"), "组字守卫早退于 preventDefault 之前（组字回车只上屏）");
   assert.ok(/event\.preventDefault\(\);[\s\S]*?send\(\);/.test(keydownBody), "Enter = 复用 send()（同一守卫 + 发送即关，零新分支）");
   assert.ok(!/setArmed\(null\)/.test(keydownBody), "Enter 路径零新增关闭字面量（发送经 close() 收敛）");
-  /* hint 可发现（zh/en 两处字典 + tr() fallback 同源文案） */
+  /* hint 可发现（zh/en 两处字典 + tr() fallback 同源文案；add-cosmos-shortcuts 6.2 起
+     动态标注当前生效语音键/收卡键占位） */
   assert.ok(
-    clientSource.includes('"cosmos.constFloat.hint": "Enter 发送 · Shift+Enter 换行 · 发送后浮窗关闭；关闭或 Esc 保留草稿不发送。"'),
-    "词典 zh：hint 标注 Enter 发送 / Shift+Enter 换行"
+    clientSource.includes('"cosmos.constFloat.hint": "Enter 发送 · Shift+Enter 换行 · {voice} 语音 · {close} 关闭浮窗（保留草稿不发送）"'),
+    "词典 zh：hint 标注 Enter 发送 / Shift+Enter 换行 / 语音键 / 收卡键占位"
   );
-  assert.ok(clientSource.includes('"cosmos.constFloat.hint": "Enter sends · Shift+Enter starts a new line'), "词典 en：hint 标注 Enter 发送 / Shift+Enter 换行");
+  assert.ok(clientSource.includes('"cosmos.constFloat.hint": "Enter sends · Shift+Enter starts a new line · {voice} starts voice · {close} closes the composer (draft kept)"'), "词典 en：hint 标注 Enter 发送 / Shift+Enter 换行（成对）");
   assert.ok(
-    clientSource.includes('tr("cosmos.constFloat.hint", "Enter 发送 · Shift+Enter 换行 · 发送后浮窗关闭；关闭或 Esc 保留草稿不发送。")'),
-    "tr() fallback 同步（未注入 locale 键时降级文案仍标注快捷键）"
+    clientSource.includes('"Enter 发送 · Shift+Enter 换行 · {voice} 语音 · {close} 关闭浮窗（保留草稿不发送）"'),
+    "tr() fallback 同步（未注入 locale 键时降级文案仍标注快捷键占位）"
   );
+  assert.ok(clientSource.includes('.replace("{voice}", shortcutLabelOf(voiceKey))'), "hint 动态标注当前生效语音键（改绑即时生效）");
+  assert.ok(clientSource.includes('.replace("{close}", shortcutLabelOf(closeKey))'), "hint 动态标注当前生效收卡键");
 }
 
 /* ── 11. 源码锚点：通道标记隔离（spec「标记互不误食」；rework：浮动原生窗口通道拆除） ── */
@@ -780,7 +787,8 @@ function constFloatBody(source) {
   assert.ok(!clientSource.includes("renderFactorySlot(\"conversation.content\""), "工厂递归调用零残留");
 }
 
-/* ── 11d. 源码锚点：浮窗增强（rework 方案 2：模型下拉 + 语音转写借官方服务层） ── */
+/* ── 11d. 源码锚点：浮窗增强（rework 方案 2 模型下拉 + 语音转写；
+   fix-cosmos-const-float-voice 录音格式 / 信封 / 置灰 / 资源生命周期锚点随宿主真值改写） ── */
 {
   /* 注入面：浮窗条目增注入 models + speech face；apply 层语音桥装配。 */
   assert.ok(floatEntryAfterEnhancements(), "浮窗条目注入切片可达");
@@ -799,17 +807,67 @@ function constFloatBody(source) {
   assert.ok(dockBody.includes("pickModelByKey"), "模型选择处理器");
   assert.ok(dockBody.includes("pickEffort"), "级别下拉处理器（默认最高级，settings 页先例）");
   assert.ok(dockBody.includes("constFloat.modelDefault"), "「会话当前模型」缺省项");
-  assert.ok(dockBody.includes("new MediaRecorder(stream)"), "录音 = MediaRecorder 默认容器（与官方 createRecording 同构）");
-  assert.ok(dockBody.includes("speech.transcribe(audioBase64)"), "转写经语音桥 face");
-  assert.ok(dockBody.includes('inputActions.setDraft(draft + glue + text)'), "转写文本追加写回草稿（既有内容零改写）");
+  /* ── 录音格式（fix-cosmos-const-float-voice 1.1 / spec「录音产物为 canonical WAV」）──
+     MediaRecorder 只承担采集；上送前 MUST 解码 → 16 kHz 单声道重采样 → PCM16 WAV →
+     canonical base64（宿主 `validateWave` 硬校验）。MUST NOT 再把容器原样上送。 */
+  assert.ok(dockBody.includes("new MediaRecorder(stream)"), "采集 = MediaRecorder 默认容器（仅采集，格式不上送）");
+  assert.ok(dockBody.includes("await context.decodeAudioData(await blob.arrayBuffer())"), "停止后先解码容器（官方 Recording.stop 同式）");
+  assert.ok(
+    dockBody.includes("new OfflineAudioContext(1, Math.max(1, Math.floor(decoded.duration * 16000)), 16000)"),
+    "16 kHz 单声道重采样（样本数 floor、下限 1）"
+  );
+  assert.ok(dockBody.includes("const encodeWave = (samples) =>"), "PCM16 WAV 编码器在位（浮窗侧局部工具）");
+  assert.ok(
+    dockBody.includes("view.setUint32(24, 16000, true)")
+      && dockBody.includes("view.setUint16(22, 1, true)")
+      && dockBody.includes("view.setUint16(34, 16, true)")
+      && dockBody.includes("view.setUint16(32, 2, true)"),
+    "WAV 头钉死 16 kHz / 单声道 / PCM16（宿主 validateWave 口径）"
+  );
+  assert.ok(dockBody.includes("encodeWave(resampled.getChannelData(0))"), "重采样样本 → encodeWave");
+  assert.ok(dockBody.includes("speech.transcribe(bytesToBase64(wave))"), "转写经语音桥 face 上送 canonical base64");
+  assert.ok(!dockBody.includes("audio/webm"), "容器 mime 字面量零残留（不再以容器格式直送）");
+  /* ── 信封消费（1.2 / spec「转写失败如实呈现」）：RemoteResult = { ok, value | error } ── */
+  assert.ok(dockBody.includes("result.ok !== true"), "结果按 RemoteResult 信封判定");
+  assert.ok(dockBody.includes("result.error.message"), "失败取 error.message 呈现（不再误报为未识别到语音）");
+  assert.ok(dockBody.includes("result.value.text"), "成功取 value.text");
+  /* ── 落稿基准（1.4 / spec「转写成功落稿不丢字」）：最新草稿镜像，非点击时闭包快照 ── */
+  assert.ok(dockBody.includes("const draftRef = useRef(draft)"), "草稿镜像 ref 声明");
+  assert.ok(dockBody.includes("draftRef.current = draft"), "draftRef 随草稿同步");
+  assert.ok(dockBody.includes("inputActions.setDraft(draftRef.current + glue + text)"), "落稿以最新草稿为基准只追加");
+  assert.ok(!dockBody.includes("inputActions.setDraft(draft + glue + text)"), "陈旧 draft 闭包基线零残留");
+  /* ── 资源生命周期（1.3 / spec「关窗释放麦克风」「设备中断复位」）── */
+  assert.ok(dockBody.includes("const releaseVoice = () =>"), "释放函数在位（只释放、不转写）");
+  assert.ok(dockBody.includes("voiceDisposedRef.current = true"), "释放路径先置 disposal 标志");
+  assert.ok(dockBody.includes("if (disposed) return;"), "onstop 开头释放守卫早退（兜底 stop 不转写）");
+  assert.ok(dockBody.includes("run !== voiceRunRef.current"), "在途转写 / 迟到录音的代次守卫");
+  assert.ok(dockBody.includes("return () => releaseVoice();"), "armed 转空 / 卸载兜底释放 effect");
+  assert.ok(dockBody.includes('window.addEventListener("blur", halt)'), "录音中失焦兜底释放");
+  assert.ok(dockBody.includes('doc?.addEventListener("visibilitychange", onVisibility)'), "切后台兜底释放");
+  assert.ok(dockBody.includes('track.addEventListener("ended", onTrackEnded)'), "设备中断走同一复位");
+  /* ── 可见性三分支（2.1/2.2 / spec「未启用置灰呈现」「置灰点击引导」）──
+     不可用 = 置灰但可点（aria-disabled + data-state），MUST NOT 原生 disabled——disabled
+     钮不派发 click，提示与引导将永远无法触达。 */
+  const voiceBranchStart = dockBody.indexOf("语音钮三分支");
+  assert.ok(voiceBranchStart > 0, "语音钮可见性分支（三分支）在位");
+  const voiceBranch = dockBody.slice(voiceBranchStart, dockBody.indexOf("dsh-cosmos-const-float-hint", voiceBranchStart));
+  assert.ok(voiceBranch.includes("data-state={voiceState}"), "可用 → 正常状态机钮");
+  assert.ok(voiceBranch.includes('data-state="unavailable"'), "不可用 → 置灰呈现（data-state=unavailable）");
+  assert.ok(voiceBranch.includes('aria-disabled="true"'), "不可用语义经 aria-disabled 承载");
+  assert.ok(!/\) : null\}/.test(voiceBranch), "「不可用 → 钮隐藏」分支已移除");
+  const unavailableHalf = voiceBranch.slice(voiceBranch.indexOf('data-state="unavailable"'));
+  assert.ok(!/\sdisabled=\{/.test(unavailableHalf), "置灰钮 MUST NOT 原生 disabled（否则点击/引导不可达）");
+  assert.ok(unavailableHalf.includes("onClick={voiceUnavailableNotice}"), "置灰钮点击走引导");
+  assert.ok(dockBody.includes("speech?.openBundle?.()"), "引导跳语音 Bundle 详情页（桥缺席降级纯 toast）");
+  assert.ok(dockBody.includes('"cosmos.constFloat.voiceUnavailable"'), "不可用提示文案（词典键）");
   assert.ok(dockBody.includes("dsh-cosmos-const-float-voice"), "语音钮稳定钩子");
-  assert.ok(dockBody.includes("speechAvailable ? ("), "语音未启用 → 钮隐藏（零降级噪音）");
   /* CSS：新控件样式在位，旧只读模型样式已替换。 */
   assert.ok(clientSource.includes(".dsh-cosmos-const-float-model-select,"), "模型/级别下拉样式");
   assert.ok(clientSource.includes(".dsh-cosmos-const-float-voice{"), "语音钮样式");
+  assert.ok(clientSource.includes(".dsh-cosmos-const-float-voice[data-state=unavailable]"), "置灰样式（opacity + not-allowed）");
   assert.ok(!clientSource.includes("dsh-cosmos-const-float-model-value"), "只读模型标识样式零残留");
   /* DICT zh/en 成对（`: ` 后缀只命中词典条目，tr(...) 调用不计入）。 */
-  for (const key of ["modelDefault", "modelDrift", "modelDegraded", "effortLabel", "voiceStart", "voiceStop", "voiceBusy", "voiceAria", "voiceDenied", "voiceFailed", "voiceEmpty"]) {
+  for (const key of ["modelDefault", "modelDrift", "modelDegraded", "effortLabel", "voiceStart", "voiceStop", "voiceBusy", "voiceAria", "voiceDenied", "voiceFailed", "voiceEmpty", "voiceUnavailable"]) {
     assert.equal(
       (clientSource.match(new RegExp('"cosmos\\.constFloat\\.' + key + '": ', "g")) ?? []).length,
       2,
@@ -853,12 +911,54 @@ function constFloatBody(source) {
   assert.ok(clientSource.includes('"cosmos.actions.degraded": "New-session channel unavailable; fell back to reusing the workspace blank"'), "词典 en：降级文案");
 }
 
+/* ── 11c. 显式关联绑定接线（fix-cosmos-association-scope 3.1/3.2 / spec cosmos-actions ⑤） ──
+   浏览器半区：api.mjs 提供容错 bindSession → client 注入动作执行器 → 执行器在取得新会话
+   SessionId 后非阻断调用（不 await、失败静默、降级路径跳过）。 */
+{
+  const apiSource = readFileSync(new URL("../src/api.mjs", import.meta.url), "utf8");
+  const actionsSource = readFileSync(new URL("../src/actions.mjs", import.meta.url), "utf8");
+  assert.ok(apiSource.includes("export async function bindSession(input)"), "api.mjs 导出 bindSession helper");
+  assert.ok(apiSource.includes('fetch(API + "/bind-session"'), "POST /bind-session 自有端点");
+  assert.ok(apiSource.includes("method: \"POST\"") && apiSource.includes('"content-type": "application/json"'), "JSON POST 形");
+  assert.ok(apiSource.includes("return { ok: true, bound: Array.isArray(body.bound) ? body.bound : [] };"), "成功面 {ok, bound}");
+  assert.ok(apiSource.includes("return { ok: false, error: body?.error || res.status"), "失败面 {ok:false, error}（fetchScene 同款容错）");
+  assert.ok(
+    clientSource.includes('import { fetchScene, subscribeCosmosEvents, bindSession } from "./api.mjs";'),
+    "client 引入 bindSession"
+  );
+  assert.ok(clientSource.includes("bindSession: (input) => bindSession(input),"), "提案执行器注入绑定通道");
+  assert.ok(clientSource.includes("fetchScene, subscribeCosmosEvents, bindSession,"), "client 导出 bindSession（观测面）");
+
+  /* 执行器：绑定调用点在 create 成功之后、标记登记之前；不 await、拒绝/抛错均静默。 */
+  const runBody = actionsSource.slice(
+    actionsSource.indexOf("async run({ button, card } = {}) {"),
+    actionsSource.indexOf("/* 供 client 侧组装的路径工具")
+  );
+  const bindCallIndex = runBody.indexOf("bindExplicitAssociation(sessionId, card);");
+  assert.ok(bindCallIndex > 0, "执行器显式调用绑定");
+  assert.ok(runBody.indexOf("sessionId = await createSession(card.wsId, card);") < bindCallIndex, "绑定位于 SessionId 取得之后");
+  assert.ok(bindCallIndex < runBody.indexOf("armed = pending.arm("), "绑定先于标记登记（hero 相位准备前声明工作面）");
+  assert.ok(!/await\s+bindExplicitAssociation|await\s+bindSession/.test(runBody), "绑定 MUST NOT 阻塞链路（不 await）");
+  assert.ok(actionsSource.includes("pendingBind.catch(() => {})"), "异步拒绝被吞（零未处理拒绝噪声）");
+  assert.ok(actionsSource.includes("const proposal = typeof card?.id === \"string\" ? card.id : \"\";"), "proposals = 卡片目标提案名");
+  /* 降级回落切片（fallback）不含绑定调用：无新会话 id 时 MUST 跳过。 */
+  const fallbackStart = actionsSource.indexOf("/** 降级回落（现行链路");
+  const fallbackEnd = actionsSource.indexOf("async run({ button, card } = {}) {", fallbackStart);
+  const fallbackBody = fallbackStart >= 0 && fallbackEnd > fallbackStart
+    ? actionsSource.slice(fallbackStart, fallbackEnd)
+    : "";
+  assert.ok(fallbackBody.includes("const fallback = async"), "降级回落切片可定位");
+  assert.ok(!fallbackBody.includes("bindExplicitAssociation"), "降级路径不含绑定调用（无新会话 id → 跳过）");
+  assert.ok(!fallbackBody.includes("bindSession("), "降级路径不直接调用绑定通道");
+}
+
 /* ── 12. 源码锚点：设置页双臂（add-cosmos-constellation-actions 5.2/5.3） ── */
 {
   assert.ok(clientSource.includes('id: "constellation-actions"'), "「星座动作」标签页注册");
   assert.ok(clientSource.includes('order: 1,'), "排于「快捷动作」之后");
   assert.ok(clientSource.includes('label: () => sectionT("cosmos.settings.tabConstActions")'), "标签文案走词典");
-  assert.ok(clientSource.includes("const constButtonSettings = createButtonSettingsController(activeScope, CONSTELLATION_PROFILE);"), "第二控制器实例（星座 profile）");
+  assert.ok(clientSource.includes("const constButtonSettings = createButtonSettingsController(activeScope, {"), "第二控制器实例（星座 profile；add-cosmos-shortcuts 3.3 起注入 crossIssue）");
+  assert.ok(clientSource.includes("...CONSTELLATION_PROFILE,"), "星座 profile 展开注入（节键/无 prepend 等口径不变）");
   assert.ok(clientSource.includes("variant: \"constellation\""), "面板 variant 注入");
   assert.ok(clientSource.includes("constButtonsStore = createButtonsStore(activeScope, constButtonsSectionOf, { field: \"constellationButtons\" })"), "星座数据面独立（节键 constellationButtons）");
   assert.ok(settingsSource.includes("const CONSTELLATION_COPY = {"), "星座口径文案表");
@@ -947,29 +1047,35 @@ function goldLiteralsOutsideVarFallback(source) {
 {
   assert.equal(
     (settingsSource.match(/useSyncExternalStore\(health \? health\.subscribe : noopSubscribe, health \? health\.getSnapshot : noopSnapshot\)/g) ?? []).length,
-    2,
-    "两面板均订阅 health face（皮肤 + 导航）"
+    3,
+    "三面板均订阅 health face（皮肤 + 导航 + 快捷键）"
   );
   assert.ok(settingsSource.includes("const health = props.selectHealth ?? null;"), "health face 经注入（缺失时降级 noop）");
   assert.ok(settingsSource.includes("function selectFailureOf(snapshot)"), "health 快照形状防御（非法快照按无失败处理）");
   assert.equal(
     (settingsSource.match(/const notApplied = failure !== null && failure\.face === /g) ?? []).length,
-    2,
-    "两面板按 face 归属过滤失败（仅本页签呈现）"
+    3,
+    "三面板按 face 归属过滤失败（仅本页签呈现）"
   );
   assert.equal(
     (settingsSource.match(/notAppliedText\(t, "cosmos\.settings\./g) ?? []).length,
-    2,
-    "两面板提示文案走 notAppliedText（含原因码后缀）"
+    3,
+    "三面板提示文案走 notAppliedText（含原因码后缀）"
   );
-  assert.equal((settingsSource.match(/data-failure-code=\{notApplied\.code\}/g) ?? []).length, 2, "提示条携带原因码（data-failure-code 稳定钩子）");
-  assert.equal((settingsSource.match(/role="status"/g) ?? []).length, 2, "提示条以 status 语义播报");
-  assert.equal((settingsSource.match(/data-state="face-missing"/g) ?? []).length, 2, "face 缺失占位稳定钩子（两页签）");
-  assert.equal((settingsSource.match(/if \(face === null\) \{/g) ?? []).length, 2, "face 缺失早退占位（不渲染永不生效的控件）");
+  assert.equal((settingsSource.match(/data-failure-code=\{notApplied\.code\}/g) ?? []).length, 3, "提示条携带原因码（data-failure-code 稳定钩子）");
+  /* role="status" 计数 = 三处「未生效」提示条 + 两处跨域冲突提示（快捷键页签 + 两动作页签共用
+     一处渲染：动作面板一份、快捷键面板两份——冲突块与未生效块各一）。 */
+  assert.ok((settingsSource.match(/role="status"/g) ?? []).length >= 3, "提示条以 status 语义播报");
+  /* add-cosmos-standalone-window 2.2：新增「通用」页签（launch face）——占位/早退分支持同款
+     纪律，故 face-missing 钩子与早退分支各 4 处；`notApplied` 仍为三处（通用页签无引擎
+     写入依赖，不进 health 通道）。 */
+  assert.equal((settingsSource.match(/data-state="face-missing"/g) ?? []).length, 4, "face 缺失占位稳定钩子（四页签）");
+  assert.equal((settingsSource.match(/if \(face === null\) \{/g) ?? []).length, 4, "face 缺失早退占位（不渲染永不生效的控件）");
   assert.ok(settingsSource.includes('tr(t, "cosmos.settings.skinUnavailable"'), "皮肤占位文案键");
   assert.ok(settingsSource.includes('tr(t, "cosmos.settings.navUnavailable"'), "导航占位文案键");
+  assert.ok(settingsSource.includes('errorText("shortcutsUnavailable"'), "快捷键占位文案键");
   /* 词典 zh/en 成对（各 2 次：zh + en） */
-  for (const key of ["skinUnavailable", "navUnavailable", "skinNotApplied", "navNotApplied"]) {
+  for (const key of ["skinUnavailable", "navUnavailable", "skinNotApplied", "navNotApplied", "shortcutsUnavailable", "shortcutsNotApplied", "shortcutDup"]) {
     assert.equal(
       (clientSource.match(new RegExp('"cosmos\\.settings\\.' + key + '"', "g")) ?? []).length,
       2,
@@ -987,17 +1093,16 @@ function goldLiteralsOutsideVarFallback(source) {
     clientSource.includes("lastFailure: { face, code: SELECT_FAILURE_CONTROLLER_MISSING, at: Date.now() }"),
     "失败载荷 = face + 原因码 + 时刻"
   );
-  assert.ok(clientSource.includes("cosmosSelectHealthOf, COSMOS_SKINS"), "cosmosSelectHealthOf 并入 bundle 导出面");
-  assert.ok(clientSource.includes("if (controllerRef.current == null) {"), "face 调用边界的控制器存活检查");
+  assert.ok(clientSource.includes("cosmosSelectHealthOf"), "cosmosSelectHealthOf 并入 bundle 导出面");  assert.ok(clientSource.includes("if (controllerRef.current == null) {"), "face 调用边界的控制器存活检查");
   assert.equal(
     (clientSource.match(/markSelectFailure\("/g) ?? []).length,
-    3,
-    "皮肤 / 导航 / 发送前编辑三 face 均经失败标记 helper"
+    4,
+    "皮肤 / 导航 / 发送前编辑 / 快捷键四 face 均经失败标记 helper"
   );
   assert.equal(
     (clientSource.match(/clearSelectFailure\(\);/g) ?? []).length,
-    3,
-    "成功路径清除历史失败（自愈；三 face 同款）"
+    4,
+    "成功路径清除历史失败（自愈；四 face 同款）"
   );
 }
 
@@ -1017,7 +1122,12 @@ function goldLiteralsOutsideVarFallback(source) {
   assert.ok(cardActions.includes(">打开会话<") && cardActions.includes(">归档会话<"), "双按钮文案并列");
   assert.ok(cardActions.includes('data-action="archive" data-session="'), "归档按钮与既有 data-session 并存");
   assert.equal((engineSource.match(/\+\s*cardActionsHtml\(/g) ?? []).length, 2, "行星卡与彗星卡各挂一次双按钮组");
-  assert.ok(!/disabled/.test(cardActions), "按钮组不渲染 disabled（禁用态 MUST NOT 经 cardHtml 重渲染）");
+  /* 禁用态语义分档（add-cosmos-standalone-window D6 细化）：**归档在途**禁用是瞬态，
+     MUST NOT 经 cardHtml 重渲染（直接 DOM 切换，见下方 click 断言）；**导航不可用**
+     （独立窗口态）是页面生命周期常量，允许进 markup（`disabled` + title 提示）。 */
+  assert.ok(cardActions.includes("E.sessionNavAvailable"), "导航可用性分流（独立窗口态禁用）");
+  assert.equal((cardActions.match(/disabled/g) ?? []).length, 1, "仅导航不可用分支渲染 disabled（归档在途仍走直接 DOM）");
+  assert.ok(cardActions.includes("escapeHtml(E.labels.card.openDisabled)"), "禁用态 title 走注入文案（locale 同源）");
   const cardClick = engineSource.slice(
     engineSource.indexOf("E.el.card.addEventListener('click'"),
     engineSource.indexOf("function isEmptyConstellation")
@@ -1511,6 +1621,178 @@ function goldLiteralsOutsideVarFallback(source) {
   assert.ok(clientSource.includes('label: () => sectionT("cosmos.settings.tabInterface")'), "页签标签取更名后的词典键");
   assert.ok(!clientSource.includes('"cosmos.settings.tabNav"'), "旧「导航」页签词典键已退役");
   assert.ok(clientSource.includes('id: "nav",'), "slot id 仍为 nav（内部标识零迁移）");
+}
+
+/* ── 16. 源码锚点：快捷键接线（add-cosmos-shortcuts 5.1–5.3 / 6.1 / D3 / D8b / D12 / D13）──
+   外壳分发与浮窗语音键的行为面由 engine-smoke（引擎分支）与设置页冒烟（设置面）覆盖；
+   本节锚定「监听挂载面 / 键位读取方式 / 门控与守卫 / 消费语义」等结构事实。 */
+{
+  /* ① 关闭链参数化（5.1/D3）：canonical 匹配配置键 + IME 让位 + 组字 229 双保险；
+     配置经模块 store 读（`currentShortcuts()`）——effect 不按配置重绑监听。 */
+  assert.ok(clientSource.includes("if (!shortcutMatches(e, currentShortcuts().closePage)) return;"), "关闭链 canonical 匹配当前配置键（缺省 Esc）");
+  const closeChainAt = clientSource.indexOf("if (!shortcutMatches(e, currentShortcuts().closePage)) return;");
+  const closeChainBody = clientSource.slice(closeChainAt, clientSource.indexOf('window.addEventListener("keydown", onKey);', closeChainAt));
+  assert.ok(closeChainBody.includes("if (e.isComposing === true || e.keyCode === 229) return;"), "关闭链 IME 组字让位（isComposing + 229）");
+  assert.ok(!/e\.key !== "Escape"/.test(closeChainBody), "关闭链不再硬编码 Escape 键名（物理键 canonical 口径）");
+  assert.equal((closeChainBody.match(/e\.preventDefault\(\);/g) ?? []).length >= 4, true, "分层链各层消费均 preventDefault");
+  assert.ok(clientSource.includes("}, [fullscreen, exitFullscreen]);"), "监听依赖不含快捷键配置（防陈旧闭包与重绑）");
+  /* ② 面板失焦层 + 搜索框清空层同键（D3：分层链整体跟随） */
+  assert.ok(clientSource.includes('if (!shortcutMatches(event, closeKey ?? "Escape")) return;'), "提案面板失焦层跟随配置键");
+  assert.ok(clientSource.includes("closeKey={shortcuts.closePage}"), "面板接收当前生效关闭键（受控镜像）");
+  assert.ok(clientSource.includes("if (!shortcutMatches(e, shortcuts.closePage)) return;"), "搜索框清空层跟随配置键");
+  /* ③ 按钮键分发（5.2/D12/D13）：映射 useMemo + ref、门控与点击等效、仅可编辑让位、浮窗让位 */
+  assert.ok(clientSource.includes("const buttonShortcutMap = useMemo(() => {"), "canonical → 按钮映射（useMemo）");
+  assert.ok(clientSource.includes("buttonDispatchRef.current = {"), "映射/门控经 ref 同步给一次绑定的监听");
+  assert.ok(clientSource.includes('add(constButtons, "constellation");') && clientSource.includes('add(actionButtons, "proposal");'), "两条动作条同源映射（提案 + 星座）");
+  assert.ok(clientSource.includes("if (isEditableTarget(active)) return;"), "可编辑聚焦守卫（唯一焦点守卫）");
+  /* chrome 聚焦不构成新键位守卫（真机反馈修订：点击提案卡片即选中、焦点滞留该行按钮）：
+     分发器与引擎 applyShortcut 均不得调用 isUiChromeTarget；WASD/空格两支的 chrome 守卫保留。 */
+  const dispatchAt = clientSource.indexOf("if (ev.repeat === true) return;", clientSource.indexOf("buttonDispatchRef.current"));
+  const dispatchBody = clientSource.slice(dispatchAt, clientSource.indexOf("window.addEventListener(\"keydown\", onKey);", dispatchAt));
+  assert.ok(dispatchAt > 0 && dispatchBody.length > 0, "分发器切片可定位");
+  assert.ok(!/isUiChromeTarget/.test(dispatchBody), "按钮键分发不含 chrome 聚焦守卫（卡片/动作条聚焦仍可触发）");
+  assert.ok(!/isActionBarTarget/.test(clientSource), "动作条豁免特判已随 chrome 守卫一并移除");
+  assert.ok(!/isButtonLikeTarget/.test(clientSource), "按钮类聚焦守卫不适用于新键位（D12 分档：仅空格保留）");
+  assert.ok(clientSource.includes("if (ev.shiftKey === true || ev.metaKey === true) return;"), "Shift/Meta 恒跳过（修饰键裁决统一）");
+  assert.ok(clientSource.includes("if (floatOpenOf()) return; // 浮窗模态让位（D13）"), "浮窗打开时按钮键零分发（模态让位）");
+  assert.ok(clientSource.includes("if (view.selectedCard === null) return; // 动作条熄灭 → 静默 no-op"), "提案侧门控 = 动作条点亮");
+  assert.ok(clientSource.includes("if (extra?.disabled === true) return; // 行级禁用 → 静默 no-op"), "行级禁用门控（与点击同口径）");
+  assert.ok(clientSource.includes("if (view.drillGroup === null) return; // 星座条限钻取态（银河态无动作目标）"), "星座侧门控 = 钻取态");
+  assert.ok(/ev\.preventDefault\(\);\n\s+view\.runAction\(entry\.button\);/.test(clientSource), "命中提案按钮键：preventDefault + 同一执行链路");
+  assert.ok(/ev\.preventDefault\(\);\n\s+view\.runConstAction\(entry\.button\);/.test(clientSource), "命中星座按钮键：preventDefault + 同一执行链路");
+  assert.ok(clientSource.includes("if (canonical === configured.closePage || canonical === configured.goHome || canonical === configured.togglePan) return;"), "全局键漂移防御（同键不双触发）");
+  /* ④ 浮窗语音键（6.1/D6）：armed 监听 + 三态 toggle + 输入焦点放行 + 命中 preventDefault */
+  const voiceAt = clientSource.indexOf("if (!shortcutMatches(event, voiceKey)) return;");
+  const voiceBody = clientSource.slice(voiceAt - 400, voiceAt + 400);
+  assert.ok(voiceAt > 0, "浮窗语音键 canonical 匹配（配置键动态生效）");
+  assert.ok(voiceBody.includes('if (voiceState === "recording") finishVoice();'), "recording → 停止并转写（同一 finishVoice 链路）");
+  assert.ok(voiceBody.includes('else if (voiceState === "idle") startVoice();'), "idle → 开始录音（同一 startVoice 链路）");
+  assert.ok(!/isEditableTarget/.test(voiceBody), "语音组合键不做可编辑焦点守卫（浮窗 textarea 聚焦主场景）");
+  assert.ok(voiceBody.includes("event.isComposing === true || event.keyCode === 229 || event.repeat === true"), "语音键保留组字 + repeat 守卫");
+  assert.ok(voiceBody.includes("event.preventDefault();"), "命中语音键 preventDefault");
+  assert.equal((clientSource.match(/window\.addEventListener\("keydown", onKey, true\);/g) ?? []).length, 2, "浮窗两条 capture 监听（收卡键 + 语音键）");
+  /* ⑤ 浮窗模态计数（D13 探针）：armed 加减 + 下界 0 + 引擎注入 + 页组关闭时仍恒 0 */
+  assert.ok(clientSource.includes("cosmosFloatArmedCount += 1;"), "浮窗 armed → 计数 +1");
+  assert.ok(clientSource.includes("cosmosFloatArmedCount = Math.max(0, cosmosFloatArmedCount - 1);"), "收卡/卸载 → 计数 -1（防御下界 0）");
+  assert.ok(clientSource.includes("isFloatOpen: () => floatOpenOf()"), "引擎注入浮窗探针（goHome/togglePan 模态让位）");
+  /* ⑥ 快捷键写入链（5.3）：净房持久化 → 引擎热更 → 受控镜像；face 侧冲突拒绝 + health 落印 */
+  const saveShortcutsAt = clientSource.indexOf("saveShortcuts(patch) {");
+  const saveShortcutsBody = clientSource.slice(saveShortcutsAt, clientSource.indexOf("getTuning() {", saveShortcutsAt));
+  assert.ok(saveShortcutsAt > 0 && saveShortcutsBody.length > 0, "控制器 saveShortcuts 切片");
+  assert.ok(saveShortcutsBody.includes("const next = shortcutsOf({ ...current, ...(patch && typeof patch === \"object\" ? patch : {}) });"), "部分写合并后再净房（缺席键保持原值）");
+  assert.ok(saveShortcutsBody.includes("saveCosmosSettings({ shortcuts: next })"), "净房写盘（saveCosmosSettings 内置 shortcutsOf）");
+  assert.ok(saveShortcutsBody.includes("engine?.setShortcuts?.(merged.shortcuts);"), "已打开整页引擎热更（无需重开页）");
+  assert.ok(saveShortcutsBody.includes("cosmosShortcutsStore.set({ ...merged.shortcuts });"), "受控镜像同步（关闭链/分发/浮窗提示跟随）");
+  assert.ok(clientSource.includes("const cosmosShortcutsStore = createSnapshotStore(shortcutsOf(loadCosmosSettings().shortcuts));"), "模块级 store 冷启动取持久化净房值");
+  assert.ok(clientSource.includes("const candidate = shortcutsOf({ ...current, ...(patch && typeof patch === \"object\" ? patch : {}) });"), "face 侧重算候选净房表");
+  assert.ok(clientSource.includes("if (shortcutConflictOf(candidate, buttonDraftsOf()) !== null) return current;"), "face 侧冲突拒绝写入（保存面查重）");
+  assert.ok(clientSource.includes('markSelectFailure("shortcuts");'), "控制器缺失落印 health 失败（快捷键 face）");
+  /* ⑦ 跨域数据面（3.3）：两控制器 crossIssue + 草稿 store 同步 + 就绪后重算 */
+  assert.ok(clientSource.includes('const shortcutCrossIssue = (side, entries) => {'), "并集查重纯函数包装（侧别固定）");
+  assert.ok(clientSource.includes('return shortcutsIssue(cosmosShortcutsStore.getSnapshot(), {'), "保存门共用 shortcutsIssue（单一来源）");
+  assert.ok(clientSource.includes("const publishButtonDrafts = () => cosmosButtonDraftsStore.set({"), "两列表草稿投影进模块 store（面板冲突定位数据面）");
+  assert.ok(clientSource.includes("buttonSettings.discard();\n  constButtonSettings.discard();"), "两实例就绪后重算合法性（构造期对侧未就绪）");
+  assert.ok(clientSource.includes("const buttonDraftsFace = {"), "草稿数据面 face（设置页注入）");
+}
+
+/* ── 16. 星胚移除接线（add-cosmos-embryo-dismiss 5.3 / spec「移除入口与确认交互」） ──
+   行为面直测在 test/engine-smoke.mjs（两击确认 / 在途门 / 回弹 / 未注入静默）与
+   test/dismiss-smoke.mjs（服务端 outcome 全分支）；此处按既有 house style 固化
+   client 接线、请求形状与 outcome → toast 文案映射（含守卫拒绝分支）、zh/en 成对。 */
+{
+  /* 引擎侧：proto 卡唯一按钮行 + 钩子（正式提案星卡无按钮由 engine-smoke 行为面覆盖） */
+  const cardHtmlBody = engineSource.slice(
+    engineSource.indexOf("function cardHtml(e)"),
+    engineSource.indexOf("function updateOverlay()")
+  );
+  assert.ok(cardHtmlBody.length > 0, "cardHtml 切片可定位");
+  assert.ok(cardHtmlBody.includes("s.lifecycle === 'proto'"), "按钮行按 lifecycle=proto 门控");
+  assert.ok(cardHtmlBody.includes('data-action="dismiss-embryo"'), "按钮稳定钩子 data-action=dismiss-embryo");
+  assert.ok(cardHtmlBody.includes('data-ws="'), "按钮携带 data-ws（workspaceId 钩子）");
+  assert.ok(cardHtmlBody.includes('data-slug="'), "按钮携带 data-slug（proto 星 id = 锚点 slug）");
+  assert.ok(cardHtmlBody.includes("escapeHtml(E.labels.dismiss.remove)"), "按钮文案走注入词典（locale 同源）");
+  assert.equal((engineSource.match(/cd-btn-dismiss/g) ?? []).length, 1, "仅 star 分支渲染该按钮（行星/彗星零侵入）");
+  assert.ok(engineSource.includes("const dismissRow ="), "按钮行局部装配（星卡 markup 唯一增量）");
+
+  /* 引擎侧：click 分流先于 data-session 早退守卫 + 两击确认直接 DOM + 在途门 */
+  const clickSlice = engineSource.slice(
+    engineSource.indexOf("E.el.card.addEventListener('click'"),
+    engineSource.indexOf("function isEmptyConstellation")
+  );
+  assert.ok(clickSlice.length > 0, "信息卡 click 切片可定位");
+  assert.ok(clickSlice.includes("action === 'dismiss-embryo'"), "click 分流含 dismiss 分支");
+  assert.ok(
+    clickSlice.indexOf("action === 'dismiss-embryo'") < clickSlice.indexOf("getAttribute('data-session')"),
+    "dismiss 分流 MUST 先于 data-session 早退守卫（按钮不携会话 id）"
+  );
+  assert.ok(clickSlice.includes("function handleDismissClick(target)"), "dismiss 处理器收口为单一函数");
+  const dismissHandler = engineSource.slice(
+    engineSource.indexOf("function handleDismissClick(target)"),
+    engineSource.indexOf("function isEmptyConstellation")
+  );
+  assert.ok(!/innerHTML|cardHtml\(/.test(dismissHandler), "确认态 / 在途态 MUST NOT 经 cardHtml 重渲染");
+  assert.ok(dismissHandler.includes("textContent = E.labels.dismiss.confirm"), "首击就地切确认态文案（直接 DOM）");
+  assert.ok(dismissHandler.includes("DISMISS_CONFIRM_MS"), "约 3s 无操作回弹窗口");
+  assert.ok(dismissHandler.includes("dismissConfirmKey !== key"), "第二击判据 = 同目标确认态在册");
+  assert.ok(dismissHandler.includes("E.dismissInFlight.has(key)"), "per-目标在途门拦截重复派发");
+  assert.ok(dismissHandler.includes("pending.then(done, done)"), "响应到达（无论 outcome）/ 拒绝均解锁");
+  assert.ok(dismissHandler.includes("if (!E.onDismissEmbryo)"), "回调未注入 → 静默 no-op 守卫");
+  assert.ok(dismissHandler.includes("target.disabled = true"), "在途禁用态经直接 DOM 切换");
+  assert.ok(engineSource.includes("DISMISS_CONFIRM_MS = 3000"), "回弹窗口常量导出（冒烟可直读）");
+  assert.ok(engineSource.includes("|life:") , "lifecycle 进内容签名（proto→created 同 id 翻转即重建）");
+  assert.ok(engineSource.includes("if (!scr2 && (dismissConfirmKey || dismissConfirmTimer)) clearDismissConfirm(true)"), "收卡清理确认态定时器（不跨卡片生命周期残留）");
+
+  /* client 接线：端点常量 / 引擎注入 / 请求形状 */
+  assert.ok(clientSource.includes('const DISMISS_EMBRYO_PATH = "/api/dsh-v-cosmos/dismiss-embryo";'), "dismiss 端点常量");
+  assert.ok(clientSource.includes("onDismissEmbryo: (input) => actions.dismissEmbryo(input)"), "attach 注入 onDismissEmbryo（与 onArchiveSession 并列）");
+  assert.ok(clientSource.includes("async dismissEmbryo(input)"), "actions.dismissEmbryo 执行体");
+  const dismissAt = clientSource.indexOf("async dismissEmbryo(input)");
+  const addWorkspaceAt = clientSource.indexOf("async addWorkspace()", dismissAt);
+  assert.ok(dismissAt > 0 && addWorkspaceAt > dismissAt, "dismissEmbryo 切片可定位");
+  const dismissBody = clientSource.slice(dismissAt, addWorkspaceAt);
+  const bodyLine = dismissBody.split("\n").find((line) => line.includes("JSON.stringify(")) ?? "";
+  assert.ok(bodyLine.includes("workspaceId, slug"), "请求体 = { workspaceId, slug }");
+  assert.ok(dismissBody.includes("fetch(DISMISS_EMBRYO_PATH"), "POST 自有 dismiss 端点");
+  assert.ok(!/sessionIds|stopActivity/.test(dismissBody), "MUST NOT 复用归档请求形状");
+  assert.ok(!/closePage|cosmosOpenStore/.test(dismissBody), "MUST NOT 关整页（消散由骨架差分 + 既有变体承接）");
+  assert.ok(!/pending-changes|unlink|openspec/i.test(dismissBody), "MUST NOT 触碰 openspec 工件（服务端动词）");
+  assert.ok(!/setScene|refreshSkeleton/.test(dismissBody), "MUST NOT 主动收卡 / 拉骨架（fs.watch → SSE 既有管道）");
+
+  /* client 接线：outcome → toast 文案映射（含守卫拒绝分支；失败携带端点 reason） */
+  assert.ok(dismissBody.includes('outcome === "deleted"') && dismissBody.includes('tr("cosmos.dismiss.deleted", "星胚已移除")'), "deleted → 成功 toast");
+  assert.ok(
+    dismissBody.includes('outcome === "guard-dir-exists"') && dismissBody.includes('tr("cosmos.dismiss.guardDirExists", "同名提案已创建，未移除")'),
+    "guard-dir-exists → 守卫拒绝专用 toast"
+  );
+  assert.ok(dismissBody.includes('outcome === "already-missing"') && dismissBody.includes('tr("cosmos.dismiss.alreadyMissing"'), "already-missing → 中性文案");
+  assert.ok(dismissBody.includes('outcome === "missing-workspace"') && dismissBody.includes('tr("cosmos.dismiss.missingWorkspace"'), "missing-workspace → 失败文案");
+  assert.ok(dismissBody.includes('tr("cosmos.dismiss.failed", "移除失败：") + (reason ||'), "failed → 文案携带端点 reason");
+  assert.ok(dismissBody.includes('tr("cosmos.dismiss.requestFailed"'), "网络/非 2xx → 请求级失败 toast");
+  assert.ok(dismissBody.includes('tr("cosmos.dismiss.noTarget"'), "钩子残缺 → 缺目标提示");
+  assert.ok(dismissBody.includes("engine?.toast(notice.text)"), "呈现通道 = 引擎 toast（整页内）");
+  assert.ok(dismissBody.includes("return notice;"), "返回呈现产物（冒烟观测面）");
+
+  /* 引擎词典注入（按钮 / 确认态文案；outcome toast 不进引擎） */
+  assert.ok(clientSource.includes('remove: tr("cosmos.card.dismiss.remove", "移除星胚")'), "词典注入 remove（zh 基线）");
+  assert.ok(clientSource.includes('confirm: tr("cosmos.card.dismiss.confirm", "确认移除？")'), "词典注入 confirm（zh 基线）");
+
+  /* 词典 zh/en 成对（缺键回落中文基线；outcome 文案归 client 词典） */
+  const dictPairs = [
+    ["cosmos.card.dismiss.remove", "移除星胚", "Remove embryo"],
+    ["cosmos.card.dismiss.confirm", "确认移除？", "Confirm removal?"],
+    ["cosmos.dismiss.deleted", "星胚已移除", "Embryo removed"],
+    ["cosmos.dismiss.alreadyMissing", "该星胚已不存在", "That embryo is already gone"],
+    ["cosmos.dismiss.guardDirExists", "同名提案已创建，未移除", "A proposal with this name exists; not removed"],
+    ["cosmos.dismiss.missingWorkspace", "工作区不在册，未移除", "Workspace is not registered; not removed"],
+    ["cosmos.dismiss.failed", "移除失败：", "Removal failed: "],
+    ["cosmos.dismiss.failedUnknown", "未知错误", "unknown error"],
+    ["cosmos.dismiss.requestFailed", "移除请求失败：", "Removal request failed: "],
+    ["cosmos.dismiss.noTarget", "缺少星胚定位信息，未移除", "Missing embryo target; not removed"]
+  ];
+  for (const [key, zh, en] of dictPairs) {
+    assert.ok(clientSource.includes('"' + key + '": "' + zh + '"'), "词典 zh 缺键基线：" + key);
+    assert.ok(clientSource.includes('"' + key + '": "' + en + '"'), "词典 en：" + key);
+  }
 }
 
 console.log("client-ui-smoke: all assertions passed");

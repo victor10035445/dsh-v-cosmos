@@ -43,6 +43,7 @@ assert.equal(typeof exportsShape.createSkinD, "function");
 assert.equal(typeof exportsShape.createCosmosEngine, "function");
 assert.equal(typeof exportsShape.fetchScene, "function");
 assert.equal(typeof exportsShape.subscribeCosmosEvents, "function");
+assert.equal(typeof exportsShape.bindSession, "function", "显式关联绑定通道导出（fix-cosmos-association-scope 3.1）");
 assert.equal(typeof exportsShape.loadCosmosSettings, "function", "设置读面导出（调参消费通道）");
 assert.equal(typeof exportsShape.saveCosmosSettings, "function", "设置写面导出");
 assert.ok(exportsShape.cosmosOpenStore && typeof exportsShape.cosmosOpenStore.subscribe === "function", "开合 store 导出");
@@ -190,18 +191,39 @@ assert.equal(exportsShape.archiveRequestFailureNotice("500").tone, "error", "请
   assert.equal(typeof section.options.children["settings.v-cosmos.tab"], "object", "子标签槽声明");
   assert.equal(typeof section.options.inject, "function", "节 inject（hooks.tabs）");
   const tabs = registered.filter((entry) => entry.options.name === "settings.v-cosmos.tab");
-  assert.equal(tabs.length, 4, "四条标签页（快捷动作 / 星座动作 / 皮肤 / 导航）");
+  assert.equal(tabs.length, 6, "六条标签页（通用 / 快捷动作 / 星座动作 / 皮肤 / 界面 / 快捷键）");
+  const generalTab = tabs.find((entry) => entry.options.id === "general");
   const actionTab = tabs.find((entry) => entry.options.id === "actions");
   const constTab = tabs.find((entry) => entry.options.id === "constellation-actions");
   const skinTab = tabs.find((entry) => entry.options.id === "skins");
   const navTab = tabs.find((entry) => entry.options.id === "nav");
-  assert.ok(actionTab && constTab && skinTab && navTab, "标签页 id 齐备");
+  const shortcutsTab = tabs.find((entry) => entry.options.id === "shortcuts");
+  assert.ok(generalTab && actionTab && constTab && skinTab && navTab && shortcutsTab, "标签页 id 齐备");
+  assert.equal(generalTab.options.order, -1, "通用 order -1（置于「快捷动作」之前，add-cosmos-standalone-window 2.2）");
   assert.equal(actionTab.options.order, 0, "快捷动作 order 0");
   assert.equal(constTab.options.order, 1, "星座动作 order 1（排于其后）");
   assert.equal(skinTab.options.order, 2, "皮肤 order 2（add-cosmos-skin-themes 3.4）");
   assert.equal(navTab.options.order, 3, "导航 order 3（add-cosmos-zoom-focus-nav 3.1）");
+  assert.equal(shortcutsTab.options.order, 4, "快捷键 order 4（排于「界面」之后，add-cosmos-shortcuts 7.1）");
   assert.equal(typeof skinTab.options.label, "function", "皮肤标签文案走词典");
   assert.equal(typeof navTab.options.label, "function", "导航标签文案走词典");
+  /* 「通用」页签注入面（add-cosmos-standalone-window 2.2）：launch face + 桌面标记 */
+  const generalInjected = generalTab.options.inject();
+  assert.equal(typeof generalInjected.launch?.getSnapshot, "function", "通用标签页注入 launch face.getSnapshot");
+  assert.equal(typeof generalInjected.launch?.subscribe, "function", "通用标签页注入 launch face.subscribe");
+  assert.equal(typeof generalInjected.launch?.set, "function", "通用标签页注入 launch face.set（改动即保存）");
+  assert.equal(generalInjected.desktop, false, "Node 无 location → 非桌面形态（降级不触发）");
+  assert.equal(generalInjected.launch.getSnapshot().launchMode, "embedded", "face 快照含缺省 launchMode（内嵌）");
+  assert.equal(generalInjected.launch.set("window").launchMode, "window", "face.set 写穿（Node 无 localStorage → 净房合并结果）");
+  assert.equal(generalInjected.launch.set("hacker").launchMode, "embedded", "非法值写侧回落缺省");
+  /* 独立窗口观测面（add-cosmos-standalone-window 3.x/6.x）：纯逻辑与 store 导出 */
+  for (const name of ["isStandaloneSearch", "isStandalonePage", "standaloneUrlOf", "isDesktopProtocol", "effectiveLaunchModeOf", "seatLockOf", "otherWindowHintOf", "closeDecisionOf"]) {
+    assert.equal(typeof exportsShape[name], "function", "独立窗口纯逻辑导出：" + name);
+  }
+  assert.ok(exportsShape.cosmosPresenceStore && typeof exportsShape.cosmosPresenceStore.subscribe === "function", "占位计数 store 导出");
+  assert.ok(exportsShape.cosmosLaunchStore && typeof exportsShape.cosmosLaunchStore.subscribe === "function", "launchMode 受控镜像导出");
+  assert.equal(exportsShape.STANDALONE, false, "Node 无 window → 非独立窗口态（模块根检测安全）");
+  assert.equal(exportsShape.cosmosPresenceStore.getSnapshot().count, 0, "占位计数冷启动 0");
   const navInjected = navTab.options.inject();
   assert.equal(typeof navInjected.nav?.getSnapshot, "function", "导航标签页注入 face.getSnapshot");
   assert.equal(typeof navInjected.nav?.subscribe, "function", "导航标签页注入 face.subscribe");

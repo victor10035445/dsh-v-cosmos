@@ -10,7 +10,7 @@ metadata:
   contractVersion: "1"
 ---
 
-使用 /openspec-ff-change 技能，创建相关提案的内容（proposal，design，specs，tasks），并将探索内容总结为 explorer.md 放在提案目录中。
+使用 C:\project\dsh-plugin-v\dsh-v-skill-links\.trae\skills\openspec-ff-change\SKILL.md 技能，创建相关提案的内容（proposal，design，specs，tasks），并将探索内容总结为 explorer.md 放在提案目录中。
 
 然后按以下流程调整提案状态：
 **状态步骤（补全流程中执行一次）**
@@ -26,6 +26,28 @@ metadata:
 **编码纪律**：UTF-8 无 BOM、合法 JSON（CONTRACT §7）。
 
 **效果**：补全完成即视作提案正式落盘——星胚点燃（或保持既有更高状态）。
+
+## 关联绑定（状态步骤之后、自改名之前执行；可选，依赖 cosmos 插件）
+
+声明本会话的提案工作面（星图关联，不写任何 openspec 工件）：
+
+- 端点：`POST <base>/api/dsh-v-cosmos/bind-session`
+  （base = 当前 DSH Web loopback 地址，如 `http://127.0.0.1:3080`；端口以实际部署为准）；
+- 请求：`{ "sessionId": $env:DSH_SESSION_ID, "proposals": ["<name>", ...] }`
+  （请求体须为 UTF-8 字节）——清单 = **本次创建（补全）的全部提案名**；多提案一次
+  绑定全量清单（不得逐个增量追加）；
+- 语义：**替换**（该会话的关联恰为本清单；重复绑定同清单幂等）。重跑补全时用最新
+  清单重绑即自动清除过期关联。
+
+```powershell
+$body = [Text.Encoding]::UTF8.GetBytes((ConvertTo-Json @{ sessionId = $env:DSH_SESSION_ID; proposals = @("<name>") } -Compress))
+Invoke-RestMethod -Method Post -Uri "$base/api/dsh-v-cosmos/bind-session" `
+  -ContentType "application/json; charset=utf-8" -Body $body
+```
+
+**降级（MUST NOT 阻断状态步骤）**：端点不可达（404 / 连接拒绝 / 超时）或返回失败 =
+插件未安装或未升级 → 跳过绑定并在回复中**注明**（关联退回启发式推断，星图可能过度
+关联；不影响提案创建与状态写入），MUST NOT 报错或回滚。
 
 最后**自改名**：`POST <base>/api/dsh-v-cosmos/rename-session`，请求
    `{ "sessionId": $env:DSH_SESSION_ID, "prefix": "已创建-" }`。原题为空 →

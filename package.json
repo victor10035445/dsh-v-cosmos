@@ -16,8 +16,10 @@
     "lib/scan.mjs",
     "lib/associations.mjs",
     "lib/sweep.mjs",
+    "lib/presence.mjs",
     "lib/buttons.mjs",
     "lib/const-buttons.mjs",
+    "lib/shortcuts.mjs",
     "lib/configstore.mjs",
     "lib/client.js",
     "lib/client.js.map",
@@ -35,8 +37,8 @@
   },
   "scripts": {
     "build": "node build.mjs",
-    "check": "node --check lib/index.js && node --check lib/scan.mjs && node --check lib/associations.mjs && node --check lib/sweep.mjs && node --check lib/buttons.mjs && node --check lib/const-buttons.mjs && node --check lib/configstore.mjs && node --check lib/client.js",
-    "test": "node test/scan-smoke.mjs && node test/associations-smoke.mjs && node test/buttons-schema-smoke.mjs && node test/const-buttons-schema-smoke.mjs && node test/configstore-smoke.mjs && node test/merge-smoke.mjs && node test/panel-smoke.mjs && node test/actions-smoke.mjs && node test/constellation-actions-smoke.mjs && node test/settings-panel-smoke.mjs && node test/client-ui-smoke.mjs && node test/session-archive-smoke.mjs && node test/skin-registry-smoke.mjs && node test/engine-smoke.mjs && node test/render-smoke.mjs && node test/factory-smoke.mjs && node test/zero-pollution-smoke.mjs && node test/cross-timing-smoke.mjs && node test/host-wiring-smoke.mjs && node test/sweep-smoke.mjs && node test/sweep-wiring-smoke.mjs"
+    "check": "node --check lib/index.js && node --check lib/scan.mjs && node --check lib/associations.mjs && node --check lib/sweep.mjs && node --check lib/presence.mjs && node --check lib/buttons.mjs && node --check lib/const-buttons.mjs && node --check lib/shortcuts.mjs && node --check lib/configstore.mjs && node --check lib/client.js",
+    "test": "node test/shortcuts-smoke.mjs && node test/scan-smoke.mjs && node test/associations-smoke.mjs && node test/buttons-schema-smoke.mjs && node test/const-buttons-schema-smoke.mjs && node test/configstore-smoke.mjs && node test/merge-smoke.mjs && node test/panel-smoke.mjs && node test/actions-smoke.mjs && node test/constellation-actions-smoke.mjs && node test/settings-panel-smoke.mjs && node test/client-ui-smoke.mjs && node test/session-archive-smoke.mjs && node test/skin-registry-smoke.mjs && node test/engine-smoke.mjs && node test/render-smoke.mjs && node test/factory-smoke.mjs && node test/zero-pollution-smoke.mjs && node test/cross-timing-smoke.mjs && node test/host-wiring-smoke.mjs && node test/sweep-smoke.mjs && node test/sweep-wiring-smoke.mjs && node test/bind-wiring-smoke.mjs && node test/dismiss-smoke.mjs && node test/standalone-window-smoke.mjs"
   },
   "devDependencies": {
     "esbuild": "^0.25.0"
