@@ -5,7 +5,7 @@
  */
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { createCosmosEngine, ENGINE_CSS, panBasis, panCameraTarget, panCameraTargetByDrag, PAN_SPEED, PAN_SHIFT_BOOST, PAN_DRAG_FACTOR, SESSION_OPEN_KEY, makeNova, stepNovae, buildScenePure, FX_PRIORITY, FX_NOVA_DUR, FX_NOVA_PROTO_DUR, BOOT_DUR, isEditableTarget, boundingSphereOf, fitCameraOf, FILTER_RAMP_DUR, FILTER_SHIFT_DUR, FILTER_FIT_DUR, FILTER_FIT_MARGIN, WS_SHIFT_DUR, WS_BIRTH_HL_DUR, GESTURE_SUPPRESS_MS, zoomSwitchVerdict, zoomFocusTargetOf, canvasPointOf, constellationBoundROf, DIVE_REF, SWITCH_COOLDOWN_MS, CENTER_GATE_RATIO, DIVE_SAFE_MARGIN, FLYOUT_DIST_FLOOR_MULT, COMET_WANDER_R, STAR_FOCUS_DIST, STAR_FOCUS_DUR, SHOCK_SPEED, SHOCK_HOLD_MIN, SHOCK_HOLD_MAX, SHOCK_KICK_DUR, SHOCK_GLIDE_DUR, SHOCK_TOTAL_MAX, shockHitOf, shockEjectionAt, shockTotalDurOf, adoptTrailAcrossKinds, resolveBlastCoreOf, CAPTURE_DUR, COMET_WANDER_AMP, COMET_WANDER_FREQ, cometHeadingAt, orbitPointAt, orbitTangentAt, captureRingPointAt, capturePoseAt, TIP_GAP, TIP_LINE, tipLeaderOf, tipLineColorOf, DISMISS_CONFIRM_MS } from "../src/cosmos/engine.mjs";
+import { createCosmosEngine, ENGINE_CSS, panBasis, panCameraTarget, panCameraTargetByDrag, PAN_SPEED, PAN_SHIFT_BOOST, PAN_DRAG_FACTOR, SESSION_OPEN_KEY, makeNova, stepNovae, buildScenePure, FX_PRIORITY, FX_NOVA_DUR, FX_NOVA_PROTO_DUR, BOOT_DUR, isEditableTarget, boundingSphereOf, fitCameraOf, FILTER_RAMP_DUR, FILTER_SHIFT_DUR, FILTER_FIT_DUR, FILTER_FIT_MARGIN, WS_SHIFT_DUR, WS_BIRTH_HL_DUR, WS_SWITCH_FADE, GESTURE_SUPPRESS_MS, zoomSwitchVerdict, zoomFocusTargetOf, canvasPointOf, constellationBoundROf, constellationVitalityOf, wsSwitcherItemsOf, DIVE_REF, SWITCH_COOLDOWN_MS, CENTER_GATE_RATIO, DIVE_SAFE_MARGIN, FLYOUT_DIST_FLOOR_MULT, COMET_WANDER_R, STAR_FOCUS_DIST, STAR_FOCUS_DUR, SHOCK_SPEED, SHOCK_HOLD_MIN, SHOCK_HOLD_MAX, SHOCK_KICK_DUR, SHOCK_GLIDE_DUR, SHOCK_TOTAL_MAX, shockHitOf, shockEjectionAt, shockTotalDurOf, adoptTrailAcrossKinds, resolveBlastCoreOf, CAPTURE_DUR, COMET_WANDER_AMP, COMET_WANDER_FREQ, cometHeadingAt, orbitPointAt, orbitTangentAt, captureRingPointAt, capturePoseAt, TIP_GAP, TIP_LINE, tipLeaderOf, tipLineColorOf, DISMISS_CONFIRM_MS, NEBULA_ALPHA_BASE, NEBULA_ALPHA_SWING } from "../src/cosmos/engine.mjs";
 import { createSkinD, createSkinDeepspace, SKIN_D_PALETTE } from "../src/cosmos/skin-d.mjs";
 import { COSMOS_SKINS, COSMOS_SKIN_IDS, createSkin } from "../src/cosmos/skin-registry.mjs";
 import { COSMOS_SETTINGS_DEFAULTS, COSMOS_SETTINGS_BOUNDS, COSMOS_SETTINGS_VERSION, sanitizeCosmosSettings, loadCosmosSettings, saveCosmosSettings, cosmosLayoutTokensOf } from "../src/settings.mjs";
@@ -530,11 +530,36 @@ function stubCtx2d() {
 }
 /* canvas 2d 上下文工厂（缺省 = 桩 ctx）：引线冒烟临时换成记录型 ctx，直接数描边调用。 */
 let ctxFactory = stubCtx2d;
+/* classList 桩：真实维护 className 令牌集（add / remove / toggle / contains）——星座活力
+   两态的 class 翻转（step1-add-constellation-vitality 2.2）必须可在桩上断言；空实现会让
+   `classList.toggle` 静默丢失、沉睡态不可观测。 */
+function classListOf(el) {
+  const tokens = () => String(el.className).split(/\s+/).filter(Boolean);
+  const write = (list) => { el.className = list.join(" "); };
+  return {
+    add(...names) {
+      const list = tokens();
+      for (const name of names) if (name && !list.includes(name)) list.push(name);
+      write(list);
+    },
+    remove(...names) { write(tokens().filter((name) => !names.includes(name))); },
+    toggle(name, force) {
+      const list = tokens();
+      const has = list.includes(name);
+      const want = force === undefined ? !has : !!force;
+      if (want === has) return want;
+      if (want) list.push(name); else list.splice(list.indexOf(name), 1);
+      write(list);
+      return want;
+    },
+    contains(name) { return tokens().includes(name); }
+  };
+}
 function stubEl(tag) {
   const el = {
     tag, style: {}, dataset: {}, className: "", innerHTML: "", textContent: "", width: 0, height: 0,
     children: [], listeners: {}, attrs: {}, _by: {},
-    classList: { add() {}, remove() {}, contains: () => false },
+    classList: null,
     appendChild(child) { el.children.push(child); return child; },
     remove() {},
     querySelector(sel) {
@@ -552,6 +577,7 @@ function stubEl(tag) {
     setPointerCapture() {},
     getBoundingClientRect: () => ({ left: 0, top: 0, right: 800, bottom: 600, width: 800, height: 600 })
   };
+  el.classList = classListOf(el);
   return el;
 }
 /* 记录型 ctx（引线描线断言）：在桩 ctx 之上记录 stroke() 时生效的 strokeStyle，
@@ -1290,6 +1316,156 @@ function regressionPlanetScene() {
   assert.equal(s1, s2, "含 boundR 的整场景确定性（deepEqual 红线）");
 }
 
+/* ── 星座活力两态纯函数（step1-add-constellation-vitality D1/D5 / 1.2）：
+      存在口径判据 = 恒星（含 proto 星胚）∪ 行星 ∪ 彗星任一非空 → active；全空 → sleep。
+      星云（archives）与卫星计数不计入；缺字段/非数组/null 容错不抛错；判据不依赖会话
+      状态快照（statuses 不可达无分支）。 ── */
+{
+  const vit = constellationVitalityOf;
+  const ws = (over) => ({ stars: [], planets: [], comets: [], archives: 0, satelliteCount: 0, ...over });
+  assert.equal(vit(ws({ stars: [{ id: "s" }] })), "active", "有恒星 → 活跃");
+  assert.equal(vit(ws({ stars: [{ id: "p", lifecycle: "proto" }] })), "active", "仅星胚（proto 恒星）→ 活跃");
+  assert.equal(vit(ws({ planets: [{ id: "p" }] })), "active", "有行星 → 活跃");
+  assert.equal(vit(ws({ comets: [{ id: "c" }] })), "active", "有彗星 → 活跃");
+  assert.equal(vit(ws({ archives: 2 })), "sleep", "仅星云（archives>0 且天体全空）→ 沉睡（星云不计入判据）");
+  assert.equal(vit(ws({ satelliteCount: 3 })), "sleep", "仅有卫星计数（孤儿卫星）→ 沉睡（卫星不独立计入）");
+  assert.equal(vit(ws({})), "sleep", "全空 → 沉睡");
+  assert.equal(vit({ stars: [], planets: [], comets: [] }), "sleep", "无 archives / satelliteCount 字段 → 沉睡（缺字段按空处理）");
+  assert.equal(vit({}), "sleep", "缺全部天体字段 → 沉睡");
+  assert.equal(vit({ stars: null, planets: undefined, comets: "x" }), "sleep", "非数组按空处理（SHALL NOT 抛错）");
+  assert.equal(vit(null), "sleep", "null body → 沉睡（不抛错）");
+  assert.equal(vit(undefined), "sleep", "undefined body → 沉睡（不抛错）");
+  /* 存在口径 ≠ 热度口径：idle（待机）会话同样计入；statuses 快照不参与判据。 */
+  assert.equal(vit(ws({ planets: [{ id: "p", state: "idle" }] })), "active", "待机会话仍计活跃（存在口径）");
+  assert.equal(
+    vit(ws({ planets: [{ id: "p", state: "busy" }], statuses: { p: "busy" } })),
+    vit(ws({ planets: [{ id: "p", state: "idle" }] })),
+    "statuses 可达/不可达判据不变（无降级分支）"
+  );
+  const frozen = Object.freeze(ws({ stars: [{ id: "s" }] }));
+  assert.equal(vit(frozen), "active", "冻结 body 只读遍历（纯函数，不写回）");
+}
+
+/* ── 钻取态可切换星座清单纯函数（step2-add-constellation-switcher D2 / 1.2）：
+      清单 = **有提案或星胚**的星座（`stars` 非空；仅会话星座 MUST NOT 入列）∖ 当前；
+      环 = 含当前可切换全集按星座名（id 兜底）字典序首尾相接 → 左槽前驱 / 右槽后继；
+      边界档位 0 / 1 / ≥2 与 focusWsId 容错（含降级环）。与 step1 活力判据刻意分离。 ── */
+{
+  const star = (id) => ({ id, name: id, lifecycle: "created" });
+  const protoStar = (id) => ({ id, name: id, lifecycle: "proto" });
+  const wsOf = (id, name, over = {}) => ({ id, name, stars: [], planets: [], comets: [], archives: 0, ...over });
+  const sceneWith = (...list) => ({ ws: list });
+  const proposalOf = (name) => ({ stars: [star(name + "-s")] });
+  const sessionsOnly = { planets: [{ id: "p-session", state: "idle" }], comets: [{ id: "c-session", state: "idle" }] };
+  const idsOf = (items) => items.map((item) => item.wsId);
+  const sideOf = (items, wsId) => (items.find((item) => item.wsId === wsId) ?? {}).side ?? null;
+
+  assert.equal(WS_SWITCH_FADE, 0.25, "淡入淡出常量导出（约 .25s，chip .on 同款）");
+  assert.equal(constellationVitalityOf(sessionsOnly), "active",
+    "仅会话星座在 step1 活力判据中仍为活跃（本切换判据不改变既有活力呈现）");
+
+  /* ① 判据：正式提案 / 星胚入列；仅会话（行星/彗星）、仅星云、全空、孤儿卫星不入列。 */
+  const ring5 = sceneWith(
+    wsOf("cur", "Current", proposalOf("cur")),
+    wsOf("alpha", "Alpha", proposalOf("alpha")),
+    wsOf("bravo", "Bravo", proposalOf("bravo")),
+    wsOf("charlie", "Charlie", proposalOf("charlie")),
+    wsOf("proto", "Proto", { stars: [protoStar("pp")] }),
+    wsOf("sessions", "Sessions", sessionsOnly),
+    wsOf("nebula", "Nebula", { archives: 3 }),
+    wsOf("empty", "Empty"),
+    wsOf("orphan", "Orphan", { satelliteCount: 2 })
+  );
+  const ring5Items = wsSwitcherItemsOf(ring5, "cur");
+  assert.deepEqual(idsOf(ring5Items), ["charlie", "proto"], "清单 = 有提案/星胚的星座 ∖ 当前（星胚入列）");
+  assert.equal(sideOf(ring5Items, "charlie"), "left", "左槽 = 环上前驱");
+  assert.equal(sideOf(ring5Items, "proto"), "right", "右槽 = 环上后继");
+  assert.ok(!idsOf(ring5Items).includes("cur"), "当前星座 MUST NOT 出现在清单中");
+  assert.ok(!idsOf(ring5Items).includes("sessions"), "仅会话（无提案/星胚）星座 MUST NOT 入列（不再视为可切换活跃）");
+  assert.ok(!idsOf(ring5Items).some((id) => ["nebula", "empty", "orphan"].includes(id)),
+    "仅星云 / 全空 / 孤儿卫星星座不入清单");
+
+  /* 仅会话星座即便在场景中也不改变环绕序（不占环位）。 */
+  const onlySessionsScene = sceneWith(
+    wsOf("cur", "Current", proposalOf("cur")),
+    wsOf("sessions", "Sessions", sessionsOnly),
+    wsOf("nebula", "Nebula", { archives: 2 })
+  );
+  assert.deepEqual(wsSwitcherItemsOf(onlySessionsScene, "cur"), [], "其他星座仅会话/星云 → 两槽零内容");
+  assert.deepEqual(idsOf(wsSwitcherItemsOf(ring5, "sessions")), ["proto", "alpha"],
+    "当前为仅会话星座（不在可切换环上）→ 降级环绕序（左末 Proto / 右首 Alpha）");
+
+  /* ② 环绕序（字典序首尾相接）：同一环换焦点 → 前驱/后继随环绕翻转。 */
+  assert.deepEqual(idsOf(wsSwitcherItemsOf(ring5, "alpha")), ["proto", "bravo"], "焦点在环上首位：左槽环绕到末位 Proto、右槽后继 Bravo");
+  const mid = wsSwitcherItemsOf(ring5, "bravo");
+  assert.deepEqual(idsOf(mid), ["alpha", "charlie"], "焦点在中位：左槽前驱 Alpha、右槽后继 Charlie");
+  assert.deepEqual(idsOf(wsSwitcherItemsOf(ring5, "proto")), ["cur", "alpha"], "焦点在环上末位：左槽前驱 Current、右槽环绕到首位 Alpha");
+  assert.notEqual(sideOf(mid, "alpha"), sideOf(mid, "charlie"), "两侧条目档位恒定（左前驱 / 右后继）");
+  assert.ok(wsSwitcherItemsOf(ring5, "alpha").every((item) => item.side === "left" || item.side === "right"), "side 只为 left/right");
+
+  /* ③ 边界档位：0 个其他可切换 → []；恰 1 个 → 仅右槽（去重，MUST NOT 两侧同显）；≥2 → 两侧必不同。 */
+  assert.deepEqual(wsSwitcherItemsOf(sceneWith(wsOf("only", "Only", proposalOf("only"))), "only"), [], "唯一可切换星座 → 两槽零内容");
+  assert.deepEqual(wsSwitcherItemsOf(sceneWith(wsOf("only", "Only", { archives: 2 })), "only"), [], "无可切换星座 → 空清单（不抛错）");
+  const pairItems = wsSwitcherItemsOf(sceneWith(
+    wsOf("x", "Xray", proposalOf("x")),
+    wsOf("y", "Yankee", proposalOf("y")),
+    wsOf("z", "Zulu", sessionsOnly),
+    wsOf("n", "Nebula", { archives: 2 })
+  ), "x");
+  assert.deepEqual(idsOf(pairItems), ["y"], "恰 1 个其他可切换星座 → 单条目（仅会话/星云不计）");
+  assert.equal(sideOf(pairItems, "y"), "right", "单条目落右槽（前驱 = 后继去重）");
+  for (const focusId of ["cur", "alpha", "bravo", "charlie", "proto"]) {
+    const items = wsSwitcherItemsOf(ring5, focusId);
+    assert.equal(items.length, 2, focusId + "：≥2 个其他可切换星座 → 左右各一");
+    assert.notEqual(items[0].wsId, items[1].wsId, focusId + "：两侧条目必为不同目标（MUST NOT 同显）");
+    assert.ok(items[0].wsId !== focusId && items[1].wsId !== focusId, focusId + "：两侧均非当前星座");
+  }
+
+  /* ④ 字典序 + id 兜底：同名按 id 排序；空名回落 id 作显示名。 */
+  const sameName = sceneWith(
+    wsOf("b", "Same", proposalOf("b")),
+    wsOf("a", "Same", proposalOf("a")),
+    wsOf("c", "", proposalOf("c"))
+  );
+  assert.deepEqual(idsOf(wsSwitcherItemsOf(sameName, "c")), ["b", "a"], "同名星座按 id 兜底排序（a < b），焦点在首位时左槽环绕到 b");
+  assert.equal(wsSwitcherItemsOf(sameName, "c")[0].name, "Same", "显示名取星座名");
+  const emptyNameItems = wsSwitcherItemsOf(sceneWith(
+    wsOf("blank", "", proposalOf("blank")),
+    wsOf("z", "Zulu", proposalOf("z"))
+  ), "blank");
+  assert.deepEqual(idsOf(emptyNameItems), ["z"], "空名星座参与排序（按 id）且自身不因空名报错");
+  assert.deepEqual(wsSwitcherItemsOf(sceneWith(
+    wsOf("m", "M", proposalOf("m")),
+    wsOf("n", "", proposalOf("n"))
+  ), "m").map((item) => item.name), ["n"], "空名条目显示名回落 id");
+
+  /* ⑤ focusWsId 容错 / 当前不在可切换环上（缺失 / 未命中 / 无提案星胚）→ 可切换清单自身成环降级。 */
+  const fallback = wsSwitcherItemsOf(ring5, "missing");
+  assert.deepEqual(idsOf(fallback), ["proto", "alpha"], "未命中当前 id → 可切换清单自身成环（右首 Alpha、左末 Proto）");
+  assert.equal(sideOf(fallback, "alpha"), "right", "降级环右槽 = 字典序首个可切换星座");
+  assert.equal(sideOf(fallback, "proto"), "left", "降级环左槽 = 字典序末个可切换星座");
+  assert.deepEqual(idsOf(wsSwitcherItemsOf(ring5, "nebula")), ["proto", "alpha"], "当前星座仅星云（不在环上）→ 同一降级路径");
+  assert.deepEqual(idsOf(wsSwitcherItemsOf(ring5, null)), ["proto", "alpha"], "缺失当前 id → 不抛错，走降级环");
+  assert.deepEqual(idsOf(wsSwitcherItemsOf(ring5, undefined)), ["proto", "alpha"], "undefined 当前 id → 不抛错");
+  const fallbackPair = wsSwitcherItemsOf(sceneWith(wsOf("a", "Alpha", proposalOf("a"))), "missing");
+  assert.deepEqual(idsOf(fallbackPair), ["a"], "降级环恰 1 个可切换星座 → 单条目落右槽");
+  assert.equal(sideOf(fallbackPair, "a"), "right", "降级单条目仍落右槽");
+
+  /* ⑥ 入参形态容错：裸数组 / 空场景 / null / 非法项；输入数组不被排序就地改写（纯函数）。 */
+  const bare = [wsOf("a", "Alpha", proposalOf("a")), wsOf("b", "Bravo", proposalOf("b"))];
+  const bareCopy = bare.map((item) => item.id);
+  assert.deepEqual(idsOf(wsSwitcherItemsOf(bare, "a")), ["b"], "兼容裸数组场景（无 {ws} 包装）");
+  assert.deepEqual(bare.map((item) => item.id), bareCopy, "纯函数不就地改写输入数组（排序在副本上）");
+  assert.deepEqual(wsSwitcherItemsOf({ ws: [] }, "a"), [], "空场景 → []");
+  assert.deepEqual(wsSwitcherItemsOf({}, "a"), [], "缺 ws 字段 → []");
+  assert.deepEqual(wsSwitcherItemsOf(null, "a"), [], "null 场景 → []（不抛错）");
+  assert.deepEqual(wsSwitcherItemsOf(undefined, undefined), [], "全缺参 → []（不抛错）");
+  assert.deepEqual(wsSwitcherItemsOf({ ws: [null, 3, "x", { id: "a", name: "Alpha", stars: [{}] }] }, "a"), [],
+    "非法条目跳过、仅 1 个可切换星座且为当前 → []");
+  assert.deepEqual(wsSwitcherItemsOf({ ws: [{ id: "a", name: "Alpha", stars: [] }, { id: "b", name: "Bravo", stars: null }] }, "a"), [],
+    "stars 缺失 / 非数组按不可切换处理（SHALL NOT 抛错）");
+}
+
 /* ── 出生 fx（2.5）：推进/过期/delay 生效 + 卫星 born（2.2）+ 状态色相滑移（3.1） ── */
 {
   const container = stubEl("div");
@@ -1647,7 +1823,7 @@ const EXPECTED_FIT_DIST = FILTER_FIT_MARGIN / Math.tan(Math.PI / 6) * 1.1;
   eng.setFilter(new Set(["ws1"]), new Map([["ws1", [0, 0, 0]]]));
   step(20);
   const rootEl = createdEls.filter((el) => el.className === "cos-root").pop();
-  const chips = createdEls.filter((el) => el.className === "cos-chip" && (el.listeners.click?.length ?? 0) > 0);
+  const chips = createdEls.filter((el) => String(el.className).startsWith("cos-chip") && (el.listeners.click?.length ?? 0) > 0);
   const chip = chips.pop();
   assert.ok(chip, "星座 chip 已挂载（引擎覆盖层自建）");
   for (const fn of chip.listeners.click) fn(); // 银河视图点击 chip = dive(ws)
@@ -1880,6 +2056,394 @@ const EXPECTED_FIT_DIST = FILTER_FIT_MARGIN / Math.tan(Math.PI / 6) * 1.1;
   eng.dispose();
 }
 
+/* ── 星座活力两态呈现（step1-add-constellation-vitality 2.1–2.3 / 3.1–3.3 / D2–D4）：
+     银河视图 chip 沉睡态 class（updateOverlay 循环单点 classList.toggle）与两态状态点
+     （updateChipText 的 dataset.html 差分守卫）；沉睡 chip 照常钻入；过滤淡隐 inline α
+     与沉睡态叠加无侵占；钻取态标牌 cos-ws-life 随 E.focusWs 活力渲染（差分守卫 /
+     实时唤醒翻转 / 银河态清空）；仅星云沉睡不触发出生高亮、空星座出生与沉睡共存；
+     星座级（存在口径）与恒星级（热度口径）标识在钻取态并列可区分。 ── */
+{
+  /* ① 样式契约：沉睡态只动颜色属性；两态点取色与 cos-slab-life 同源令牌链。 */
+  const sleepRule = /\.cos-chip\.cos-chip-sleep \{([^}]*)\}/.exec(ENGINE_CSS);
+  const sleepTextRule = /\.cos-chip\.cos-chip-sleep b \{([^}]*)\}/.exec(ENGINE_CSS);
+  const chipLifeActive = /\.cos-chip-life\.active \{([^}]*)\}/.exec(ENGINE_CSS);
+  const chipLifeSleep = /\.cos-chip-life\.sleep \{([^}]*)\}/.exec(ENGINE_CSS);
+  const wsLifeRule = /\.cos-ws-life \{([^}]*)\}/.exec(ENGINE_CSS);
+  const wsLifeActive = /\.cos-ws-life\.active \{([^}]*)\}/.exec(ENGINE_CSS);
+  const wsLifeSleep = /\.cos-ws-life\.sleep \{([^}]*)\}/.exec(ENGINE_CSS);
+  assert.ok(sleepRule && /border-color/.test(sleepRule[1]), "ENGINE_CSS 含沉睡 chip 描边降 alpha 规则");
+  assert.ok(!/opacity|transform/.test(sleepRule[1]), "沉睡态规则 MUST NOT 声明 opacity/transform（逐帧动画面不被侵占）");
+  assert.ok(sleepTextRule && /filter: grayscale/.test(sleepTextRule[1]) && /opacity/.test(sleepTextRule[1]),
+    "沉睡态名称降饱和 + 降亮度（作用于 b，非 chip 本体）");
+  assert.ok(chipLifeActive && chipLifeActive[1].includes("var(--dsw-alias-state-warn-primary, var(--cos-waiting, #ffaa4a))"),
+    "chip 活跃点取活力琥珀令牌链（与 cos-slab-life 同源）");
+  assert.ok(chipLifeSleep && chipLifeSleep[1].includes("var(--cos-ink-dim"), "chip 沉睡点取暗淡墨色令牌（非固定直量灰）");
+  assert.ok(wsLifeRule && /font-size: 9px/.test(wsLifeRule[1]) && !/text-shadow: 0 0/.test(wsLifeRule[1]),
+    "标牌活动标识按标牌字号语境缩放、不继承星座名辉光");
+  assert.ok(wsLifeActive && wsLifeActive[1].includes("var(--dsw-alias-state-warn-primary"), "标牌活跃点与恒星级标识同源令牌链");
+  assert.ok(wsLifeSleep && wsLifeSleep[1].includes("var(--cos-ink-dim"), "标牌沉睡点与恒星级标识同源令牌链");
+
+  const container = stubEl("div");
+  const eng = createCosmosEngine({ container, style: createSkinD() });
+  const rootEl = container.children[0];
+  const overlayEl = rootEl._by[".cos-overlay"];
+  const badgeEl = rootEl._by[".cos-badge"];
+  const wsOf = (id, over) => ({
+    id, name: id, pos: [0, 0, 0], stars: [], links: [], planets: [], comets: [],
+    archives: 0, satelliteCount: 0, ...over
+  });
+  const star = (id, lifecycle = "created") => ({
+    id, name: id, lifecycle, setBy: null, at: null, tasks: [1, 2], age: "刚刚", act: 0, off: [0, 0, 0]
+  });
+  const planet = (id) => ({
+    id, title: id, state: "idle", pendingKind: null, stars: [], todos: "—", when: "刚刚",
+    satellites: [], satelliteCount: 0, delegatedBusy: false
+  });
+  const comet = (id) => ({
+    id, title: id, state: "idle", pendingKind: null, when: "刚刚", satellites: [], satelliteCount: 0, delegatedBusy: false
+  });
+  const baseWs = () => [
+    wsOf("ws-active", { stars: [star("st-a")] }),
+    wsOf("ws-proto", { stars: [star("st-p", "proto")] }),
+    wsOf("ws-planet", { planets: [planet("p-1")] }),
+    wsOf("ws-comet", { comets: [comet("c-1")] }),
+    wsOf("ws-nebula", { archives: 2 }),
+    wsOf("ws-empty", {}),
+    wsOf("ws-orphan", { satelliteCount: 2 })
+  ];
+  const sceneWith = (over = {}) => ({
+    workspaces: baseWs().map((w) => ({ ...w, ...(over[w.id] || {}) }))
+  });
+  const chipOf = (id) => overlayEl.children.find((el) =>
+    String(el.className).startsWith("cos-chip") && String(el.dataset.html).includes("<b>" + id + "<"));
+
+  eng.setScene(sceneWith(), "rebuild");
+  rafQ.length = 0;
+  eng.start();
+  let tNow = 30000;
+  const step1 = (n = 1) => { for (let i = 0; i < n; i++) { tNow += 50; stepFrame(tNow); } };
+  step1(30); // 过冷启动序曲 + 至少一帧 class 单点 toggle
+
+  /* ② 判据驱动：四个活跃星座 chip 无沉睡态；星云-only / 全空 / 孤儿卫星-only 三个沉睡。 */
+  for (const id of ["ws-active", "ws-proto", "ws-planet", "ws-comet"]) {
+    const el = chipOf(id);
+    assert.ok(el, id + "：chip 已创建");
+    assert.ok(!String(el.className).includes("cos-chip-sleep"), id + "：活跃星座 chip MUST NOT 呈沉睡态");
+    assert.ok(String(el.dataset.html).includes("cos-chip-life active"), id + "：活跃状态点亮琥珀");
+    assert.ok(!String(el.dataset.html).includes("cos-chip-life sleep"), id + "：活跃状态点无沉睡类");
+  }
+  for (const id of ["ws-nebula", "ws-empty", "ws-orphan"]) {
+    const el = chipOf(id);
+    assert.ok(el, id + "：chip 已创建");
+    assert.ok(String(el.className).includes("cos-chip-sleep"), id + "：沉睡星座 chip 附加 cos-chip-sleep");
+    assert.ok(String(el.dataset.html).includes("cos-chip-life sleep"), id + "：沉睡状态点呈灰");
+  }
+  assert.ok(String(chipOf("ws-nebula").innerHTML).includes("ws-nebula"), "仅星云星座 chip 照常呈现（历史不隐藏）");
+
+  /* ③ 内容差分守卫：活力未翻转 → 不重写 innerHTML；同名同态 patch 零重写。 */
+  const nebulaChip = chipOf("ws-nebula");
+  nebulaChip.innerHTML = "MARKER";
+  eng.setScene(sceneWith(), "patch");
+  step1(1);
+  assert.equal(nebulaChip.innerHTML, "MARKER", "活力未变 → chip 内容零重写（dataset.html 差分守卫生效）");
+  nebulaChip.innerHTML = String(nebulaChip.dataset.html);
+
+  /* ④ 活力翻转：沉睡 ⇄ 活跃在同一 chip DOM 上收敛（rebuild 差分 + 下一帧 class toggle）。 */
+  eng.setScene(sceneWith({ "ws-nebula": { stars: [star("st-n")] } }), "rebuild");
+  step1(1);
+  assert.equal(chipOf("ws-nebula"), nebulaChip, "rebuild 复用既有 chip DOM（增量对齐，不整表重建）");
+  assert.ok(!String(nebulaChip.className).includes("cos-chip-sleep"), "沉睡 → 活跃：沉睡 class 退场");
+  assert.ok(String(nebulaChip.dataset.html).includes("cos-chip-life active"), "沉睡 → 活跃：状态点换串重写");
+  assert.equal(nebulaChip.dataset.html, String(nebulaChip.innerHTML), "内容守卫值与 DOM 同源");
+  eng.setScene(sceneWith(), "rebuild");
+  step1(1);
+  assert.ok(String(nebulaChip.className).includes("cos-chip-sleep"), "活跃 → 沉睡：沉睡 class 翻回");
+
+  /* ⑤ 过滤淡隐 α（逐帧 inline opacity）与沉睡态（色彩层）叠加不互侵占。 */
+  eng.setFilter(new Set(["ws-active"]), new Map([["ws-active", [0, 0, 0]]]));
+  step1(2); // FILTER_RAMP_DUR(0.35s) 坡道中
+  const dimSleepChip = chipOf("ws-empty");
+  assert.ok(String(dimSleepChip.className).includes("cos-chip-sleep"), "过滤期间沉睡态保持（α 通道不清 class）");
+  const alphaStr = String(dimSleepChip.style.opacity);
+  assert.ok(alphaStr !== "" && Number(alphaStr) < 1, "未匹配星座写入逐帧 inline α（与沉睡态相乘）");
+  assert.equal(eng.setFilter(new Set(), new Map()), true, "清空过滤");
+  step1(12); // 坡道回满
+
+  /* ⑥ 出生高亮 × 活力：空星座 = 沉睡 ∩ 无星云；仅星云沉睡 MUST NOT 触发出生高亮。 */
+  eng.markWsBirth("ws-nebula");
+  eng.markWsBirth("ws-empty");
+  eng.setScene(sceneWith(), "rebuild");
+  step1(1);
+  assert.ok(!String(chipOf("ws-nebula").className).includes("cos-chip-new"),
+    "仅星云的沉睡星座 MUST NOT 触发出生高亮（D6：空星座 = 沉睡 ∩ 无星云）");
+  assert.ok(String(chipOf("ws-nebula").className).includes("cos-chip-sleep"), "仅星云星座仍呈沉睡态");
+  assert.ok(String(chipOf("ws-empty").className).includes("cos-chip-new"), "空星座出生高亮照常");
+  assert.ok(String(chipOf("ws-empty").className).includes("cos-chip-sleep"),
+    "出生高亮与沉睡态共存（animation 优先级压过沉睡描边，无互斥逻辑）");
+
+  /* ⑦ 沉睡 chip 照常钻入；钻取标牌呈星座级沉睡标识（点 + 文案）。 */
+  const divesBefore = eng.inspectInput().dives;
+  for (const fn of chipOf("ws-nebula").listeners.click ?? []) fn({});
+  assert.equal(eng.inspectInput().dives, divesBefore + 1, "沉睡 chip 点击照常触发 dive（活力态不阻断钻取）");
+  assert.equal(eng.inspectFilter().focus.diving, true, "沉睡星座可进入钻取态");
+  fakeNow += 1300;
+  step1(2);
+  assert.ok(String(badgeEl.dataset.html).includes("cos-ws-life sleep"), "钻取标牌：沉睡星座灰点标识");
+  assert.ok(String(badgeEl.dataset.html).includes("沉睡"), "标牌文案取 E.labels.vitality（沉睡）");
+  assert.ok(/✦0 ●0 ◇0 ☄0 ☁2/.test(String(badgeEl.innerHTML)), "标牌计数仪表行不变（星云照常呈现 ☁2）");
+
+  /* 差分守卫：内容不变零重写。 */
+  const badgeHtml = String(badgeEl.innerHTML);
+  badgeEl.innerHTML = "MARKER";
+  step1(1);
+  assert.equal(badgeEl.innerHTML, "MARKER", "标牌内容未变 → 零重写（dataset.html 守卫生效）");
+  badgeEl.innerHTML = badgeHtml;
+
+  /* ⑧ 实时唤醒：沉睡星座出现首个恒星（SSE 增量 → rebuild）→ 标牌标识翻转，无需整页刷新。 */
+  eng.setScene(sceneWith({ "ws-nebula": { stars: [star("st-n")] } }), "rebuild");
+  step1(1);
+  assert.ok(String(badgeEl.dataset.html).includes("cos-ws-life active") && String(badgeEl.dataset.html).includes("活跃"),
+    "唤醒后标牌翻转为活跃态（dataset.html 换串重写）");
+  assert.ok(/✦1 ●0 ◇0 ☄0 ☁2/.test(String(badgeEl.innerHTML)), "唤醒后计数行随场景增量更新");
+
+  /* ⑨ 银河态标牌隐藏路径：Esc 飞回 → 标牌清空，活力标识随之移除。 */
+  assert.equal(eng.consumeEscape(), true, "Esc 飞回银河");
+  fakeNow += 1300;
+  step1(2);
+  assert.equal(String(badgeEl.dataset.html), "", "银河态标牌清空（dataset.html 守卫值为空串）");
+  assert.equal(String(badgeEl.innerHTML), "", "银河态无活力标识残留");
+
+  /* ⑩ 与恒星级活力可区分（spec scenario）：钻取活跃星座 → 标牌活跃（存在口径），
+     选中 act=0 恒星 → 名牌沉睡（热度口径）；两标识不同类、并列不混淆。 */
+  assert.equal(eng.diveToWs("ws-active"), true, "钻取活跃星座");
+  fakeNow += 1300;
+  step1(2);
+  assert.ok(String(badgeEl.dataset.html).includes("cos-ws-life active") && String(badgeEl.dataset.html).includes("活跃"),
+    "活跃星座标牌：琥珀点 + 「活跃」");
+  assert.ok(/✦1 ●0 ◇0 ☄0 ☁0/.test(String(badgeEl.innerHTML)), "活跃星座计数行不变");
+  assert.equal(eng.focusStar("ws-active", "st-a"), true, "选中 act=0 恒星（名牌活力标识并列观察）");
+  step1(2);
+  const starSlab = overlayEl.children.find((el) =>
+    String(el.className).startsWith("cos-slab") && String(el.dataset.html).includes("cos-slab-life"));
+  assert.ok(starSlab && String(starSlab.dataset.html).includes("cos-slab-life sleep"),
+    "恒星名牌按热度口径呈沉睡（act=0）");
+  assert.ok(String(badgeEl.dataset.html).includes("cos-ws-life active"),
+    "同屏标牌按存在口径呈活跃——两层标识判据不同、类名不同（可区分）");
+  assert.ok(!String(badgeEl.dataset.html).includes("cos-slab-life"), "标牌不混用恒星级标识类");
+
+  eng.stop();
+  eng.dispose();
+}
+
+/* ── 钻取态可切换星座切换条目（step2-add-constellation-switcher 3.1–3.3 / D2–D6）：
+      DOM 常驻节点 + 内容差分 / 显隐随钻取态 / 仅会话星座不入列（降级环）/ 边界档位（0/1/≥2）/
+      实时进出清单（rebuild 路径）/ 重命名 patch 就地刷新 / 条目 click → diveToWs 同源（目标与
+      补间、连点 retarget）/ 手势抑制 / 容器级缩放覆盖（条目上滚轮无死区）/ 无视搜索过滤 /
+      过滤排除当前星座 flyOut 后整体退场。 ── */
+{
+  const container = stubEl("div");
+  const eng = createCosmosEngine({ container, style: createSkinD() });
+  const rootEl = container.children[0];
+  const canvasEl = rootEl._by[".cos-canvas"];
+  const leftSide = rootEl._by['.cos-wsbar-side[data-side="left"]'];
+  const rightSide = rootEl._by['.cos-wsbar-side[data-side="right"]'];
+  assert.equal(leftSide.children.length, 1, "左条目槽在 ensureDom 建一个常驻条目节点（MUST NOT 逐帧重建）");
+  assert.equal(rightSide.children.length, 1, "右条目槽在 ensureDom 建一个常驻条目节点");
+  const leftItem = leftSide.children[0];
+  const rightItem = rightSide.children[0];
+  assert.equal(leftItem.className, "cos-wsbar-item", "条目节点类名（HUD 样式挂点）");
+  assert.equal(leftItem.disabled, true, "未挂载条目 disabled（键盘不可达）");
+  const fire = (el, type, ev) => { for (const fn of el.listeners[type] ?? []) fn(ev); };
+  const activeOf = (id, name, pos) => ({
+    id, name, pos,
+    stars: [{ id: id + "-s", name: id + "-s", lifecycle: "created", setBy: null, at: null, tasks: [1, 1], age: "刚刚", act: 0, off: [0, 0, 0] }],
+    links: [], planets: [], comets: [], archives: 0, satelliteCount: 0
+  });
+  const asleepOf = (id, name, pos) => ({
+    id, name, pos, stars: [], links: [], planets: [], comets: [], archives: 0, satelliteCount: 0
+  });
+  /* 仅会话星座（行星 + 彗星、无提案/星胚）：step1 活力为活跃，但切换清单 MUST NOT 入列。 */
+  const sessionsOf = (id, name, pos) => ({
+    id, name, pos, stars: [], links: [],
+    planets: [{ id: id + "-p", title: id + "-p", state: "idle", pendingKind: null, stars: [], todos: "—", when: "刚刚", satellites: [], satelliteCount: 0, delegatedBusy: false }],
+    comets: [{ id: id + "-c", title: id + "-c", state: "idle", pendingKind: null, when: "刚刚", satellites: [], satelliteCount: 0, delegatedBusy: false }],
+    archives: 0, satelliteCount: 0
+  });
+  const ringScene = (over = {}) => ({
+    workspaces: [
+      activeOf("cur", "Current", [0, 0, 0]),
+      activeOf("alpha", "Alpha", [120, 0, 0]),
+      activeOf("bravo", "Bravo", [0, 120, 0]),
+      activeOf("charlie", "Charlie", [0, -120, 0]),
+      sessionsOf("sessions", "Sessions", [0, 0, -200]),
+      asleepOf("nebula", "Nebula", [-120, 0, 0])
+    ].map((ws) => ({ ...ws, ...(over[ws.id] || {}) }))
+  });
+  eng.setScene(ringScene(), "rebuild");
+  rafQ.length = 0;
+  eng.start();
+  let tNow = 60000;
+  const step1 = (n = 1) => { for (let i = 0; i < n; i++) { tNow += 50; stepFrame(tNow); } };
+  step1(30); // 过冷启动序曲 + 至少一帧差分维护
+
+  /* ① 银河态零呈现（显隐随钻取态）。 */
+  assert.ok(!leftItem.classList.contains("on") && !rightItem.classList.contains("on"), "银河态条目退场（零布局呈现）");
+  assert.equal(String(leftItem.innerHTML), "", "银河态条目零内容");
+
+  /* ①′ 仅会话星座不入列（需求调整）：可钻入、step1 活力仍活跃，但无提案/星胚 → 不占环位；
+        当前不在可切换环上时以可切换清单自身成环降级（左末 Current / 右首 Alpha）。 */
+  assert.equal(eng.diveToWs("sessions"), true, "钻取仅会话星座（钻取入口不受判据影响）");
+  fakeNow += 1300;
+  step1(2);
+  assert.equal(eng.inspectFilter().focus.id, "sessions", "钻取态成立（仅会话星座）");
+  step1(1);
+  assert.ok(String(leftItem.innerHTML).includes("Current"), "仅会话当前：降级环左槽 = 字典序末位 Current");
+  assert.ok(String(rightItem.innerHTML).includes("Alpha"), "仅会话当前：降级环右槽 = 字典序首位 Alpha");
+  assert.ok(!String(leftItem.innerHTML).includes("Sessions") && !String(rightItem.innerHTML).includes("Sessions"),
+    "清单 MUST NOT 含仅会话星座自身（即使它是当前星座）");
+  assert.equal(eng.consumeEscape(), true, "Esc 飞回银河");
+  fakeNow += 1300;
+  step1(2);
+
+  /* ② 钻取 cur → 左 Charlie（前驱）/ 右 Alpha（后继）；内容含活跃状态点。 */
+  assert.equal(eng.diveToWs("cur"), true, "钻取当前星座");
+  fakeNow += 1300;
+  step1(2);
+  assert.equal(eng.inspectFilter().focus.diving, true, "钻取态成立");
+  assert.ok(leftItem.classList.contains("on"), "左槽条目 .on 挂载（淡入）");
+  assert.ok(String(leftItem.innerHTML).includes("Charlie") && String(leftItem.innerHTML).includes("<i></i>"),
+    "左槽 = 环上前驱 Charlie（星座名 + 活跃状态点）");
+  assert.equal(leftItem.dataset.ws, "charlie", "左槽目标写入 dataset（观测钩子）");
+  assert.ok(rightItem.classList.contains("on") && String(rightItem.innerHTML).includes("Alpha"), "右槽 = 环上后继 Alpha");
+  assert.equal(rightItem.dataset.ws, "alpha", "右槽目标写入 dataset");
+  assert.equal(leftItem.disabled, false, "挂载条目恢复可点");
+
+  /* ③ 内容差分守卫：场景/活力未变 → 零重写（dataset.html 同款纪律）。 */
+  leftItem.innerHTML = "MARKER";
+  step1(1);
+  assert.equal(leftItem.innerHTML, "MARKER", "条目内容未变 → 零重写（dataset.html 差分守卫生效）");
+  leftItem.innerHTML = String(leftItem.dataset.html);
+
+  /* ④ 实时进出清单（SSE 增量 → rebuild）：星云沉睡星座被唤醒（出现首个恒星）→ 进入环绕序；
+        再度沉睡 → 条目淡出、满 0.25s 清内容（环绕序即时收敛）。 */
+  eng.setScene(ringScene({ nebula: activeOf("nebula", "Nebula", [-120, 0, 0]) }), "rebuild");
+  step1(1);
+  assert.ok(String(rightItem.innerHTML).includes("Nebula"), "星座唤醒：进入环上后继（右槽实时换串，无整页刷新）");
+  assert.equal(rightItem.dataset.ws, "nebula", "唤醒后右槽目标 = nebula");
+  assert.ok(leftItem.classList.contains("on") && String(leftItem.innerHTML).includes("Charlie"), "唤醒不扰动另一侧条目");
+  eng.setScene(ringScene(), "rebuild");
+  step1(1);
+  assert.ok(String(rightItem.innerHTML).includes("Alpha") && rightItem.dataset.ws === "alpha", "星座沉睡：环绕序回退（右槽回到 Alpha）");
+
+  /* ⑤ 重命名 patch 就地刷新（同一节点，目标 id 不变）。 */
+  const renamed = ringScene();
+  renamed.workspaces[3].name = "Cobra";
+  eng.setScene(renamed, "patch");
+  step1(1);
+  assert.ok(String(leftItem.innerHTML).includes("Cobra"), "重命名经 patch 就地刷新条目内容（节点复用不重建）");
+  assert.equal(leftItem.dataset.ws, "charlie", "仅名称刷新，目标 id 不变");
+
+  /* ⑥ 飞回银河：条目淡出退场，满窗后零内容（槽宽由固定宽保留，布局不塌）。 */
+  assert.equal(eng.consumeEscape(), true, "Esc 飞回银河");
+  fakeNow += 1300;
+  step1(2);
+  assert.ok(!leftItem.classList.contains("on") && !rightItem.classList.contains("on"), "飞回银河：条目 .on 摘除（切换器随钻取态整体退场）");
+  step1(6); // > WS_SWITCH_FADE（0.25s）
+  assert.equal(String(leftItem.innerHTML), "", "飞回银河：淡出满窗后条目清内容（零残留）");
+
+  /* ⑦ 边界档位：活跃恰 2 个 → 单条目落右槽、左槽留空（去重，MUST NOT 两侧同显）。 */
+  const pair = () => ({
+    workspaces: [
+      activeOf("cur", "Current", [0, 0, 0]),
+      activeOf("alpha", "Alpha", [120, 0, 0]),
+      asleepOf("nebula", "Nebula", [-120, 0, 0])
+    ]
+  });
+  eng.setScene(pair(), "rebuild");
+  step1(1);
+  assert.equal(eng.diveToWs("cur"), true, "钻取 current（活跃恰 2 个）");
+  fakeNow += 1300;
+  step1(2);
+  assert.ok(!leftItem.classList.contains("on"), "2 个可切换星座：左槽留空（前驱 = 后继去重）");
+  assert.equal(String(leftItem.innerHTML), "", "2 个可切换星座：左槽零内容");
+  assert.ok(rightItem.classList.contains("on") && String(rightItem.innerHTML).includes("Alpha"), "2 个可切换星座：单条目落右槽");
+
+  /* ⑧ 条目点击换座（diveToWs 同源）：目标 / 补间语义 / 连点 retarget 无跳变。 */
+  const divesBeforeClick = eng.inspectInput().dives;
+  fire(rightItem, "click", {});
+  assert.equal(eng.inspectInput().dives, divesBeforeClick + 1, "条目 click 触发单次 dive（无重复）");
+  assert.equal(eng.inspectFilter().focus.id, "alpha", "条目 click 钻取到目标星座");
+  const clickTween = eng.inspectFilter().tween;
+  assert.ok(clickTween && clickTween.mode === "in" && clickTween.dur === 1300, "继承 dive 补间语义（1300ms，与 chip 点击同律）");
+  assert.deepEqual(clickTween.to.target, [120, 0, 0], "补间目标 = 目标星座中心（非当前星座）");
+  step1(1); // 一帧后环绕序收敛：焦点 alpha → 右槽 = 前焦点 Current
+  assert.ok(String(rightItem.innerHTML).includes("Current") && rightItem.dataset.ws === "cur",
+    "换座后环绕序即刻收敛（右槽 = Current）");
+  fakeNow += 100; // 补间进行中
+  const midTweenFrom = eng.inspectFilter().camera.target.slice();
+  const divesMid = eng.inspectInput().dives;
+  fire(rightItem, "click", {});
+  assert.equal(eng.inspectInput().dives, divesMid + 1, "连点：新 dive 单次触发");
+  assert.equal(eng.inspectFilter().focus.id, "cur", "连点 retarget 到新目标星座");
+  const reTween = eng.inspectFilter().tween;
+  assert.deepEqual(reTween.to.target, [0, 0, 0], "retarget 补间目标 = 新目标中心");
+  assert.deepEqual(eng.inspectFilter().camera.target, midTweenFrom, "retarget 当下镜头不跳变（从在途位置续接）");
+  assert.equal(reTween.mode, "in", "retarget 仍走钻取补间（零新增状态转移）");
+
+  /* ⑨ 容器级缩放覆盖：条目上滚轮照常生效（无缩放死区；容器级绑定不区分覆盖元素）。 */
+  const distBeforeWheel = eng.inspectFilter().camera.dist;
+  fire(rootEl, "wheel", { preventDefault() {}, deltaY: -120, target: rightItem });
+  assert.ok(eng.inspectFilter().camera.dist < distBeforeWheel, "条目上滚轮放大生效（容器级绑定覆盖，无缩放死区）");
+
+  /* ⑩ 多指手势期点击抑制（与 chip 同款判据）：手势中与抑制窗内均不换座，窗过恢复。 */
+  const down = (id, x, y) => fire(rootEl, "pointerdown", { pointerId: id, button: 0, clientX: x, clientY: y, target: canvasEl, preventDefault() {} });
+  const up = (id) => fire(rootEl, "pointerup", { pointerId: id, button: 0, target: canvasEl });
+  eng.diveToWs("cur"); // 回到钻取态（上一步 retarget 后焦点为 cur；此处确保焦点星座确定）
+  fakeNow += 1300;
+  step1(2);
+  const divesBeforeGesture = eng.inspectInput().dives;
+  down(11, 300, 300);
+  down(12, 340, 300);
+  assert.equal(eng.inspectInput().gesture, true, "双指手势激活");
+  fire(rightItem, "click", {});
+  assert.equal(eng.inspectInput().dives, divesBeforeGesture, "手势期条目点击被抑制（不误触换座）");
+  up(12);
+  up(11);
+  assert.equal(eng.inspectInput().gesture, false, "手势结束");
+  assert.equal(eng.inspectInput().suppressed, true, "进入 GESTURE_SUPPRESS_MS 抑制窗");
+  fire(rightItem, "click", {});
+  assert.equal(eng.inspectInput().dives, divesBeforeGesture, "抑制窗内条目点击仍被抑制");
+  fakeNow += GESTURE_SUPPRESS_MS + 1;
+  assert.equal(eng.inspectInput().suppressed, false, "抑制窗过期（350ms 后恢复）");
+  fire(rightItem, "click", {});
+  assert.equal(eng.inspectInput().dives, divesBeforeGesture + 1, "抑制窗过期后条目点击恢复换座（单次）");
+
+  /* ⑪ 搜索过滤：导航铬件——命中集变化不改变条目清单；过滤排除当前星座 → 自动飞回、切换器退场。 */
+  fakeNow += 1300;
+  step1(2);
+  assert.equal(eng.inspectFilter().focus.id, "alpha", "条目换座落地（焦点 = 目标星座）");
+  const filterTargetsBefore = [leftItem.dataset.ws, rightItem.dataset.ws];
+  const filterHtmlBefore = String(rightItem.innerHTML);
+  eng.setFilter(new Set(["bravo", "alpha"]), new Map([["bravo", [0, 120, 0]], ["alpha", [120, 0, 0]]]));
+  step1(1);
+  assert.deepEqual([leftItem.dataset.ws, rightItem.dataset.ws], filterTargetsBefore, "过滤命中集变化：条目目标不变（MUST NOT 求交集）");
+  assert.equal(String(rightItem.innerHTML), filterHtmlBefore, "过滤激活：条目内容零重写（差分守卫 + 无命中过滤）");
+  assert.ok(rightItem.classList.contains("on"), "过滤激活不隐藏条目（导航铬件）");
+  assert.equal(eng.inspectFilter().focus.id, "alpha", "命中集含当前星座 → 钻取态保持（不飞回）");
+  eng.setFilter(new Set(["bravo"]), new Map([["bravo", [0, 120, 0]]]));
+  assert.equal(eng.inspectFilter().tween.mode, "out", "过滤排除当前星座 → 引擎裁决自动飞回（flyOut）");
+  fakeNow += 1300;
+  step1(2);
+  assert.equal(eng.inspectFilter().focus.diving, false, "飞回银河：钻取态退场");
+  assert.ok(!leftItem.classList.contains("on") && !rightItem.classList.contains("on"), "切换器随钻取态整体退场（条目 .on 摘除）");
+  step1(6);
+  assert.equal(String(leftItem.innerHTML), "", "退场后条目零内容");
+  assert.equal(eng.setFilter(new Set(), new Map()), true, "清空过滤（收尾）");
+
+  eng.stop();
+  eng.dispose();
+}
+
 /* ── 覆盖层隐藏必须清内联 opacity（真机「恒星名/星座名残影」回归） ── */
 {
   const container = stubEl("div");
@@ -1894,7 +2458,7 @@ const EXPECTED_FIT_DIST = FILTER_FIT_MARGIN / Math.tan(Math.PI / 6) * 1.1;
   step1(27); // 过冷启动序曲
 
   const chip = overlayEl.children.find((el) => String(el.className).startsWith("cos-chip"));
-  const slab = overlayEl.children.find((el) => el.className === "cos-slab");
+  const slab = overlayEl.children.find((el) => String(el.className).startsWith("cos-slab"));
   assert.ok(chip && slab, "chip / 恒星名牌已创建");
   assert.notEqual(chip.style.opacity, "", "银河态 chip 写入内联透明度");
   assert.equal(slab.style.opacity, "", "银河态未聚焦恒星名牌隐藏（无内联透明度）");
@@ -1953,7 +2517,10 @@ const EXPECTED_FIT_DIST = FILTER_FIT_MARGIN / Math.tan(Math.PI / 6) * 1.1;
 
   /* HUD 精简（D5/6.3）：ensureDom 产物与 ENGINE_CSS 均不再有面包屑/右上提示 */
   const markup = String(rootEl.innerHTML);
-  assert.ok(markup.includes("cos-canvas") && markup.includes("cos-badge"), "ensureDom 产物含 canvas 与星座标牌");
+  assert.ok(markup.includes("cos-canvas") && markup.includes("cos-wsbar") && markup.includes("cos-badge"), "ensureDom 产物含 canvas、行容器与星座标牌");
+  const wsbarOrder = ['data-side="left"', 'cos-badge', 'data-side="right"'].map((token) => markup.indexOf(token));
+  assert.ok(wsbarOrder[0] >= 0 && wsbarOrder[0] < wsbarOrder[1] && wsbarOrder[1] < wsbarOrder[2],
+    "行容器 DOM 顺序 [左条目槽][标牌][右条目槽]（标牌天然居中格）");
   assert.ok(!markup.includes("cos-crumb"), "ensureDom 产物无面包屑");
   assert.ok(!markup.includes("cos-hint"), "ensureDom 产物无右上操作提示");
   assert.ok(!ENGINE_CSS.includes(".cos-crumb"), "ENGINE_CSS 无 .cos-crumb 规则");
@@ -2063,13 +2630,15 @@ const EXPECTED_FIT_DIST = FILTER_FIT_MARGIN / Math.tan(Math.PI / 6) * 1.1;
   assert.ok(String(badgeEl.dataset.html).includes("ws-one"), "标牌含星座名（dataset.html 守卫值已写）");
   assert.ok(String(badgeEl.innerHTML).includes("ws-one"), "标牌渲染星座名");
   assert.ok(/✦1 ●1 ◇0 ☄1 ☁0/.test(String(badgeEl.innerHTML)), "标牌含全量计数仪表 ✦●◇☄☁");
-  /* 标牌定位口径（polish-cosmos-drilled-hud 2.1/2.2）：居中 + 文本居中 + 避让左面板与右缘 */
-  assert.ok(/\.cos-badge \{[^}]*left: 50%; transform: translateX\(-50%\)/.test(ENGINE_CSS), "标牌水平居中（left:50% + translateX(-50%)，顶部中央锚点）");
+  /* 标牌定位口径（step2-add-constellation-switcher D1：定位/限宽职责移交行容器 `.cos-wsbar`，
+     标牌改行内中央格——视觉样式与文本居中不变，几何承诺等价迁移） */
+  assert.ok(/\.cos-wsbar \{[^}]*left: 50%; transform: translateX\(-50%\)/.test(ENGINE_CSS), "行容器承接水平居中（left:50% + translateX(-50%)，顶部中央锚点）");
   assert.ok(/\.cos-badge \{[^}]*text-align: center/.test(ENGINE_CSS), "标牌文本居中排版（名称 + 计数两行）");
-  assert.ok(/\.cos-badge \{[^}]*max-width: max\(160px, min\(480px, calc\(100% - 470px\)\)\)/.test(ENGINE_CSS), "标牌限宽避让左面板（187px）与右缘（470 = 2×(187+48)），160px 下限兜底页面宽度不足");
-  assert.ok(!/\.cos-badge \{[^}]*left: 16px/.test(ENGINE_CSS), "左上定位已移除（已移居顶部中央）");
-  assert.ok(!/\.cos-badge \{[^}]*calc\(50% - 160px\)/.test(ENGINE_CSS), "旧「避让中央搜索带」口径已移除（钻取态搜索框隐藏）");
-  assert.ok(ENGINE_CSS.includes("@media (max-width: 520px) { .cos-badge { max-width: calc(100% - 40px); } }"), "窄视口（<520px）断点放宽限宽（允许与面板重叠降级）");
+  assert.ok(/\.cos-badge \{[^}]*max-width: 480px/.test(ENGINE_CSS), "标牌收敛为单一上限 480px（避让由行容器承担）");
+  assert.ok(!/\.cos-badge \{[^}]*position: absolute/.test(ENGINE_CSS), "标牌不再绝对定位（中央格参与 flex 布局）");
+  assert.ok(!/\.cos-badge \{[^}]*calc\(100% - 470px\)/.test(ENGINE_CSS), "标牌不挂百分比限宽（基准双重折减防护）");
+  assert.ok(/\.cos-wsbar \{[^}]*max-width: max\(160px, min\(844px, calc\(100% - 470px\)\)\)/.test(ENGINE_CSS), "行容器限宽避让左面板（187px）与右缘（470 = 2×(187+48)），160px 下限兜底页面宽度不足");
+  assert.ok(ENGINE_CSS.includes("@media (max-width: 520px) { .cos-wsbar { max-width: calc(100% - 40px); } .cos-wsbar-side { display: none; } }"), "窄视口（<520px）断点改挂容器：放宽限宽 + 隐藏条目槽（仅留标牌）");
   badgeEl.innerHTML = "MARKER";
   step1(1);
   assert.equal(badgeEl.innerHTML, "MARKER", "内容未变 → 标牌零重写（内容差分守卫生效）");
@@ -2080,7 +2649,7 @@ const EXPECTED_FIT_DIST = FILTER_FIT_MARGIN / Math.tan(Math.PI / 6) * 1.1;
   eng.setScene(changed, "patch");
   step1(1);
   assert.ok(/✦1 ●1 ◇3 ☄1 ☁2/.test(String(badgeEl.innerHTML)), "计数随场景 patch 实时更新（就地更新，不重建覆盖层）");
-  assert.equal(String(chip.innerHTML), "<b>ws-one</b>", "银河态 chip 只写星座名（无计数行）");
+  assert.equal(String(chip.innerHTML), '<b>ws-one<i class="cos-chip-life active"></i></b>', "银河态 chip 只写星座名 + 星座级活力状态点（无计数行）");
   assert.ok(!String(chip.innerHTML).includes("<span>"), "银河态 chip 无计数 span");
 
   /* 右下「回到银河」两态（D3/4.2）：钻取态 = flyOut（与 Esc 等效）；根级 = 仅清选中不关页 */
@@ -3733,7 +4302,7 @@ function goldLiteralsOutsideVarFallback(source) {
   assert.equal(eng.diveToWs("rel1"), true, "再次钻取");
   fakeNow += 1300;
   step1(2);
-  const slabOf = (id) => overlayEl.children.find((el) => el.className === "cos-slab" && el.dataset.star === id);
+  const slabOf = (id) => overlayEl.children.find((el) => String(el.className).startsWith("cos-slab") && el.dataset.star === id);
   const slabRa = slabOf("ra"), slabProto = slabOf("rproto");
   assert.ok(slabRa && String(slabRa.dataset.html).includes("cos-slab-life active") && String(slabRa.dataset.html).includes("活跃"),
     "active 恒星名牌：琥珀点 + 「活跃」");
@@ -3758,7 +4327,12 @@ function goldLiteralsOutsideVarFallback(source) {
 /* ── 浮签引线与避让间距（polish-cosmos-tip-leader-line 1.1–1.3 / 2.1–2.3） ──
    覆盖：避让常量下限与集中化（1.1）、引线几何纯函数（翻转/钳制/退化）、端点同源
    （D3 唯一硬红线：DOM transform 串与引线端点 = 字面同一组数）、显隐同源（α / .on
-   谓词）、取色通道（palette.accent → 热切换随动）、卫星无引线、引线不参与拾取。 */
+   谓词）、取色通道（palette.accent → 热切换随动）、卫星无引线、引线不参与拾取。
+
+   polish-cosmos-tip-leader-upward（斜出段向上）：`TIP_GAP.cardLift` 抬卡位 → 卡近缘
+   中点位于星心上方 → dy<0 故折线默认右上 45°（翻转侧左上镜像）；顶部钳制把中点压回
+   星心下方时回落为下行（钳制例外路径），端点仍 = 钳后卡缘。以下 A/B 两段各自追加
+   「向上 / 左上镜像 / 钳制例外」断言，既有向下（钳制）与端点同源断言不回退。 */
 
 /* A. 常量 / 几何 / 取色（纯函数级，无 DOM） */
 {
@@ -3771,6 +4345,11 @@ function goldLiteralsOutsideVarFallback(source) {
   assert.ok(TIP_LINE.tail > 0 && TIP_LINE.tail < TIP_GAP.card, "水平段最短长度 < 避让间距（45° 斜出段有横向余量）");
   assert.ok(TIP_LINE.tick > 0 && TIP_LINE.cardFallbackH > 0 && TIP_LINE.cardFallbackW > 0, "起笔短横与卡盒兜底为正");
   assert.ok(TIP_GAP.chip > 40 && TIP_GAP.card > 40, "用户回访：三族间距整体抬高（严格大于 spec 下限）");
+  /* 信息卡上浮（polish-cosmos-tip-leader-upward 1.1 / 2.1）：spec 锁「卡近缘中点在星心
+     上方」的相对语义，数值集中 TIP_GAP.cardLift；上浮量 < 间距−tail → 斜出段仍标准 45°。 */
+  assert.ok(TIP_GAP.cardLift > 0, "信息卡上浮幅度 > 0（卡近缘中点在星心上方）");
+  assert.ok(TIP_GAP.cardLift < TIP_GAP.card - TIP_LINE.tail,
+    "上浮幅度 < 间距 − tail（向上斜出段保持标准 45°，不触横向封顶）");
 
   /* chip：竖直单段 + 起笔短横 */
   const chipLine = tipLeaderOf({ kind: "chip", hx: 300, hy: 200, x: 300, y: 156 });
@@ -3810,11 +4389,34 @@ function goldLiteralsOutsideVarFallback(source) {
   const cardFlip = tipLeaderOf({ kind: "card", hx: 280, hy: 300, x: 200, y: 330 });
   assert.equal(cardFlip.pts[1].x, 280 - 30, "翻转侧：45° 斜出段向左");
   assert.ok(cardFlip.pts[2].x < cardFlip.pts[1].x, "翻转侧：水平段向左止于卡近缘");
+  /* 向上斜出（polish-cosmos-tip-leader-upward 1.3 / 2.1）：卡近缘中点在星心上方（默认
+     形态，由 TIP_GAP.cardLift 抬卡保证）→ dy<0 → 斜出段向上；未翻转侧呈右上 45°。 */
+  const cardUp = tipLeaderOf({ kind: "card", hx: 520, hy: 300, x: 600, y: 270 });
+  assert.equal(cardUp.pts.length, 3, "向上形态仍为两段折线");
+  assert.ok(cardUp.pts[1].y < cardUp.pts[0].y, "dy<0 → 斜出段向上（折点 y 高于星缘点）");
+  assert.ok(cardUp.pts[1].x > cardUp.pts[0].x, "未翻转侧 → 右上出笔（折点偏向卡侧）");
+  assert.equal(
+    Math.abs(cardUp.pts[1].x - cardUp.pts[0].x),
+    Math.abs(cardUp.pts[1].y - cardUp.pts[0].y),
+    "向上斜出段仍是 45°（|dx| === |dy|）"
+  );
+  assert.equal(cardUp.pts[2].y, cardUp.pts[1].y, "向上形态：水平段仍水平止于卡近缘");
+  /* 翻转侧同一语义镜像：卡在星左侧 + 卡近缘中点在星心上方 → 左上 45° */
+  const cardUpFlip = tipLeaderOf({ kind: "card", hx: 280, hy: 300, x: 200, y: 270 });
+  assert.ok(cardUpFlip.pts[1].y < cardUpFlip.pts[0].y, "翻转侧 dy<0 → 斜出段仍向上");
+  assert.ok(cardUpFlip.pts[1].x < cardUpFlip.pts[0].x, "翻转侧 → 左上出笔（镜像）");
+  assert.equal(
+    Math.abs(cardUpFlip.pts[1].x - cardUpFlip.pts[0].x),
+    Math.abs(cardUpFlip.pts[1].y - cardUpFlip.pts[0].y),
+    "左上镜像仍是 45°（|dx| === |dy|）"
+  );
   /* 纵向钳制：dy 超过「间距 − tail」→ 斜出段横向跨度封顶（更陡），水平段仍水平且不短于 tail */
   const cardClamp = tipLeaderOf({ kind: "card", hx: 520, hy: 80, x: 600, y: 200 });
   assert.equal(cardClamp.pts[1].y, 200, "钳制侧：斜出段 y 收到（钳后）卡中点");
   assert.equal(cardClamp.pts[1].x - cardClamp.pts[0].x, 80 - TIP_LINE.tail, "钳制侧：横向跨度封顶 = 间距 − tail");
   assert.equal(cardClamp.pts[2].y, cardClamp.pts[1].y, "钳制侧：水平段不受 dy 影响");
+  /* 钳制例外取向（2.2 纯函数面）：中点被钳回星心下方 → dy>0 → 斜出段局部向下 */
+  assert.ok(cardClamp.pts[1].y > cardClamp.pts[0].y, "钳制例外：dy>0 → 斜出段向下（取向随实际落差）");
   /* 退化与防御：dy≈0 → 纯水平；间距 ≤ tail → 直连；非法坐标 → null（不画） */
   assert.equal(tipLeaderOf({ kind: "card", hx: 300, hy: 200, x: 380, y: 200 }).pts.length, 2, "dy≈0 → 纯水平线（无折点）");
   assert.equal(tipLeaderOf({ kind: "card", hx: 300, hy: 200, x: 308, y: 260 }).pts.length, 2, "间距 ≤ tail → 退化直连（无反向折点）");
@@ -3929,7 +4531,7 @@ function goldLiteralsOutsideVarFallback(source) {
     assert.equal(eng.diveToWs("ws1"), true, "钻取目标星座");
     fakeNow += 1300;
     step1(2);
-    const slabEl = overlayEl.children.find((el) => el.className === "cos-slab");
+    const slabEl = overlayEl.children.find((el) => String(el.className).startsWith("cos-slab"));
     lines = tips();
     const slabLine = lines.find((line) => line.kind === "slab");
     assert.ok(slabLine, "钻取态：恒星名牌引线出现");
@@ -3977,6 +4579,14 @@ function goldLiteralsOutsideVarFallback(source) {
       "斜出段 45°：|dx| === |dy|（缓存端点的几何换算）"
     );
     assert.ok(cardGeo.pts[2].x - cardGeo.pts[1].x >= TIP_LINE.tail - 1e-9, "水平段不短于 TIP_LINE.tail");
+    /* 向上出笔（polish-cosmos-tip-leader-upward 2.1 / 2.3）：卡近缘中点 = 星心 − cardLift
+       → 端点高于起笔（dy<0）→ 折点向上（未翻转侧 = 右上 45°）；端点同源断言（上面同一
+       组数）不回退，仅方向语义反转。取整链 snap1 ×3（hy / cy / 端点）→ 余量 0.2。 */
+    assert.ok(cardLine.y < cardLine.hy, "卡近缘中点在星心上方（向上出笔：端点 y < 起笔 y）");
+    assert.ok(Math.abs((cardLine.hy - cardLine.y) - TIP_GAP.cardLift) <= 0.2,
+      "上浮量 = TIP_GAP.cardLift（卡近缘中点 = 星心y − cardLift）");
+    assert.ok(cardGeo.pts[1].y < cardGeo.pts[0].y, "斜出段向上（折点 y 高于星缘起笔点）");
+    assert.ok(cardGeo.pts[1].x > cardGeo.pts[0].x, "未翻转侧 → 右上出笔（折点偏向卡侧）");
     /* 卡体不越出右缘（翻转阈值随「星缘 + 间距 + 卡宽」派生） */
     assert.ok(cardAt.x + CARD_W <= 800, "非翻转帧：卡右缘不越出视口（阈值与卡宽同源）");
 
@@ -4006,6 +4616,11 @@ function goldLiteralsOutsideVarFallback(source) {
     assert.ok(flipLine.x < flipLine.hx, "翻转侧：引线自星右缘折向卡片左近缘（端点用翻转后坐标）");
     assert.equal(flipLine.x, parseTranslate(cardEl.style.transform).x, "翻转帧端点仍与 DOM transform 同源");
     assert.ok(parseTranslate(cardEl.style.transform).x - CARD_W >= 0, "翻转帧：卡左缘不越出视口（同一派生的镜像侧）");
+    /* 翻转侧向上镜像（2.1）：卡近缘中点仍高于星心 → 左上 45°（折点向上向左） */
+    assert.ok(flipLine.y < flipLine.hy, "翻转侧：卡近缘中点仍在星心上方（向上出笔）");
+    const flipGeo = tipLeaderOf(flipLine);
+    assert.ok(flipGeo.pts[1].y < flipGeo.pts[0].y, "翻转侧：斜出段向上");
+    assert.ok(flipGeo.pts[1].x < flipGeo.pts[0].x, "翻转侧：左上出笔（右上出笔的镜像）");
 
     /* ⑥ 钳制：星贴近上缘 → 卡纵向钳在 70，引线止于钳后卡缘（MUST NOT 悬空） */
     const topScene = miniScene();
@@ -4023,6 +4638,17 @@ function goldLiteralsOutsideVarFallback(source) {
     assert.equal(clampAt.y, 70, "纵向钳制生效（70..H−240 下界）");
     assert.equal(clampLine.y, 70 + CARD_HALF, "钳制时引线止于钳后卡缘（MUST NOT 指向钳前虚拟位）");
     assert.equal(clampLine.y, clampAt.y + CARD_HALF, "钳制帧端点仍与 DOM transform 同源");
+    /* 钳制例外取向（2.2）：`星心y − cardLift − 卡半高 < 70` → cy 钳到 70，卡近缘中点被
+       压回星心下方 → dy 翻正 → 斜出段局部向下；端点仍是钳后卡缘（上面已断言，不悬空）。 */
+    assert.ok(clampAt.y === 70 && clampLine.y > clampLine.hy,
+      "钳制例外：中点落回星心下方（dy>0）——向上语义以未钳制态为准");
+    const clampGeo = tipLeaderOf(clampLine);
+    assert.ok(clampGeo.pts.length >= 2, "钳制帧仍产出折线（不画空引线）");
+    if (clampGeo.pts.length >= 3) {
+      assert.ok(clampGeo.pts[1].y > clampGeo.pts[0].y, "钳制例外：折点向下（取向随实际落差）");
+    }
+    assert.deepEqual({ x: clampGeo.pts[clampGeo.pts.length - 1].x, y: clampGeo.pts[clampGeo.pts.length - 1].y },
+      { x: clampLine.x, y: clampLine.y }, "钳制例外：引线终点字面 = 钳后卡缘端点（同源）");
 
     /* ⑦ 卫星无引线：行星挂卫星的星座里，引线族仍只有 chip/slab/card */
     const satScene = miniScene();
@@ -4479,6 +5105,508 @@ function goldLiteralsOutsideVarFallback(source) {
     assert.ok(html.includes("已创建"), "卡片按新生命周期重建");
     h.eng.dispose();
   }
+}
+
+/* ── 星云尘埃 α 弱化（polish-cosmos-nebula-faint 3.1/3.2/1.3）：
+      引擎侧单点基带 [0.14, 0.34]（原 [0.22, 0.52] ×0.65），全部皮肤同源变淡；
+      密度编码（520 上限 / per-ws 播种 / 增量渐入）零变化；闪烁动态范围等比保留。 ── */
+{
+  assert.equal(NEBULA_ALPHA_BASE, 0.14, "α 基带下界常量（真机校准唯一点）");
+  assert.equal(NEBULA_ALPHA_SWING, 0.20, "α 闪烁摆幅常量（动态范围等比保留）");
+  assert.ok(NEBULA_ALPHA_BASE + NEBULA_ALPHA_SWING < 1, "α 上界 < 天体本体 α（弱于关系由常量保证）");
+
+  const dustScene = {
+    workspaces: [{
+      id: "neb", name: "nebula", pos: [0, 0, 0],
+      stars: [{ id: "neb-star", name: "neb-star", lifecycle: "executed", setBy: null, at: null, tasks: [1, 1], age: "刚刚", act: 2, off: [0, 0, 0] }],
+      links: [], planets: [], comets: [],
+      archives: 2, satelliteCount: 0
+    }]
+  };
+  const capture = { dust: null, star: null, nova: null, ghost: null };
+  const nebStyle = createSkinD();
+  nebStyle.drawBody = function (ctx, it) {
+    if (it.ws?.id === "neb") {
+      if (it.kind === "dust") capture.dust = it;
+      else if (it.kind === "star") capture.star = it;
+    }
+    if (it.kind === "nova") capture.nova = it;
+    if (it.kind === "wsghost") capture.ghost = it;
+  };
+  const eng = createCosmosEngine({ container: stubEl("div"), style: nebStyle });
+  eng.setScene(dustScene, "rebuild");
+  rafQ.length = 0;
+  eng.start();
+  let nebTs = 0;
+  const advance = (ms) => { nebTs += ms; stepFrame(nebTs); };
+  for (let i = 0; i < 60; i++) advance(40); // 2.4s：序曲（1.2s）/单 ws 点亮坡道（0.5s）均已过 → 稳态
+
+  /* 3.1 α 区间：逐粒 ∈ [BASE, BASE+SWING]；稳态上界（(BASE+SWING)×ws.alpha）< 恒星本体 α。 */
+  assert.ok(capture.dust && capture.star, "稳态帧产出尘埃与恒星条目");
+  assert.equal(capture.dust.pts.length, 110, "archives=2 → 110 粒（密度编码零变化）");
+  assert.ok(Math.abs(capture.dust.alpha - 1) < 1e-12, "稳态 ws.alpha = 1（无过滤/焦点因子）");
+  for (const p of capture.dust.pts) {
+    assert.ok(p.a >= NEBULA_ALPHA_BASE - 1e-12, "逐粒 α ≥ BASE（born 坡道期亦不低于基带）");
+    assert.ok(p.a <= NEBULA_ALPHA_BASE + NEBULA_ALPHA_SWING + 1e-12, "逐粒 α ≤ BASE+SWING");
+  }
+  const dustMax = Math.max(...capture.dust.pts.map((p) => p.a));
+  assert.ok(dustMax < capture.star.alpha,
+    "尘埃 α 上界（" + dustMax.toFixed(3) + "）严格弱于恒星本体 α（" + capture.star.alpha.toFixed(3) + "）");
+
+  /* 3.2 动态保留：同一粒 α 随 t 波动，振幅 = SWING（非恒定灰雾）。 */
+  const alphaSamples = [];
+  for (let i = 0; i < 130; i++) { advance(40); alphaSamples.push(capture.dust.pts[0].a); }
+  const span = Math.max(...alphaSamples) - Math.min(...alphaSamples);
+  assert.ok(span > NEBULA_ALPHA_SWING * 0.995, "同粒 α 波动幅度 ≈ SWING（实测 " + span.toFixed(4) + "）");
+  assert.ok(span <= NEBULA_ALPHA_SWING + 1e-12, "波动幅度不超过 SWING（整体压暗、动态等比）");
+  assert.ok(new Set(alphaSamples.map((v) => v.toFixed(6))).size > 100, "α 逐帧变化（非恒定）");
+
+  /* 1.3 回归：消散幽灵 / 超新星归尘不消费引擎 α 基带 → 本变更零影响，转场叙事不变。 */
+  capture.ghost = null;
+  eng.markWsGhost("neb");
+  advance(16);
+  assert.ok(capture.ghost, "星座消散幽灵条目在册");
+  assert.equal(capture.ghost.alpha, 1, "幽灵条目 α 恒 1（不乘 ws.alpha / 尘埃基带）");
+  assert.ok(capture.ghost.k > 0 && capture.ghost.k < 1, "幽灵进度 k ∈ (0,1)");
+  capture.ghost.dust.forEach((p) => assert.equal(p.a, 1 - capture.ghost.k, "幽灵尘埃 α = 1−k（独立于星云基带）"));
+  capture.ghost.stars.forEach((s) => assert.equal(s.a, 1 - capture.ghost.k, "幽灵恒星余辉 α = 1−k"));
+  capture.ghost = null;
+  for (let i = 0; i < 40; i++) advance(40); // 1.6s > WS_GHOST_DUR(1.5s)
+  capture.ghost = null;
+  advance(16);
+  assert.equal(capture.ghost, null, "幽灵过期自灭（1.5s 叙事时长不变）");
+
+  capture.nova = null;
+  eng.markStarNova("neb-star", [0, 0, 0], "#ffd28a", {});
+  advance(16);
+  assert.ok(capture.nova, "超新星条目在册（非序曲窗口立即启动）");
+  assert.equal(capture.nova.alpha, 1, "nova 自持幽灵 α 恒 1（不乘 ws.alpha / 尘埃基带）");
+  assert.ok(capture.nova.k >= 0 && capture.nova.k < 1, "nova 进度 k 由 t 驱动");
+  for (let i = 0; i < 70; i++) advance(40); // 2.8s > FX_NOVA_DUR(2.4s)
+  capture.nova = null;
+  advance(16);
+  assert.equal(capture.nova, null, "nova 播完自灭（2.4s 三段叙事不变）");
+
+  eng.stop();
+  eng.dispose();
+  rafQ.length = 0;
+}
+
+/* ── 皮肤 dust 分支消费链（polish-cosmos-nebula-faint 3.3 / add-cosmos-render-budget
+      4.1–4.3）：抽测 deepspace / circuit / chamber / lotus——p.a 下游仅固定因子（born 坡道
+      常 1），无本地时间二次覆盖、无二次取基（α 与 p.a 严格线性）→ 引擎单点改动跨皮肤
+      一致生效。**口径更新**：尘埃改走共享低开销原语（缓存 sprite + 逐粒 drawImage），
+      逐粒「填充类」调用 = `fill`/`fillRect`/`drawImage` 三类之一（单粒恰一次）。 ── */
+{
+  function alphaRecorder() {
+    const draws = [];
+    const target = { globalAlpha: 1, __draws: draws };
+    return new Proxy(target, {
+      get(t, prop) {
+        if (prop === "__draws") return draws;
+        if (prop === "fill" || prop === "fillRect" || prop === "drawImage") {
+          return () => draws.push(t.globalAlpha);
+        }
+        if (!(prop in t)) t[prop] = () => undefined;
+        return t[prop];
+      },
+      set(t, prop, value) { t[prop] = value; return true; }
+    });
+  }
+  const dustAlphaAt = function (skin, a, hue, t) {
+    const ctx = alphaRecorder();
+    skin.drawBody(ctx, {
+      kind: "dust", ws: null, alpha: 1,
+      pts: [{ x: 10, y: 10, s: 2, hue, a, born: null }]
+    }, { t, W: 800, H: 600 });
+    assert.equal(ctx.__draws.length, 1, skin.skin + "：单粒尘埃恰一次绘制（共享原语）");
+    return ctx.__draws[0];
+  };
+  const upper = NEBULA_ALPHA_BASE + NEBULA_ALPHA_SWING;
+  ["deepspace", "circuit", "chamber", "lotus"].forEach(function (id) {
+    const skin = createSkin(id);
+    /* 双 hue 支（lotus/circuit 有分档绘制）均消费 p.a。 */
+    for (const hue of [0.2, 0.9]) {
+      const low = dustAlphaAt(skin, NEBULA_ALPHA_BASE, hue, 0);
+      assert.ok(low > 0, id + "：dust α 由 p.a 驱动（hue=" + hue + "）");
+      assert.equal(dustAlphaAt(skin, NEBULA_ALPHA_BASE, hue, 3.7), low,
+        id + "：born 完成后无本地时间二次覆盖（p.a 下游仅固定因子）");
+      const high = dustAlphaAt(skin, upper, hue, 0);
+      assert.ok(Math.abs(high / low - upper / NEBULA_ALPHA_BASE) < 1e-12,
+        id + "：α 与 p.a 线性（比例 = 基带上界/下界，hue=" + hue + "）");
+    }
+  });
+}
+
+/* ── 外部悬停注入（p1-add-cosmos-external-hover 4.1 / spec cosmos-external-hover） ──
+   覆盖：注入接受 / 幂等 / 降级（未知 ws、未知 kind/id、无场景、已销毁 → false 不抛错）；
+   三级仲裁（画布 hover 遮蔽注入、注入遮蔽选中、金色选中环数据标记不受影响）；tips 呈现
+   （注入恒星名牌 + 信息卡 data-key、注入行星/彗星信息卡、无投影静默降级）；关联聚焦
+   （恒星→行星关系段 / 轨道环 / 共享会话段、彗星聚焦集空、注入切换坡道连续）；悬停通知
+   幂等（键变一次、拖拽门禁至多一次置空且无逐天体通知、摘除置空、注入不回声）；跨星座
+   同 id 键隔离（通知键互不吞并、注入/悬停不误点亮另一星座同 id 天体）；
+   inspectExternalHover 快照；注入/降级零相机位移。 */
+{
+  /** 探针皮肤：每帧记录天体条目的 hovered/selected（`markHovers` 观测面；background 帧首清空）。 */
+  const markRecorder = () => {
+    const marks = [];
+    return {
+      marks,
+      style: {
+        skin: "probe",
+        palette: { accent: "#00ff88", prop: {} },
+        useBand: false,
+        background() { marks.length = 0; },
+        drawBody(ctx, item) {
+          if (item && (item.kind === "star" || item.kind === "planet" || item.kind === "comet")) {
+            marks.push({
+              kind: item.kind, id: item.data?.id ?? null, wsId: item.ws?.id ?? null,
+              hovered: item.hovered === true, selected: item.selected === true
+            });
+          }
+        }
+      }
+    };
+  };
+  /** 夹具：ext1（三星 + 联星行星 + 彗星，含星胚）；ext2 带**同 id** 恒星 xa + 独立恒星 ya。 */
+  const extScene = () => ({
+    workspaces: [{
+      id: "ext1", name: "ext-one", pos: [0, 0, 0],
+      stars: [
+        { id: "xa", name: "xa", lifecycle: "created", setBy: null, at: null, tasks: [1, 2], age: "刚刚", act: 1, off: [-16, -2, 0] },
+        { id: "xb", name: "xb", lifecycle: "executed", setBy: null, at: null, tasks: [2, 2], age: "刚刚", act: 0, off: [16, 6, 0] },
+        { id: "xproto", name: "xproto", lifecycle: "proto", setBy: null, at: null, tasks: [0, 0], age: "刚刚", act: 0, off: [0, 26, 0] }
+      ],
+      links: [[0, 1]],
+      planets: [{
+        id: "xbin", title: "bin", state: "waiting", pendingKind: "approval",
+        stars: ["xa", "xb"], todos: "1/2", when: "刚刚", satellites: [], satelliteCount: 0, delegatedBusy: false
+      }],
+      comets: [{ id: "xc", title: "comet", state: "waiting", pendingKind: "question", when: "刚刚", satellites: [], satelliteCount: 0, delegatedBusy: false }],
+      archives: 0, satelliteCount: 0
+    }, {
+      id: "ext2", name: "ext-two", pos: [200, 0, 120],
+      stars: [
+        { id: "xa", name: "xa-two", lifecycle: "created", setBy: null, at: null, tasks: [1, 1], age: "刚刚", act: 1, off: [0, 0, 0] },
+        { id: "ya", name: "ya-two", lifecycle: "created", setBy: null, at: null, tasks: [0, 1], age: "刚刚", act: 0, off: [10, 14, 0] }
+      ],
+      links: [], planets: [], comets: [], archives: 0, satelliteCount: 0
+    }]
+  });
+
+  const rec = markRecorder();
+  const notes = [];
+  const container = stubEl("div");
+  const eng = createCosmosEngine({
+    container,
+    style: rec.style,
+    onHoverChange: (info) => notes.push(info)
+  });
+  const rootEl = container.children[0];
+  const canvasEl = rootEl._by[".cos-canvas"];
+  const overlayEl = rootEl._by[".cos-overlay"];
+  const cardEl = rootEl._by[".cos-card"];
+  const fire = (el, type, ev) => { for (const fn of el.listeners[type] ?? []) fn(ev); };
+  const markOf = (wsId, kind, id) => rec.marks.find((m) => m.wsId === wsId && m.kind === kind && m.id === id) ?? null;
+  /* 信息卡实体钩子：`data-key` 经 setAttribute 写（stub 元素 dataset 不联动）→ 统一读 attrs。 */
+  const cardKey = () => String(cardEl.getAttribute("data-key") ?? "");
+  /** 世界坐标 → 屏幕点（与引擎 project 同式：fov 60 / 视口 800×600 桩）。 */
+  const screenOf = (world) => {
+    const cam = eng.getCamera();
+    const W = 800, H = 600;
+    let v = [world[0] - cam.target[0], world[1] - cam.target[1], world[2] - cam.target[2]];
+    const cy = Math.cos(-cam.yaw), sy = Math.sin(-cam.yaw);
+    v = [v[0] * cy + v[2] * sy, v[1], -v[0] * sy + v[2] * cy];
+    const cx = Math.cos(-cam.pitch), sx = Math.sin(-cam.pitch);
+    v = [v[0], v[1] * cx - v[2] * sx, v[1] * sx + v[2] * cx];
+    const f = (H * 1.1) / (2 * Math.tan(60 * Math.PI / 360));
+    const s = f / (v[2] + cam.dist);
+    return { x: W / 2 + v[0] * s, y: H / 2 - v[1] * s };
+  };
+  const starWp = (wsId, id) => eng.inspectEntities(wsId).stars.find((s) => s.id === id).wp;
+  const pointerAt = (world, pointerId = 31) => {
+    const p = screenOf(world);
+    fire(rootEl, "pointermove", { pointerId, clientX: p.x, clientY: p.y, buttons: 0, target: canvasEl });
+    return p;
+  };
+
+  eng.setScene(extScene(), "rebuild");
+  rafQ.length = 0;
+  eng.start();
+  let tNow = 90000;
+  const step = (n = 1) => { for (let i = 0; i < n; i++) { tNow += 50; stepFrame(tNow); } };
+  step(27); // 过冷启动序曲
+
+  /* ① 注入接受 / 观测面 / 幂等短路 / 零相机位移 */
+  {
+    const camBefore = eng.getCamera();
+    assert.equal(eng.setExternalHover({ wsId: "ext1", kind: "planet", id: "xbin" }), true, "在册目标 → 接受注入");
+    assert.deepEqual(eng.inspectExternalHover(), { wsId: "ext1", kind: "planet", id: "xbin" }, "观测面与入参同形");
+    assert.equal(eng.setExternalHover({ wsId: "ext1", kind: "planet", id: "xbin" }), true, "同键重复注入幂等接受");
+    assert.deepEqual(eng.inspectExternalHover(), { wsId: "ext1", kind: "planet", id: "xbin" }, "幂等重注入状态不变");
+    assert.deepEqual(eng.getCamera(), camBefore, "注入 MUST NOT 移动相机");
+    assert.equal(eng.inspectFilter().focus.diving, false, "注入 MUST NOT 触发钻取");
+    step(2);
+    assert.equal(eng.inspectRelation().focusKey, "ext1|planet:xbin", "注入目标成为关联聚焦源");
+    const planetMark = markOf("ext1", "planet", "xbin");
+    assert.ok(planetMark && planetMark.hovered === true, "注入目标获得与画布 hover 同形的皮肤 hover 标记");
+    assert.equal(planetMark.selected, false, "注入不冒充选中");
+    assert.equal(cardKey(), "planet:xbin", "注入行星信息卡呈现（data-key）");
+    assert.equal(cardEl.dataset.sig, "planet:xbin|waiting|approval", "注入行星卡内容签名沿既有管线");
+
+    /* 幂等不重置关联聚焦坡道：坡道到满后重注入，α 保持 1（未被重锚） */
+    step(4);
+    assert.equal(eng.inspectRelation().mix.find((m) => m.key === "ext1|planet:xbin").alpha, 1, "坡道到满");
+    eng.setExternalHover({ wsId: "ext1", kind: "planet", id: "xbin" });
+    step(1);
+    assert.equal(eng.inspectRelation().mix.find((m) => m.key === "ext1|planet:xbin").alpha, 1, "同键重注入不重置渐入坡道");
+  }
+
+  /* ② 降级契约：未命中 / 非法 / 无场景 / 星胚口径 → false 不抛错、既有态不受影响 */
+  {
+    const camBefore = eng.getCamera();
+    assert.equal(eng.setExternalHover({ wsId: "nope", kind: "planet", id: "xbin" }), false, "未知 ws → false");
+    assert.equal(eng.setExternalHover({ wsId: "ext1", kind: "moon", id: "xbin" }), false, "未知 kind → false");
+    assert.equal(eng.setExternalHover({ wsId: "ext1", kind: "planet", id: "nope" }), false, "未知 id → false");
+    assert.equal(eng.setExternalHover({}), false, "残缺入参 → false");
+    assert.equal(eng.setExternalHover("nope"), false, "非对象入参 → false");
+    assert.deepEqual(eng.inspectExternalHover(), { wsId: "ext1", kind: "planet", id: "xbin" }, "降级不改变既有注入态");
+    assert.deepEqual(eng.getCamera(), camBefore, "降级路径零相机位移");
+    assert.equal(eng.setExternalHover({ wsId: "ext1", kind: "star", id: "xproto" }), true, "星胚同口径接受注入（排除属客户端职责）");
+    assert.deepEqual(eng.inspectExternalHover(), { wsId: "ext1", kind: "star", id: "xproto" });
+    eng.setExternalHover({ wsId: "ext1", kind: "planet", id: "xbin" });
+    step(1);
+    assert.equal(notes.length, 0, "客户端自设注入 / 清除 MUST NOT 回声（通知通道只报画布指针态）");
+  }
+
+  /* ③ null 清除：注入目标聚焦渐熄、三源皆空回落常态 */
+  {
+    assert.equal(eng.setExternalHover(null), true, "null → 清除注入");
+    assert.equal(eng.inspectExternalHover(), null, "清除后观测面为 null");
+    step(2);
+    assert.equal(eng.inspectRelation().focusKey, "", "三源皆空 → 聚焦源置空");
+    step(6); // > REL_FADE_DUR
+    assert.deepEqual(eng.inspectRelation().mix, [], "渐熄播完 → relMix 条目摘除（回落常态）");
+    assert.equal(notes.length, 0, "清除注入亦不回声");
+  }
+
+  /* ④ 悬停通知：键变一次 / 跨星座同 id 键互不吞并 / markHovers 跨星座隔离 */
+  {
+    notes.length = 0;
+    fire(rootEl, "pointerleave", {});
+    step(2); // 初态（指针不在画布）→ 无 hover 通知（键恒 ""）
+    assert.deepEqual(notes, [], "无指针 hover → 无通知");
+    pointerAt(starWp("ext1", "xa"));
+    step(2);
+    assert.deepEqual(notes, [{ kind: "star", wsId: "ext1", id: "xa" }], "hover 键变恰一次回调（kind:wsId:id 键）");
+    step(3);
+    assert.equal(notes.length, 1, "同键多帧不重复回调（幂等）");
+    /* 画布 hover 沿用既有 `entKey` 口径（kind:id，**无 ws**，行为零变化）：同 id 跨星座
+       同时点亮属既有语义，不在本提案收紧范围；**注入**的并集判定才必须 wsId 入键（下方断言）。 */
+    assert.equal(markOf("ext1", "star", "xa").hovered, true, "hover 目标点亮皮肤环");
+    assert.equal(markOf("ext2", "star", "xa").hovered, true, "画布 hover 沿既有 entKey 口径（同 id 跨星座同亮，行为零变化）");
+    /* 跨星座同 id：键含 wsId → 两条通知互不吞并 */
+    pointerAt(starWp("ext2", "xa"));
+    step(2);
+    assert.equal(notes.length, 2, "跨星座同 id 的 hover 键变 MUST NOT 被裸键吞并");
+    assert.deepEqual(notes[1], { kind: "star", wsId: "ext2", id: "xa" }, "第二条通知携带正确 wsId");
+    assert.equal(markOf("ext2", "star", "xa").hovered, true, "当前 hover 目标点亮");
+    /* 注入 + 画布 hover 并集：注入 ext1 xa 不误点亮 ext2 xa */
+    fire(rootEl, "pointerleave", {});
+    step(2);
+    notes.length = 0;
+    eng.setExternalHover({ wsId: "ext1", kind: "star", id: "xa" });
+    step(2);
+    assert.equal(markOf("ext1", "star", "xa").hovered, true, "注入目标点亮皮肤 hover 环");
+    assert.equal(markOf("ext2", "star", "xa").hovered, false, "注入 MUST NOT 跨星座误点亮同 id 天体（键含 wsId）");
+    assert.equal(notes.length, 0, "注入不产生画布 hover 通知");
+    eng.setExternalHover(null);
+    step(1);
+  }
+
+  /* ⑤ 拖拽门禁：置空至多一次、扫过多个天体无逐天体通知；抬指后恢复键变通知 */
+  {
+    pointerAt(starWp("ext1", "xa"));
+    step(2);
+    notes.length = 0;
+    const start = screenOf(starWp("ext1", "xa"));
+    fire(rootEl, "pointerdown", { pointerId: 71, button: 0, clientX: start.x, clientY: start.y, target: canvasEl, preventDefault() {} });
+    fire(rootEl, "pointermove", { pointerId: 71, clientX: start.x + 40, clientY: start.y + 24, buttons: 1, target: canvasEl });
+    step(2);
+    assert.deepEqual(notes, [null], "拖拽开始 → hover 置空恰一次");
+    for (const id of ["xb", "xproto"]) {
+      const p = screenOf(starWp("ext1", id));
+      fire(rootEl, "pointermove", { pointerId: 71, clientX: p.x, clientY: p.y, buttons: 1, target: canvasEl });
+      step(1);
+    }
+    assert.equal(notes.length, 1, "拖拽扫过多个天体 → 无逐天体 hover 通知");
+    fire(rootEl, "pointerup", { pointerId: 71, button: 0, clientX: 400, clientY: 300, target: canvasEl });
+    step(1);
+    pointerAt(starWp("ext1", "xb"), 72);
+    step(2);
+    assert.deepEqual(notes[notes.length - 1], { kind: "star", wsId: "ext1", id: "xb" }, "拖拽结束 → 恢复键变通知");
+    fire(rootEl, "pointerleave", {});
+    step(2);
+    assert.equal(notes[notes.length - 1], null, "指针离场 → 置空通知");
+  }
+
+  /* ⑥ 场景差分：引用重映射（patch 触达）/ 目标摘除自清置空 / 客户端自设不回声 */
+  {
+    notes.length = 0;
+    assert.equal(eng.setExternalHover({ wsId: "ext1", kind: "planet", id: "xbin" }), true);
+    step(3);
+    assert.equal(notes.length, 0, "自设注入不回声");
+    eng.setScene(extScene(), "rebuild");
+    assert.deepEqual(eng.inspectExternalHover(), { wsId: "ext1", kind: "planet", id: "xbin" }, "目标仍在册 → 注入保留");
+    const patched = extScene();
+    patched.workspaces[0].planets[0].state = "busy";
+    patched.workspaces[0].planets[0].pendingKind = null;
+    eng.setScene(patched, "patch");
+    step(2);
+    assert.equal(cardKey(), "planet:xbin", "重建后信息卡仍呈现注入目标");
+    assert.equal(cardEl.dataset.sig, "planet:xbin|busy|", "ws/data 引用已重映射 → 后续 patch 触达（非陈旧快照）");
+    /* 目标被场景摘除 → 引擎静默清除 + 置空通知恰一次 */
+    const pruned = extScene();
+    pruned.workspaces[0].planets = [];
+    const before = notes.length;
+    eng.setScene(pruned, "rebuild");
+    assert.equal(eng.inspectExternalHover(), null, "目标摘除 → 注入自清");
+    assert.deepEqual(notes.slice(before), [null], "自清置空通知（客户端共享态不滞留）");
+    step(2);
+    assert.equal(notes.length, before + 1, "置空通知幂等（后续帧不重复）");
+    eng.setScene(extScene(), "rebuild");
+    step(2);
+  }
+
+  /* ⑦ tips 呈现 + 关联聚焦（钻取态注入恒星 / 行星 / 彗星；切换坡道连续） */
+  {
+    /* 去重跨星座同 id：浮签名牌 / 屏幕槽位按 id 共享是既有实现口径（ws-less），tips 段改用
+       唯一 id 夹具，避免既有槽位覆盖干扰名牌归属判定。 */
+    const solo = extScene();
+    solo.workspaces[1].stars = solo.workspaces[1].stars.filter((s) => s.id !== "xa");
+    eng.setScene(solo, "rebuild");
+    step(2);
+    assert.equal(eng.diveToWs("ext1"), true, "钻取 ext1");
+    fakeNow += 1300;
+    step(2);
+    const slabOf = (id) => overlayEl.children.find((el) => String(el.className).startsWith("cos-slab") && el.dataset.star === id);
+
+    assert.equal(eng.setExternalHover({ wsId: "ext1", kind: "star", id: "xa" }), true);
+    step(2);
+    let rel = eng.inspectRelation();
+    assert.equal(rel.focusKey, "ext1|star:xa", "注入恒星成为聚焦源");
+    assert.deepEqual(rel.last.orbits.map((o) => o.planetId), ["xbin"], "注入恒星 → 关联行星轨道环点亮");
+    assert.deepEqual(rel.last.segs.map((s) => [s.starId, s.planetId]), [["xa", "xbin"]], "恒星→行星关系段");
+    assert.deepEqual(rel.last.links.map((l) => [l.aId, l.bId]), [["xa", "xb"]], "该星端点共享会话虚线点亮");
+    assert.ok(rel.mix.find((m) => m.key === "ext1|star:xa").alpha < 1, "聚焦坡道渐入（无瞬间跳变）");
+    const slabXa = slabOf("xa");
+    assert.ok(slabXa, "注入恒星名牌已创建");
+    assert.equal(slabXa.style.opacity, "1", "注入恒星名牌以 focused α 呈现");
+    assert.equal(cardKey(), "star:xa", "注入恒星信息卡（data-key）");
+    let tips = eng.inspectTipLines();
+    assert.ok(tips.some((l) => l.kind === "slab") && tips.some((l) => l.kind === "card"), "名牌与信息卡引线同帧产出");
+    step(4);
+
+    /* 恒星 A → B：旧集渐熄 + 新集渐显（既有 REL_FADE_DUR，零新增逻辑） */
+    eng.setExternalHover({ wsId: "ext1", kind: "star", id: "xb" });
+    step(1);
+    rel = eng.inspectRelation();
+    assert.equal(rel.focusKey, "ext1|star:xb", "切换注入目标");
+    assert.ok(rel.mix.some((m) => m.key === "ext1|star:xa" && m.dir === "out"), "旧聚焦键转 out 渐熄");
+    assert.ok(rel.mix.some((m) => m.key === "ext1|star:xb" && m.dir === "in"), "新聚焦键转 in 渐显");
+    step(6); // 旧集渐熄播完（> REL_FADE_DUR）
+
+    /* 注入行星：自身轨道环 + 联星双关系段；不点亮共享会话段 */
+    eng.setExternalHover({ wsId: "ext1", kind: "planet", id: "xbin" });
+    step(6); // 旧星聚焦集渐熄播完
+    rel = eng.inspectRelation();
+    assert.equal(rel.focusKey, "ext1|planet:xbin", "注入行星成为聚焦源");
+    assert.deepEqual(rel.last.orbits.map((o) => o.planetId), ["xbin"], "行星自身轨道环点亮");
+    assert.equal(rel.last.segs.length, 2, "联星行星 → 两条关系段");
+    assert.equal(rel.last.links.length, 0, "行星聚焦不点亮共享会话段");
+    assert.equal(cardKey(), "planet:xbin", "注入行星信息卡呈现");
+
+    /* 注入彗星：聚焦集空（无 rel 增强）+ 信息卡照常 + 不报错 */
+    assert.equal(eng.setExternalHover({ wsId: "ext1", kind: "comet", id: "xc" }), true);
+    step(6); // 旧行星聚焦集渐熄播完
+    rel = eng.inspectRelation();
+    assert.equal(rel.focusKey, "ext1|comet:xc", "注入彗星成为聚焦源");
+    assert.equal(rel.last.segs.length, 0, "彗星聚焦集空：无关系段");
+    assert.equal(rel.last.orbits.length, 0, "彗星聚焦集空：无轨道环增亮");
+    assert.equal(cardKey(), "comet:xc", "彗星信息卡照常呈现");
+    tips = eng.inspectTipLines();
+    assert.ok(tips.some((l) => l.kind === "card"), "彗星信息卡引线随既有管线");
+    eng.setExternalHover(null);
+    step(4);
+  }
+
+  /* ⑧ 三级仲裁：选中 < 注入 < 画布 hover；选中环数据标记不受影响 */
+  {
+    const pt = screenOf(eng.worldPosOf("planet", "xbin"));
+    fire(rootEl, "pointerup", { pointerId: 81, button: 0, clientX: pt.x, clientY: pt.y, target: canvasEl });
+    step(2);
+    assert.deepEqual(eng.inspectSelection(), { kind: "planet", wsId: "ext1", id: "xbin" }, "钻取态点选行星（不动镜头）");
+    assert.equal(eng.inspectRelation().focusKey, "ext1|planet:xbin", "无 hover/注入 → 聚焦源回落选中");
+
+    eng.setExternalHover({ wsId: "ext1", kind: "star", id: "xa" });
+    step(2);
+    assert.equal(eng.inspectRelation().focusKey, "ext1|star:xa", "外部注入优先于选中");
+    assert.deepEqual(eng.inspectSelection(), { kind: "planet", wsId: "ext1", id: "xbin" }, "注入不改变选中态");
+    assert.equal(markOf("ext1", "planet", "xbin").selected, true, "金色选中环数据标记不受注入影响（聚焦与选中解耦）");
+
+    pointerAt(starWp("ext1", "xb"), 82);
+    step(3);
+    assert.equal(eng.inspectRelation().focusKey, "ext1|star:xb", "画布指针 hover 遮蔽外部注入");
+    assert.equal(cardKey(), "star:xb", "信息卡实体 = 画布指针目标");
+    assert.deepEqual(eng.inspectExternalHover(), { wsId: "ext1", kind: "star", id: "xa" }, "被遮蔽期间注入态仍在册");
+    fire(rootEl, "pointermove", { pointerId: 83, clientX: 790, clientY: 590, buttons: 0, target: canvasEl });
+    step(2);
+    assert.equal(eng.inspectRelation().focusKey, "ext1|star:xa", "指针离开天体 → 注入即时生效");
+
+    eng.setExternalHover(null);
+    step(2);
+    assert.equal(eng.inspectRelation().focusKey, "ext1|planet:xbin", "清除注入 → 回落选中聚焦集");
+    fire(rootEl, "pointerup", { pointerId: 84, button: 0, clientX: 12, clientY: 12, target: canvasEl });
+    step(4);
+    assert.equal(eng.inspectSelection(), null, "空白处点选清空选中");
+    assert.equal(eng.inspectRelation().focusKey, "", "三源皆空 → 聚焦源置空");
+  }
+
+  /* ⑨ 可见性降级：无当前帧屏幕投影（隐藏星座）→ 浮签不呈现、不报错、相机不动 */
+  {
+    eng.setFilter(new Set(["ext1"]));
+    step(8); // > FILTER_RAMP_DUR
+    const camBefore = eng.getCamera();
+    cardEl.setAttribute("data-key", "");
+    cardEl.dataset.sig = "";
+    assert.equal(eng.setExternalHover({ wsId: "ext2", kind: "star", id: "ya" }), true, "隐藏星座的目标仍在册 → 注入接受");
+    assert.doesNotThrow(() => step(2), "无投影注入不抛错");
+    assert.equal(cardKey(), "", "无投影 → 信息卡空投影早退（不呈现）");
+    const slabYa = overlayEl.children.find((el) => String(el.className).startsWith("cos-slab") && el.dataset.star === "ya");
+    assert.ok(!slabYa || slabYa.style.opacity === "", "无投影 → 恒星名牌不呈现（内联 opacity 未写/已清）");
+    assert.deepEqual(eng.inspectExternalHover(), { wsId: "ext2", kind: "star", id: "ya" }, "注入态保留（仅呈现降级）");
+    assert.deepEqual(eng.getCamera(), camBefore, "注入零相机位移（降级路径同样成立）");
+    eng.setExternalHover(null);
+    eng.setFilter([]);
+    step(2);
+  }
+
+  /* ⑩ 销毁 / 无场景守卫：false 不抛错；观测面 null */
+  {
+    const noScene = createCosmosEngine({ container: stubEl("div"), style: createSkinD() });
+    assert.equal(noScene.setExternalHover({ wsId: "ext1", kind: "star", id: "xa" }), false, "无场景 → false 不抛错");
+    assert.equal(noScene.inspectExternalHover(), null, "无场景观测面 → null");
+    noScene.dispose();
+    const dead = createCosmosEngine({ container: stubEl("div"), style: createSkinD() });
+    dead.dispose();
+    assert.equal(dead.setExternalHover({ wsId: "ext1", kind: "star", id: "xa" }), false, "已销毁 → false 不抛错");
+    assert.equal(dead.setExternalHover(null), false, "已销毁 → 清除亦 false");
+    assert.equal(dead.inspectExternalHover(), null, "已销毁观测面 → null");
+  }
+
+  eng.stop();
+  eng.dispose();
+  rafQ.length = 0;
 }
 
 console.log("engine-smoke: all assertions passed");

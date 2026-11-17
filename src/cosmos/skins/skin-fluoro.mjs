@@ -37,7 +37,8 @@
 import {
   TAU, clamp, lerp, easeOutK, mix, hexA, hashSeed, hashRand,
   makeGlowCache, trailStroke, sessColor, mixFade, viewKOf, birthAlphaOf, segAlphaOf,
-  dustBornK, satBornKOf, createVesselGuard, vesselAnchor
+  dustBornK, satBornKOf, createVesselGuard, vesselAnchor,
+  makeDustSprite, dustBatchDraw
 } from '../skin-kit.mjs';
 
 /* ── 荧光探针常数（demo 血统：DAPI 蓝 / GFP 绿 / mCherry 暖红 三通道） ── */
@@ -96,6 +97,7 @@ function membranePath(ctx, cx, cy, px, py, n, scale) {
 /** 创建荧光显微皮肤实例。 */
 export function createSkinFluoro() {
   const glow = makeGlowCache();
+  const dustBrush = makeDustSprite(); // 尘埃 sprite 缓存（每皮肤实例独立，防跨皮肤串色）
   const palette = { prop: PROP, sess: SESS };
   const vesselOnce = createVesselGuard();
 
@@ -338,16 +340,9 @@ export function createSkinFluoro() {
       if (it.ws && vesselOnce(it.ws, view.t)) drawVessel(ctx, it.ws);
 
       if (it.kind === 'dust') {
-        /* 脂褐素自荧光颗粒（增量渐入：born 坡道 0.8s，存量粒子恒 1） */
-        it.pts.forEach(function (p) {
-          const bornK = dustBornK(p, t);
-          ctx.globalAlpha = clamp(p.a * bornK * 0.4, 0, 1);
-          ctx.fillStyle = DUST[p.hue < 0.5 ? 0 : 1];
-          ctx.beginPath();
-          ctx.arc(p.x, p.y, Math.max(0.7, p.s * 0.42), 0, TAU);
-          ctx.fill();
-        });
-        ctx.globalAlpha = 1;
+        /* 脂褐素自荧光颗粒：共享低开销原语（dot sprite + 分色分组；born 坡道 0.8s，
+           存量粒子恒 1）。 */
+        dustBatchDraw(dustBrush, ctx, it.pts, DUST, t, { alphaK: 0.4, radiusK: 0.42, minR: 0.7 });
         return;
       }
 

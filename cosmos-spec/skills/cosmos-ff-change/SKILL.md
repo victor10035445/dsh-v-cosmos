@@ -10,7 +10,7 @@ metadata:
   contractVersion: "1"
 ---
 
-使用 C:\project\dsh-plugin-v\dsh-v-skill-links\.trae\skills\openspec-ff-change\SKILL.md 技能，创建相关提案的内容（proposal，design，specs，tasks），并将探索内容总结为 explorer.md 放在提案目录中。
+读取（read 工具）C:\project\dsh-plugin-v\dsh-v-skill-links\.trae\skills\openspec-ff-change\SKILL.md ，创建相关提案的内容（proposal，design，specs，tasks），并将探索内容总结为 explorer.md 放在提案目录中。
 
 然后按以下流程调整提案状态：
 **状态步骤（补全流程中执行一次）**

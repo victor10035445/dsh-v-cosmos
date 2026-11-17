@@ -121,6 +121,147 @@ export function satBornKOf(it) {
 
 /* ---------- 绘制底层件 ---------- */
 
+/**
+ * 星云尘埃批量绘制原语（add-cosmos-render-budget D2）：「每皮肤实例一个」的缓存 + 画笔。
+ *
+ * 旧路径逐粒 `beginPath/arc/fill`（或 fillRect）——每粒一次路径状态机与一次填充调用，
+ * 是尘埃成本除投影外的第二大项。原语改为：
+ *  - **缓存 sprite**：每个（形状 × 色 × 旋转档）64px canvas 惰性生成一次，逐粒只做
+ *    `drawImage`（缓存归皮肤实例所有 → 跨皮肤零串色）；
+ *  - **分色分组**：每帧每色只取一次 sprite（组内逐粒仅改 `globalAlpha` + drawImage）；
+ *  - **合成模式声明**：`opts.composite` 显式声明加色/覆盖——`lighter` 只许深空系皮肤，
+ *    light / 纸面皮肤 MUST NOT 引入（`fidenza` 走 source-over）；
+ *  - **born 坡道沿用** `dustBornK`（0.8s 渐入），口径与旧逐粒分支逐位一致。
+ *
+ * 母语参数全部由调用方声明（α 系数 / 半径映射 / 形状 / 抖动 / 装饰层留在原语之外），
+ * 因此 12 套皮肤共用同一低开销原语，风格差异只体现在参数上。
+ *
+ * 形状：`dot`（径向软点，替代 arc）/ `square`（实心方 sprite，替代 fillRect）/
+ * `petal`（荷瓣 sprite，8 个旋转档，替代逐粒 rotate+petalPath）。
+ *
+ * @returns {{sprite: Function, draw: Function}} 每皮肤实例独立的 sprite 缓存与绘制入口
+ */
+export function makeDustSprite() {
+  const cache = new Map();
+
+  /** 取（形状, 色, 旋转档）缓存 sprite（64×64；惰性创建，每皮肤实例独立）。 */
+  function sprite(hex, shape, rotBin) {
+    const key = shape + ':' + (rotBin || 0) + ':' + hex;
+    let c = cache.get(key);
+    if (c) return c;
+    c = document.createElement('canvas');
+    c.width = c.height = 64;
+    const g = c.getContext('2d');
+    if (shape === 'square') {
+      /* 实心方：整幅填充（绘制尺寸 = 2R → 边长 2R，调用方按原 fillRect 边长传 R）。 */
+      g.fillStyle = hexA(hex, 1);
+      g.fillRect(0, 0, 64, 64);
+    } else if (shape === 'petal') {
+      /* 荷瓣：透镜形（长 48 / 宽 22 @64px，按 8 档预旋转）。 */
+      g.translate(32, 32);
+      g.rotate((rotBin || 0) * (TAU / 8));
+      g.fillStyle = hexA(hex, 1);
+      g.beginPath();
+      g.moveTo(24, 0);
+      g.quadraticCurveTo(0, 11, -24, 0);
+      g.quadraticCurveTo(0, -11, 24, 0);
+      g.closePath();
+      g.fill();
+    } else {
+      /* 径向软点：实心核 0.85R + 一像素级羽化边（视觉半径 ≈ arc 半径 R）。 */
+      const gr = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+      gr.addColorStop(0, hexA(hex, 1));
+      gr.addColorStop(0.85, hexA(hex, 1));
+      gr.addColorStop(1, hexA(hex, 0));
+      g.fillStyle = gr;
+      g.fillRect(0, 0, 64, 64);
+    }
+    cache.set(key, c);
+    return c;
+  }
+
+  /**
+   * 批量绘制。
+   * @param {CanvasRenderingContext2D} ctx 画布上下文
+   * @param {Array<{x:number,y:number,s:number,a:number,hue:number,born:number|null}>} pts 尘埃点
+   * @param {string[]} colors 分色组（1 色 = 单组；2 色 = 按 hue 0.5 分档）
+   * @param {number} t 帧时刻（born 坡道用）
+   * @param {{alphaK?:number, radiusK?:number, minR?:number, maxR?:number,
+   *          shape?:'dot'|'square'|'petal', composite?:string|null,
+   *          select?:Function, colorIndex?:Function, posX?:Function, posY?:Function,
+   *          angleOf?:Function, cache?:object}} [opts] 皮肤母语参数
+   */
+  function draw(ctx, pts, colors, t, opts) {
+    const n = pts ? pts.length : 0;
+    if (!n) return;
+    const o = opts || {};
+    const shape = o.shape || 'dot';
+    const alphaK = o.alphaK == null ? 1 : o.alphaK;
+    const radiusK = o.radiusK == null ? 0.42 : o.radiusK;
+    const minR = o.minR == null ? 0.6 : o.minR;
+    const maxR = o.maxR == null ? 24 : o.maxR;
+    const select = o.select || null;
+    const colorIndex = o.colorIndex || defaultDustColorIndex;
+    const posX = o.posX || null;
+    const posY = o.posY || null;
+    const angleOf = o.angleOf || defaultDustAngle;
+    const twoColors = colors.length > 1;
+    if (o.composite) {
+      ctx.save();
+      ctx.globalCompositeOperation = o.composite;
+    }
+    const groups = twoColors ? 2 : 1;
+    for (let gi = 0; gi < groups; gi++) {
+      const hex = colors[gi] || colors[0];
+      const spriteDot = shape === 'petal' ? null : sprite(hex, shape);
+      /* 荷瓣旋转档预取（8 档；避免逐粒查表分配）。 */
+      const bins = shape === 'petal'
+        ? [0, 1, 2, 3, 4, 5, 6, 7].map(function (b) { return sprite(hex, 'petal', b); })
+        : null;
+      for (let i = 0; i < n; i++) {
+        const p = pts[i];
+        if (select && !select(p)) continue;
+        if (twoColors && colorIndex(p) !== gi) continue;
+        const a = clamp(p.a * dustBornK(p, t) * alphaK, 0, 1);
+        if (!(a > 0)) continue;
+        const R = clamp(p.s * radiusK, minR, maxR);
+        const x = posX ? posX(p, t) : p.x;
+        const y = posY ? posY(p, t) : p.y;
+        ctx.globalAlpha = a;
+        const spr = bins ? bins[(((angleOf(p) / TAU) * 8) | 0) & 7] : spriteDot;
+        ctx.drawImage(spr, x - R, y - R, R * 2, R * 2);
+      }
+    }
+    if (o.composite) ctx.restore();
+    else ctx.globalAlpha = 1;
+  }
+
+  return { sprite: sprite, draw: draw };
+}
+
+/** 尘埃默认分色（hue 0.5 分档；与 12 套皮肤旧 dust 分支同口径）。 */
+function defaultDustColorIndex(p) {
+  return p.hue < 0.5 ? 0 : 1;
+}
+
+/** 尘埃默认旋转（荷瓣用；旧 lotus 逐粒 `hashRand(p.x*3.7+p.y)*TAU` 同式）。 */
+function defaultDustAngle(p) {
+  return hashRand(p.x * 3.7 + p.y) * TAU;
+}
+
+/**
+ * 共用入口（皮肤消费面）：把「每皮肤实例的 sprite 缓存」与批量绘制绑定成一次调用。
+ * @param {{draw: Function}} brush `makeDustSprite()` 产物（每皮肤实例一个）
+ * @param {CanvasRenderingContext2D} ctx 画布上下文
+ * @param {Array} pts 尘埃点
+ * @param {string[]} colors 分色组
+ * @param {number} t 帧时刻
+ * @param {object} [opts] 母语参数（见 `makeDustSprite().draw`）
+ */
+export function dustBatchDraw(brush, ctx, pts, colors, t, opts) {
+  brush.draw(ctx, pts, colors, t, opts);
+}
+
 /** 辉光 sprite 缓存（**每个皮肤实例独立**——杜绝跨皮肤串色，design D6）。
     返回 {sprite, draw, wash}：draw = lighter 加色（深空系），wash = source-over 低 α
     （纸面/水彩系，MUST NOT 用 lighter，design D8）。 */

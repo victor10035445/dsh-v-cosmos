@@ -10,7 +10,7 @@ metadata:
   contractVersion: "1"
 ---
 
-使用 C:\project\dsh-plugin-v\dsh-v-skill-links\.trae\skills\openspec-apply-change\SKILL.md 技能，执行这个提案。
+读取（read 工具）C:\project\dsh-plugin-v\dsh-v-skill-links\.trae\skills\openspec-apply-change\SKILL.md，执行这个提案。
 
 然后按以下流程调整提案状态：
 **状态步骤：apply 回填（CONTRACT §4 回填规则）**

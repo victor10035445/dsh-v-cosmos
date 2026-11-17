@@ -28,7 +28,8 @@
 import {
   TAU, clamp, lerp, easeOutK, mix, hexA, hashSeed, hashRand,
   makeGlowCache, trailStroke, sessColor, mixFade, viewKOf, birthAlphaOf, segAlphaOf,
-  dustBornK, satBornKOf, createVesselGuard, vesselAnchor
+  dustBornK, satBornKOf, createVesselGuard, vesselAnchor,
+  makeDustSprite, dustBatchDraw
 } from '../skin-kit.mjs';
 
 /** demo draft `#9ab0a0` 的偏冷支抬亮、向青偏移（上电冷亮；in-progress 暖金归 executed 金域）。 */
@@ -59,6 +60,7 @@ const DUST = Object.freeze(['#8a5a2a', '#4a6a52']);
 /** 创建覆铜星板皮肤实例（每次调用独立 glow 缓存；器皿守卫随实例重置）。 */
 export function createSkinCircuit() {
   const glow = makeGlowCache();
+  const dustBrush = makeDustSprite(); // 尘埃 sprite 缓存（每皮肤实例独立，防跨皮肤串色）
   const palette = { prop: PROP, sess: SESS };
   const vesselOnce = createVesselGuard();
 
@@ -411,24 +413,24 @@ export function createSkinCircuit() {
       if (it.ws && vesselOnce(it.ws, t)) drawVessel(ctx, it.ws);
 
       if (it.kind === 'dust') {
-        /* 覆铜箔（星云）：铜渣颗粒 + 蚀刻短斜线（hue 高的一支为铜面蚀刻纹） */
+        /* 覆铜箔（星云）：方点 sprite 批量（共享低开销原语；分色分组 + born 坡道）。
+           铜面蚀刻短斜线是母语装饰层，留在原语调用之外（仅 hue 高的一支）。 */
+        dustBatchDraw(dustBrush, ctx, it.pts, DUST, t, {
+          shape: 'square', alphaK: 0.42, radiusK: 0, minR: 0.55
+        });
         const pts = it.pts;
         for (let i = 0; i < pts.length; i++) {
           const p = pts[i];
+          if (!(p.hue > 0.78)) continue;
           const bornK = dustBornK(p, t);
           const a = clamp(p.a * bornK, 0, 1);
-          if (a <= 0.01) continue;
-          ctx.globalAlpha = a * 0.42;
-          ctx.fillStyle = DUST[p.hue < 0.5 ? 0 : 1];
-          ctx.fillRect(p.x - 0.55, p.y - 0.55, 1.1, 1.1);
-          if (p.hue > 0.78) {
-            ctx.globalAlpha = a * 0.2;
-            ctx.strokeStyle = COPPER;
-            ctx.lineWidth = 0.5;
-            ctx.beginPath();
-            ctx.moveTo(p.x - 2.2, p.y - 1.4); ctx.lineTo(p.x + 2.2, p.y + 1.4);
-            ctx.stroke();
-          }
+          if (!(a > 0)) continue;
+          ctx.globalAlpha = a * 0.2;
+          ctx.strokeStyle = COPPER;
+          ctx.lineWidth = 0.5;
+          ctx.beginPath();
+          ctx.moveTo(p.x - 2.2, p.y - 1.4); ctx.lineTo(p.x + 2.2, p.y + 1.4);
+          ctx.stroke();
         }
         /* 无条件回正 α（空 pts 也回正）：跨条目 α 泄漏会让后续不显式设 α 的绘制
            （过孔/丝印短线等）继承上一项透明度。 */

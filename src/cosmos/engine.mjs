@@ -112,10 +112,45 @@
  *    ——横向跨距 = 纵向落差——+ 水平段止于卡近缘中点，最短 `TIP_LINE.tail`；钳制使
  *    dy 超限时斜出段更陡）。α 上限 `TIP_LINE.alphaMax`(0.5)，取色走活跃皮肤
  *    `palette.accent`（注册表自 `base.accent` 单点派生，与 HUD `--cos-accent` 同源）；
+ *  - **斜出方向（polish-cosmos-tip-leader-upward）**：信息卡纵向锚点上浮
+ *    `TIP_GAP.cardLift`（初值 56）→ 卡近缘中点位于星心**上方** → 斜出段默认**右上**
+ *    45°（翻转侧左上镜像）。`tipLeaderOf` 几何零改动——方向随 dy 符号自适应；顶部
+ *    钳制把中点压回星心下方时局部回落为下行（钳制例外路径），端点仍止于钳后卡缘。
  *  - 显隐同源：chip/名牌与 inline opacity 同一表达式求值，信息卡与 `.on` 布尔谓词同源
  *    （摘除帧不画，无残影）；卡盒尺寸按内容签名（`dataset.sig`）变更时测量缓存，MUST NOT
  *    逐帧强制布局；翻转阈值随「星缘 + 间距 + 卡宽」派生（卡体不越出右缘，见下）；
  *    引线在拾取路径之外（MUST NOT 参与命中）。
+ *
+ * step1-add-constellation-vitality（星座活力两态）：
+ *  - `constellationVitalityOf(ws)` = 存在口径单一判据纯函数（stars ∪ planets ∪ comets
+ *    任一非空 → `"active"`，否则 `"sleep"`；星云/卫星不计入、MUST NOT 抛错），引擎内
+ *    chip 与钻取标牌两处消费；`isEmptyConstellation` 改为同源派生（沉睡 ∩ 无星云），
+ *    出生高亮判据零语义变化；
+ *  - 银河视图 chip：沉睡态 `cos-chip-sleep`（描边/文字降饱和降亮度）由 `updateOverlay`
+ *    chip 循环逐帧 `classList.toggle` **单点**切换（`rebuildOverlayDom` 整类赋值只给基类，
+ *    一帧内收敛）；名称行内两态点 `cos-chip-life` 随 `updateChipText` 的 `dataset.html`
+ *    差分守卫更新；沉睡 chip 照常可点击钻入；
+ *  - 钻取态标牌：`<b>` 名称后附 `cos-ws-life active|sleep`（点 + 文案，复用
+ *    `E.labels.vitality` 同源标签组），内容同走 `dataset.html` 差分（活力翻转即换串）；
+ *  - 两处状态样式只改颜色属性（MUST NOT 侵占 chip/标牌的逐帧 inline opacity/transform）；
+ *    出生高亮 `cos-chip-new` 与沉睡态可共存（animation 声明优先级在前 ~2s 压过沉睡描边）。
+ *
+ * step2-add-constellation-switcher（钻取态可切换星座快速切换）：
+ *  - 顶部中央标牌升级为行容器 `.cos-wsbar`：`[左条目槽] [标牌中央格] [右条目槽]`，两侧条目槽
+ *    **固定对称宽度**（`--cos-wsbar-side-w`，缺省 170px）→ 任意 0/1/≥2 条目组合下标牌页面
+ *    水平居中自动成立（「星座计数仪表分级呈现」既有承诺不变）；定位/限宽职责自标牌移交容器
+ *    （`max(160px, min(844px, calc(100% - 470px)))`，844 = 480 + 2×(170+12)），标牌收敛为单一
+ *    上限 480px；<520px 断点改挂容器并隐藏条目槽（标牌旧媒体查询同步移除）；
+ *  - `wsSwitcherItemsOf(scene, focusWsId)` 纯函数：**可切换星座判据 = `stars` 非空**
+ *    （正式提案 ∪ 星胚 proto；仅会话（planets/comets）的星座、仅星云、全空 MUST NOT 入列——
+ *    与 step1 星座活力判据（存在口径，含会话）**刻意分离**，后者继续服务 chip/标牌两态）；
+ *    排除当前 → 星座名（id 兜底）字典序成环 → 前驱/后继；边界档位 0/1/≥2（恰 1 个其他
+ *    可切换星座时单条目落右槽，MUST NOT 两侧同显）；当前星座不在可切换环上 → 以可切换清单
+ *    自身成环降级；
+ *  - 条目随 `updateOverlay` 逐帧派生（导航铬件，MUST NOT 与搜索过滤求交集），内容走
+ *    `dataset.html` 差分、`.on` 走 0.25s opacity 过渡（淡入；淡出满 0.25s 后清内容），零新增
+ *    轮询；条目 click → `diveToWs` 同一条内部实现（未命中静默降级），多指手势期点击抑制；
+ *    容器 pointer-events:none、条目 `.on` 时 auto（不形成点击死区）；镀铬取色沿用皮肤 CSS 变量。
  */
 
 /* 引擎 DOM 的样式（自 demo style-d-hud-galaxy.html 移植）。add-cosmos-skin-themes 2.1：
@@ -131,25 +166,66 @@ export const ENGINE_CSS = `
 .cos-overlay { position: absolute; inset: 0; pointer-events: none; z-index: 10; }
 .cos-scanlines { position: absolute; inset: 0; pointer-events: none; z-index: 5;
   background: repeating-linear-gradient(0deg, var(--cos-scan, rgba(255,230,190,.02)) 0 1px, transparent 1px 3px); }
-/* ── 钻取态星座标牌（HUD 精简后取代面包屑；polish-cosmos-drilled-hud D3 起居顶部中央）：
-   钻取态显示星座名 + 全量计数仪表，水平居中（left:50% + translateX(-50%)）且文本
-   居中排版（名称 + 计数两行）。纯信息元素 → pointer-events: none（不形成点击死区）。
-   避让对象 = 左侧提案面板（187px）+ 右缘安全边距（钻取态搜索框已隐藏，不再参与避让）：
-   限宽 max(160px, min(480px, calc(100% - 470px)))，470 = 2 ×（187 面板 + 48 安全边距）
-   ——居中标牌左右各留 48px 余量，≥520px 视口内恒不与面板/右缘相交；<520px 视口经下方
-   断点放宽为 calc(100% - 40px)（允许与面板横向重叠降级）。外侧 max(160px, …) 是**页面
-   宽度不足时的下限兜底**：Cosmos 整页左缘跟踪 DSH 侧栏（页面宽 = 视口 - 侧栏），侧栏在场
-   且窗口窄时 100% - 470px 会为负 → max-width 被钳到 0、标牌文本不可见，违反 spec
-   「钻取态页面顶部中央 MUST 呈现标牌」；下限 160px 保证计数行仍可读，此时允许与面板横向
-   重叠，纵向由面板钻取态下移 top:64px 隔离（见 client CSS .dsh-cosmos-panel[data-drill=true]）。
-   超长名称截断策略与既有一致。 ── */
-.cos-badge { position: absolute; top: 14px; left: 50%; transform: translateX(-50%);
-  max-width: max(160px, min(480px, calc(100% - 470px))); text-align: center;
-  font-size: 13px; color: var(--cos-accent-ink, #ffe3b8); letter-spacing: .5px; pointer-events: none; z-index: 20;
+/* ── 钻取态顶部行容器（step2-add-constellation-switcher D1）：[左条目槽] [星座标牌] [右条目槽]。
+   定位与限宽职责自标牌移交本容器（polish-cosmos-drilled-hud 的居中承诺等价迁移）：水平居中
+   （left:50% + translateX(-50%)）+ 避让预算 max(160px, min(844px, calc(100% - 470px)))——
+   470 = 2 ×（187 面板 + 48 安全边距）；844 = 标牌上限 480 + 2 ×（条目槽 170 + 间隙 12）。
+   外侧 max(160px, …) 是**页面宽度不足时的下限兜底**：Cosmos 整页左缘跟踪 DSH 侧栏
+   （页面宽 = 视口 - 侧栏），侧栏在场且窗口窄时 100% - 470px 会为负 → max-width 被钳到 0、
+   标牌文本不可见，违反 spec「钻取态页面顶部中央 MUST 呈现标牌」；下限 160px 保证计数行仍可读
+   （此时允许与面板横向重叠，纵向由面板钻取态下移 top:64px 隔离）。层级 20 = canvas 之上、
+   与「回到银河」同层。容器纯承载 → pointer-events: none（不形成点击死区；仅条目可见时可点）。
+   超长名称截断策略与既有标牌一致。 ── */
+.cos-wsbar { position: absolute; top: 14px; left: 50%; transform: translateX(-50%); z-index: 20;
+  display: flex; align-items: flex-start; justify-content: center; gap: 12px;
+  max-width: max(160px, min(844px, calc(100% - 470px))); pointer-events: none; }
+/* 两侧条目槽（D1 支点）：**固定对称宽度**（同一 flex 基准 → 等量收缩）——无论槽内有 0/1 条目，
+   标牌页面水平居中都自动保持（2 个其他可切换星座去重后单条目落右槽、左槽留空也不产生偏移）。
+   min-width:0 允许容器收窄时条目文本先行省略；槽自身不接收指针（条目可见时才可点）。 */
+.cos-wsbar-side { flex: 0 1 var(--cos-wsbar-side-w, 170px); width: var(--cos-wsbar-side-w, 170px); min-width: 0;
+  display: flex; pointer-events: none; }
+.cos-wsbar-side[data-side="left"] { justify-content: flex-end; }
+.cos-wsbar-side[data-side="right"] { justify-content: flex-start; }
+/* 窄视口（<520px，与标牌旧降级断点同源）：容器放宽限宽（允许与面板横向重叠降级）+ 整行隐藏
+   条目槽只留标牌（触屏用户仍有 chip + 搜索路径）。本规则 MUST 置于槽基础规则**之后**
+   （同特异性下后者生效，否则 display:flex 会覆盖 display:none）。 */
+@media (max-width: 520px) { .cos-wsbar { max-width: calc(100% - 40px); } .cos-wsbar-side { display: none; } }
+/* 切换条目（D2/D6）：星座名（超长省略）+ 活跃状态点，暖金描边 HUD 语言、皮肤 CSS 变量取色；
+   触屏点击目标 min-height 40px ≥ 40；显隐走 .25s opacity 过渡（chip 的 .on 同款语言，不播位移）。
+   未 .on（未挂载 / 淡出中）= 透明且不可点；.on = 可见可点。 */
+.cos-wsbar-item { box-sizing: border-box; display: inline-flex; align-items: center; gap: 6px;
+  max-width: 100%; min-height: 40px; margin: 0; padding: 0 10px; overflow: hidden;
+  font-family: inherit; font-size: 11px; letter-spacing: .5px; text-align: left;
+  color: var(--cos-accent-ink, #ffe3b8); background: var(--cos-chip-bg, rgba(10,10,20,.45));
+  border: 1px dashed rgb(var(--cos-accent-rgb, 255 210 140) / .4); border-radius: 0;
+  cursor: pointer; opacity: 0; transition: opacity .25s; pointer-events: none; }
+.cos-wsbar-item.on { opacity: 1; pointer-events: auto; }
+.cos-wsbar-item:hover { border-color: rgb(var(--cos-accent-rgb, 255 210 140) / .85); background: var(--cos-hover, rgba(255,210,140,.12)); }
+.cos-wsbar-item:focus-visible { outline: 1px solid rgb(var(--cos-accent-rgb, 255 210 140) / .85); outline-offset: 2px; }
+.cos-wsbar-item b { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cos-wsbar-item i { flex: 0 0 auto; width: 5px; height: 5px; border-radius: 50%; background: currentColor;
+  color: var(--dsw-alias-state-warn-primary, var(--cos-waiting, #ffaa4a)); box-shadow: 0 0 6px currentColor; }
+/* ── 钻取态星座标牌（行容器中央格；step2-add-constellation-switcher D1 起不再承担定位/限宽）：
+   钻取态显示星座名 + 全量计数仪表，文本居中排版（名称 + 计数两行）。中央格随 flex 收缩，
+   max-width 收敛为单一上限 480px——百分比式限宽的基准已随结构迁移，MUST NOT 原样带入
+   （会相对行容器双重折减到 160px 下限）。纯信息元素 → pointer-events: none。 ── */
+.cos-badge { flex: 0 1 auto; min-width: 0; max-width: 480px; text-align: center;
+  font-size: 13px; color: var(--cos-accent-ink, #ffe3b8); letter-spacing: .5px; pointer-events: none;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-@media (max-width: 520px) { .cos-badge { max-width: calc(100% - 40px); } }
 .cos-badge b { display: block; font-size: var(--cos-ws-title-size, 13px); font-weight: 600; letter-spacing: 1px; text-shadow: 0 0 8px var(--cos-glow, rgba(255,210,140,.55)); }
 .cos-badge span { display: block; margin-top: 2px; font-size: 10px; letter-spacing: 2px; opacity: .6; }
+/* 钻取态星座标牌活力标识（step1-add-constellation-vitality D2/D3）：星座名后两态点 +
+   文案（复用 E.labels.vitality 同源标签组），取色与恒星名牌 .cos-slab-life 同源
+   （活跃 = 活力琥珀令牌链 / 沉睡 = 暗淡墨色；同语义跨皮肤同色，MUST NOT 固定直量另设）。
+   字号按标牌语境缩放，位置/尺度与恒星名牌浮签可区分（spec「与恒星级活力可区分」）。
+   点走子元素 i，文案不继承标牌 text-shadow（不与星座名辉光混淆）。 */
+.cos-ws-life { display: inline-block; margin-left: 8px; font-size: 9px; font-style: normal; font-weight: 400;
+  letter-spacing: 1px; text-shadow: none; }
+.cos-ws-life i { display: inline-block; width: 5px; height: 5px; border-radius: 50%; margin-right: 4px;
+  vertical-align: 1px; background: currentColor; }
+.cos-ws-life.active { color: var(--dsw-alias-state-warn-primary, var(--cos-waiting, #ffaa4a)); }
+.cos-ws-life.active i { box-shadow: 0 0 6px currentColor; }
+.cos-ws-life.sleep { color: var(--cos-ink-dim, rgba(255,233,207,.55)); }
 /* 右下常驻「回到银河」方形按钮（D3/4.1）：风格 D HUD 语言（暖金描边 + 角标），
    触屏点击目标 44px ≥ 40px；钻取态与银河根级均常驻（两态语义见 flyOut 早退分支）。
    右缘控制簇自右向左横排：本按钮（right:16）←「拖拽平移」开关（间距 8px），同在
@@ -193,6 +269,19 @@ export const ENGINE_CSS = `
 .cos-chip b { display: block; font-size: 13px; font-weight: 600; letter-spacing: 1px; text-shadow: 0 0 8px var(--cos-glow, rgba(255,210,140,.55)); }
 .cos-chip span { font-size: 10px; opacity: .6; letter-spacing: 2px; }
 .cos-chip:hover { border-color: rgb(var(--cos-accent-rgb, 255 210 140) / .85); }
+/* 星座活力两态（step1-add-constellation-vitality D2/D3）：沉睡星座 chip 降饱和/降亮度，
+   并缀两态状态点 .cos-chip-life（取色与恒星名牌 .cos-slab-life 同源：活跃 = 活力琥珀
+   令牌链、沉睡 = 暗淡墨色——同语义跨皮肤同色，MUST NOT 固定直量另设琥珀/灰）。只动颜色
+   属性：chip 的 opacity/transform 是引擎逐帧内联写出的动画面（同 cos-chip-new 纪律），
+   MUST NOT 在此声明。出生脉冲与沉睡态可共存：animation 声明优先级在前 ~2s 压过沉睡描边
+   （登记瞬间应当被注意到），脉冲结束后沉睡态自然生效。 */
+.cos-chip.cos-chip-sleep { border-color: rgb(var(--cos-accent-rgb, 255 210 140) / .2); }
+.cos-chip.cos-chip-sleep b { opacity: .62; filter: grayscale(.55); }
+.cos-chip-life { display: inline-block; width: 5px; height: 5px; border-radius: 50%; margin-left: 6px;
+  vertical-align: 1px; background: currentColor; }
+.cos-chip-life.active { color: var(--dsw-alias-state-warn-primary, var(--cos-waiting, #ffaa4a));
+  box-shadow: 0 0 6px currentColor; }
+.cos-chip-life.sleep { color: var(--cos-ink-dim, rgba(255,233,207,.55)); }
 /* 空星座出生高亮（add-cosmos-add-workspace D6/3.2）：~2s 脉冲后渐熄（WS_BIRTH_HL_DUR 同步）。
    发光参数对照风格 D 基线（demo/styles/assets/style-d.js glowSprite：内 rgba(255,210,140,.95)
    / 外 rgba(255,210,140,.22)）。animation forwards → 动画结束即常态，无需 JS 清理；
@@ -296,9 +385,30 @@ function rng(seed) {
   let s = (seed >>> 0) || 1;
   return function () { s = (Math.imul(s, 1664525) + 1013904223) >>> 0; return s / 4294967296; };
 }
-function rotY(p, a) { const c = Math.cos(a), s = Math.sin(a); return [p[0] * c + p[2] * s, p[1], -p[0] * s + p[2] * c]; }
-function rotX(p, a) { const c = Math.cos(a), s = Math.sin(a); return [p[0], p[1] * c - p[2] * s, p[1] * s + p[2] * c]; }
-function rotZ(p, a) { const c = Math.cos(a), s = Math.sin(a); return [p[0] * c - p[1] * s, p[0] * s + p[1] * c, p[2]]; }
+/* 模块级旋转 scratch（add-cosmos-render-budget D4）：三个旋转算子零分配，结果写入调用方
+   提供的 `out`（就地读写安全：先取局部量再写）。投影热路径已标量化、不再经此；剩余消费者
+   只有构建期银河带生成（rebuild 一次）与指针聚焦逆变换（滚轮/指针交互期），共用 ROT_A/ROT_B
+   ——单线程串行消费，调用方 MUST 立即读取或拷贝结果。 */
+const ROT_A = [0, 0, 0];
+const ROT_B = [0, 0, 0];
+function rotYInto(p, a, out) {
+  const c = Math.cos(a), s = Math.sin(a);
+  const x = p[0], y = p[1], z = p[2];
+  out[0] = x * c + z * s; out[1] = y; out[2] = -x * s + z * c;
+  return out;
+}
+function rotXInto(p, a, out) {
+  const c = Math.cos(a), s = Math.sin(a);
+  const x = p[0], y = p[1], z = p[2];
+  out[0] = x; out[1] = y * c - z * s; out[2] = y * s + z * c;
+  return out;
+}
+function rotZInto(p, a, out) {
+  const c = Math.cos(a), s = Math.sin(a);
+  const x = p[0], y = p[1], z = p[2];
+  out[0] = x * c - y * s; out[1] = x * s + y * c; out[2] = z;
+  return out;
+}
 function midOf(pts) {
   let x = 0, y = 0, z = 0;
   const n = pts.length || 1;
@@ -381,11 +491,19 @@ const REGRESS_ALPHA_RAMP = 0.5;
      锚在星内则线不可见。
    - 用户回访（2026-11-16）：「距离再远一点 + 连线角度开到 45° 左右」——三值整体抬高
      （44/34/48 → 56/44/80），并把信息卡斜出段改成真正的 45°（横向跨度 = 纵向落差）。
-     chip/名牌仍是竖直直线（spec「浮签引线与避让间距」明文），45° 只作用于信息卡折线。 */
+     chip/名牌仍是竖直直线（spec「浮签引线与避让间距」明文），45° 只作用于信息卡折线。
+   - 用户回访（2026-11-17，polish-cosmos-tip-leader-upward）：信息卡引线由「向右下 45°」
+     改为「向右上 45°」——卡位抬到星心上方（`cardLift`），`tipLeaderOf` 几何零改动
+     （斜出段方向随 dy 符号自适应：dy<0 → 右上，翻转侧左上镜像）。 */
 export const TIP_GAP = Object.freeze({
   chip: 56, // 星座投影中心 → chip 底缘（原 26；≥40）
   slab: 44, // 恒星星缘 → 名牌顶缘（原 6；≥28）
-  card: 80  // 恒星星缘 → 信息卡近缘（原「中心旁 ±18」= 压星；≥40）
+  card: 80, // 恒星星缘 → 信息卡近缘（原「中心旁 ±18」= 压星；≥40）
+  /* 卡近缘中点的上浮幅度（polish-cosmos-tip-leader-upward D2；**真机校准点**）：
+     卡近缘中点 = 星心y − cardLift → 信息卡整体抬到星心上方，斜出段 dy<0 故向上出笔。
+     初值 56：远大于星晕亮核（钻取态最大 ≈21px，卡不压星），且 56 < 间距−tail（80−16=64）
+     → 斜出段保持标准 45° 不触横向封顶；真机只改此一处即可微调上浮量。 */
+  cardLift: 56
 });
 
 /** 引线几何与呈现常量（D5）：斜出段口径 / 起笔 tick / α 上限 / 卡盒兜底 / 翻转留白。 */
@@ -426,6 +544,9 @@ export function tipLineColorOf(style) {
  *  - **card**：两段折线——**45° 斜出段**（星缘 → 横向跨距 = 纵向落差 dy，故斜出段恒为
  *    45°）+ 水平段（→ 卡近缘中点，最短 `TIP_LINE.tail`）。纵向钳制使 dy 超过「间距 −
  *    tail」时斜出段横向跨度封顶（比 45° 更陡），水平段仍保持水平。
+ *    斜出段方向随 dy 符号自适应（故本函数对「向上出笔」零改动）：dy<0（卡近缘中点高于
+ *    星心 = 默认形态，`TIP_GAP.cardLift` 抬卡保证）→ 右上 45°（dir=1）/ 左上 45°
+ *    （dir=−1，翻转侧镜像）；dy>0 仅出现于顶部钳制例外路径 → 对应下方。
  *
  * 入参是 `updateOverlay` 写入逐帧缓存 `E.tipLines` 的同一组数（hx/hy 宿主锚点、x/y
  * 浮签锚缘）——端点 MUST NOT 在此二次换算（翻转/钳制已在定位处完成）。
@@ -505,6 +626,46 @@ const LINK_FADE_DUR = 0.4;
     0.4s 的登场叙事；切换时旧集 out / 新集 in，α 因子进 rel 段与 rel 环的条目数据。 */
 export const REL_FADE_DUR = 0.2;
 
+/* ---------- 星云尘埃 α 基带（polish-cosmos-nebula-faint D2；真机校准唯一点） ----------
+
+   逐粒 α = ws.alpha × (BASE + SWING × blink)，其中 blink = 0.5 + 0.5·sin(t×1.3 + tw)
+   ∈ [0,1] → 引擎侧基带 [0.14, 0.34]（原 [0.22, 0.52] 的 ≈×0.65；闪烁动态范围 0.20
+   等比保留，呼吸感不灭）。皮肤 dust 分支再乘各自固定因子（deepspace ×0.5 /
+   circuit·chamber ×0.42 等），故本块是全部皮肤共同的唯一上游乘区：改数值即全局变淡，
+   无需动 12+ 套皮肤。密度编码（520 粒上限 / per-ws 播种 / 增量渐入坡道）与本块无关。 */
+export const NEBULA_ALPHA_BASE = 0.14;
+export const NEBULA_ALPHA_SWING = 0.20;
+
+/* ---------- 场景规模渲染预算与降级（add-cosmos-render-budget D1/D5；真机校准点） ----------
+
+   规模事实：尘埃总量 = Σ min(archives×55, 520)，几十个满归档星座可达 ≈2 万粒/帧；
+   每粒成本 = 一次投影 + 一次出生坡道 + 一次 sprite 绘制，全部线性于总粒数。本块是
+   **唯一**预算/降级校准点（与 TIP_GAP / SHOCK_SPEED 同款纪律）：
+
+   - `NEBULA_BUDGET`：跨星座尘埃总粒数预算。本帧参与星座数 n 均摊，每星座可渲染
+     `clamp(floor(预算/n), 下限, 该星座粒数)`；预算不触发（n 小）时等于原样全绘。
+   - `NEBULA_DUST_FLOOR`：均摊保底下限。极端 n（floor 低于下限）时预算可小幅超卖，
+     换取「任何场景下星云都不整体消失」（设计取舍，spec 锁「MUST NOT 整体消失」）。
+   - `NEBULA_CULL_MARGIN`：视口剔除基础余量（像素）。实际判定余量 = 本常量 + 该粒
+     屏显尺寸（`p.s` 由投影缩放推出），故任何缩放级下都覆盖粒子渲染色，屏内视觉与
+     无剔除基线零差异；**不**随镜头缩放引入滞回（粒子只在「自身完全出画」后剔除）。
+   - 裁剪取 per-ws 种子流的**前缀**（前 k 粒）：预算/星座数变化只砍/回后缀，存量
+     粒子原位原相位零跳变（与「确定性渲染」「增量渐入」语义兼容）。 */
+export const NEBULA_BUDGET = 4000;
+export const NEBULA_DUST_FLOOR = 60;
+export const NEBULA_CULL_MARGIN = 16;
+
+/**
+ * 每星座尘埃可渲染粒数上限（预算均摊纯函数；引擎与冒烟共用同一份预算数学）。
+ * `n ≤ 0`（本帧无尘埃星座）→ 0。
+ * @param {number} n 本帧参与尘埃渲染的星座数
+ * @returns {number} 每星座粒数上限（未与星座自身粒数取 min）
+ */
+export function dustPerWsOf(n) {
+  if (!(n > 0)) return 0;
+  return Math.max(NEBULA_DUST_FLOOR, Math.floor(NEBULA_BUDGET / n));
+}
+
 /** 调度器优先级（D7）：P0 注意力属性不经队列不降级；P1 叙事并发 ≤3 + 同 ws 错峰 0.25s；
     P2 存在错峰 0.15s；P3 微脉动保留未实现。 */
 export const FX_PRIORITY = Object.freeze({ attention: 0, narrative: 1, existence: 2 });
@@ -576,6 +737,9 @@ const DRAG_PAN_ICON_SVG =
 export const WS_SHIFT_DUR = 0.8;
 /** 空星座 chip 出生高亮时长（D6：约 2s 脉冲后渐熄；ENGINE_CSS 的 animation 时长与此同步）。 */
 export const WS_BIRTH_HL_DUR = 2;
+/** 钻取态可切换星座切换条目的淡入淡出时长（step2-add-constellation-switcher D5：约 .25s，
+    chip `.on` 同款语言）。CSS transition 与「淡出后清内容」的引擎计时同源。 */
+export const WS_SWITCH_FADE = 0.25;
 
 /** 32 位 FNV-1a（卫星相位/速度确定性派生；merge hash32 同源算法）。 */
 function idHash(text) {
@@ -1281,10 +1445,13 @@ export function zoomFocusTargetOf(cam, px, py, W, H, newDist) {
   const f = (h * 1.1) / (2 * Math.tan(fov * Math.PI / 360));
   if (!(f > 0)) return target.slice();
   /* 视图空间：指针射线方向 ∝ ((px−W/2)/f, (H/2−py)/f, 1)；相机在 z=−d0，
-     与过 target 的平面 z=0 交于 (d0·dx, d0·dy, 0)。逆变换回世界系（rotY/rotX 反序取反角）。 */
+     与过 target 的平面 z=0 交于 (d0·dx, d0·dy, 0)。逆变换回世界系（rotX/rotY 反序取反角；
+     模块级 scratch：只消费标量、结果拷贝进返回值）。 */
   const yaw = Number.isFinite(Number(c.yaw)) ? Number(c.yaw) : 0;
   const pitch = Number.isFinite(Number(c.pitch)) ? Number(c.pitch) : 0;
-  const offset = rotY(rotX([d0 * ((x - w / 2) / f), d0 * ((h / 2 - y) / f), 0], pitch), yaw);
+  rotXInto([d0 * ((x - w / 2) / f), d0 * ((h / 2 - y) / f), 0], pitch, ROT_A);
+  rotYInto(ROT_A, yaw, ROT_B);
+  const offset = ROT_B;
   const k = 1 - d1 / d0;
   return [target[0] + offset[0] * k, target[1] + offset[1] * k, target[2] + offset[2] * k];
 }
@@ -1325,6 +1492,93 @@ export function constellationBoundROf(ws) {
   }
   if (Array.isArray(ws?.comets) && ws.comets.length > 0) bound = Math.max(bound, COMET_WANDER_R);
   return bound;
+}
+
+/**
+ * 星座活力两态纯函数（step1-add-constellation-vitality D1/D5；两处呈现的单一判据来源）。
+ *
+ * **存在口径**（与「活跃会话」「活跃提案」既有词汇同口径，MUST NOT 采用会话执行热度
+ * 口径）：`stars`（含 proto 星胚）∪ `planets` ∪ `comets` 任一非空 → `"active"`，全空 →
+ * `"sleep"`。**星云（`archives`）不计入**——归档是历史，历史不唤醒星座；卫星不独立
+ * 计入（经父天体与 ◇ 计数呈现，孤儿卫星本就不渲染）。
+ *
+ * 由此与空星座出生高亮（D6）的精确关系：`空星座 = 沉睡 ∩ 无星云`——仅星云的沉睡星座
+ * MUST NOT 触发出生高亮（引擎内 `isEmptyConstellation` 即本判据的同源派生）。
+ * 纯函数只读场景数组长度、无外部信号依赖：statuses 不可达 / 会话镜像降级时判据不变，
+ * 缺字段与非数组按空处理，SHALL NOT 抛错。
+ *
+ * @param {{stars?: unknown[], planets?: unknown[], comets?: unknown[]}|null} ws 场景星座 body
+ * @returns {"active"|"sleep"}
+ */
+export function constellationVitalityOf(ws) {
+  const has = (list) => Array.isArray(list) && list.length > 0;
+  return has(ws?.stars) || has(ws?.planets) || has(ws?.comets) ? 'active' : 'sleep';
+}
+
+/** 码点序比较（确定性字典序；不依赖运行环境 locale/ICU，与两面板分组排序同律）。 */
+function compareTextOf(a, b) {
+  const left = String(a ?? '');
+  const right = String(b ?? '');
+  if (left < right) return -1;
+  if (left > right) return 1;
+  return 0;
+}
+
+/**
+ * 钻取态可切换星座清单（step2-add-constellation-switcher D2；纯函数，冒烟直测）。
+ *
+ * **可切换星座判据**（本 capability 专属，与 step1 星座活力判据刻意分离）：`stars` 非空
+ * ——正式提案 ∪ 星胚（`lifecycle === "proto"`，merge 层已并入 `stars`）。仅会话
+ * （`planets` / `comets`）而**无提案/星胚**的星座 MUST NOT 入列（不再视为可切换活跃）；
+ * 仅星云（`archives`）/ 全空 / 孤儿卫星同样不入列。step1 的 `constellationVitalityOf`
+ * （存在口径，含会话）继续服务 chip 与标牌两态，**不因本判据改变**。
+ *
+ * 环 = 可切换星座全集（**含当前**），按星座名字典序（同名以 id 兜底，码点序）排序后首尾
+ * 相接；左槽 = 当前星座的环上前驱、右槽 = 后继。条目清单 = 可切换星座 ∖ 当前
+ * （spec「切换条目清单 MUST 为有提案或星胚的星座排除当前钻取星座」）。
+ *
+ * 边界档位（确定性，无歧义分支）：
+ *  - 其他可切换星座 0 个 → `[]`（两槽零内容，槽宽保留）；
+ *  - 恰 1 个 → 单条目落**右槽**、左槽留空（前驱与后继重合于同一目标，MUST NOT 两侧同显）；
+ *  - ≥2 个 → 左槽前驱、右槽后继（两侧必为不同目标）。
+ *
+ * 容错降级：`focusWsId` 缺失 / 未命中 / 当前星座无可切换内容（不在环上）→ 前驱后继
+ * 无从定义，以**可切换清单自身成环**降级：右槽 = 字典序首个、左槽 = 末个（≥2 时两侧仍必为
+ * 不同目标；恰 1 个仍落右槽）——保持「清单 = 可切换星座 ∖ 当前」的硬约束，SHALL NOT 抛错。
+ *
+ * @param {{ws?: object[]}|object[]|null} scene 场景 body（`{ws:[...]}`；兼容裸数组）
+ * @param {string|null|undefined} focusWsId 当前钻取星座 id
+ * @returns {Array<{wsId: string, name: string, side: "left"|"right"}>} 左槽在前、右槽在后的条目
+ */
+export function wsSwitcherItemsOf(scene, focusWsId) {
+  const list = Array.isArray(scene) ? scene : (Array.isArray(scene?.ws) ? scene.ws : []);
+  const switchable = [];
+  for (const ws of list) {
+    if (!ws || typeof ws !== 'object') continue;
+    /* 有提案或星胚 = stars 非空（proto 星胚由 merge 并入 stars）；仅会话星座不视为可切换。 */
+    if (!Array.isArray(ws.stars) || ws.stars.length === 0) continue;
+    switchable.push(ws);
+  }
+  if (switchable.length === 0) return [];
+  const nameOf = (ws) => {
+    const name = ws.name;
+    return typeof name === 'string' && name !== '' ? name : String(ws.id ?? '');
+  };
+  switchable.sort((a, b) => compareTextOf(nameOf(a), nameOf(b)) || compareTextOf(a.id, b.id));
+  const id = focusWsId == null ? '' : String(focusWsId);
+  const focusIndex = switchable.findIndex((ws) => String(ws.id ?? '') === id);
+  const entryOf = (ws, side) => ({ wsId: ws.id, name: nameOf(ws), side: side });
+  if (focusIndex < 0) {
+    /* 当前不在可切换环上（缺失 / 未命中 / 无提案星胚）：以清单自身成环，右首左末。 */
+    if (switchable.length === 1) return [entryOf(switchable[0], 'right')];
+    return [entryOf(switchable[switchable.length - 1], 'left'), entryOf(switchable[0], 'right')];
+  }
+  const count = switchable.length;
+  if (count <= 1) return [];
+  const next = switchable[(focusIndex + 1) % count];
+  const prev = switchable[(focusIndex - 1 + count) % count];
+  if (prev === next) return [entryOf(next, 'right')]; // 环长 2：前驱 = 后继，去重落右槽
+  return [entryOf(prev, 'left'), entryOf(next, 'right')];
 }
 
 /**
@@ -1478,9 +1732,11 @@ export function buildScenePure(sceneData, captures, regressions) {
   for (let j = 0; j < 2600; j++) {
     const a = rand() * TAU, r2 = 220 + rand() * 1300;
     const yy = (rand() - 0.5) * (90 + r2 * 0.05);
-    let p = [Math.cos(a) * r2, yy, Math.sin(a) * r2];
-    p = rotX(p, 0.45); p = rotZ(p, 0.35);
-    band.push({ p: p, m: rand() });
+    const p0 = [Math.cos(a) * r2, yy, Math.sin(a) * r2];
+    /* 预倾斜两步旋转走模块级 scratch（D4）；band 条目存**拷贝**（构建期一次，非逐帧）。 */
+    rotXInto(p0, 0.45, ROT_A);
+    rotZInto(ROT_A, 0.35, ROT_A);
+    band.push({ p: [ROT_A[0], ROT_A[1], ROT_A[2]], m: rand() });
   }
   scene.bg = bg; scene.band = band;
   return scene;
@@ -1547,6 +1803,100 @@ function inheritTrails(prevScene, nextScene) {
   });
 }
 
+/* ---------- 投影基建（add-cosmos-render-budget D4：零分配） ----------
+
+   旧实现的每帧成本：`rotY`/`rotX` 各分配一个 3 元数组 + `{x,y,s,z}` 结果对象，
+   单帧尘埃 2 万粒即 6 万+ 次短命分配（GC 微卡顿根因）。现改为：
+
+   - **镜头基缓存**（PROJ）：cos/sin 与焦距 f 只在 yaw/pitch/fov/H 变化时重算；
+   - **标量推导**：view 变换全部落标量局部变量，结果直写调用方提供的 `out` 对象
+     （槽位复用），稳态零分配；
+   - 数学运算顺序与旧 `rotY`/`rotX` 完全一致 → 同输入逐位同输出（零视觉差异）。
+
+   调用方纪律：`out` 是共享槽位，取出值 MUST 立即消费（拷贝到自己的槽位或读标量），
+   MUST NOT 跨两次投影持有同一 `out` 引用（设计 D4 的 scratch 踩脏风险由本纪律兜底）。 */
+
+const PROJ = {
+  yaw: NaN, pitch: NaN, cy: 0, sy: 0, cx: 0, sx: 0,
+  fov: NaN, h: -1, f: 1,
+  /* 最近一次 view 变换结果（zOf 复用，避免二次推导） */
+  vx: 0, vy: 0, vz: 0
+};
+
+/** 镜头旋转基缓存刷新（yaw/pitch → cos/sin；标量投影与 zOf 共用）。 */
+function prepareBasis(cam) {
+  const yaw = cam.yaw, pitch = cam.pitch;
+  if (yaw !== PROJ.yaw || pitch !== PROJ.pitch) {
+    PROJ.yaw = yaw; PROJ.pitch = pitch;
+    PROJ.cy = Math.cos(-yaw); PROJ.sy = Math.sin(-yaw);
+    PROJ.cx = Math.cos(-pitch); PROJ.sx = Math.sin(-pitch);
+  }
+}
+
+/** 焦距缓存刷新（fov / 视口高 → f；只与画布高相关，与宽无关）。 */
+function prepareF(cam, H) {
+  const fov = cam.fov;
+  if (fov !== PROJ.fov || H !== PROJ.h) {
+    PROJ.fov = fov; PROJ.h = H;
+    PROJ.f = (H * 1.1) / (2 * Math.tan(fov * Math.PI / 360));
+  }
+}
+
+/** 世界坐标 → view 空间（标量写入 PROJ.vx/vy/vz；与 rotX(rotY(p−target,−yaw),−pitch) 同序）。 */
+function toView(cam, x, y, z) {
+  prepareBasis(cam);
+  const dx = x - cam.target[0], dy = y - cam.target[1], dz = z - cam.target[2];
+  const x1 = dx * PROJ.cy + dz * PROJ.sy;
+  const z1 = -dx * PROJ.sy + dz * PROJ.cy;
+  PROJ.vx = x1;
+  PROJ.vy = dy * PROJ.cx - z1 * PROJ.sx;
+  PROJ.vz = dy * PROJ.sx + z1 * PROJ.cx;
+}
+
+/**
+ * 世界点 → 屏幕投影（零分配：结果写入调用方槽位 `out`）。
+ * @param {object} cam 镜头（target/yaw/pitch/dist/fov）
+ * @param {number[]} p 世界坐标 [x,y,z]
+ * @param {number} W 画布逻辑宽
+ * @param {number} H 画布逻辑高
+ * @param {{x:number,y:number,s:number,z:number}} out 复用槽位
+ * @returns {boolean} 是否可见投影（vz < 12 近平面剔除 → false，`out` 不被改写）
+ */
+export function projectInto(cam, p, W, H, out) {
+  return projectIntoXYZ(cam, p[0], p[1], p[2], W, H, out);
+}
+
+/** 标量版投影（热路径用：避免为世界点构造临时数组）。 */
+export function projectIntoXYZ(cam, x, y, z, W, H, out) {
+  prepareBasis(cam);
+  prepareF(cam, H);
+  const dx = x - cam.target[0], dy = y - cam.target[1], dz = z - cam.target[2];
+  const x1 = dx * PROJ.cy + dz * PROJ.sy;
+  const z1 = -dx * PROJ.sy + dz * PROJ.cy;
+  const y2 = dy * PROJ.cx - z1 * PROJ.sx;
+  const z2 = dy * PROJ.sx + z1 * PROJ.cx;
+  const vz = z2 + cam.dist;
+  if (vz < 12) return false;
+  const s = PROJ.f / vz;
+  out.x = W / 2 + x1 * s;
+  out.y = H / 2 - y2 * s;
+  out.s = s;
+  out.z = vz;
+  return true;
+}
+
+/** 分配版投影（仅低频调用点：连线/关系段/流星/超新星/幽灵——数量与天体同阶）。 */
+function project(cam, p, W, H) {
+  const out = { x: 0, y: 0, s: 0, z: 0 };
+  return projectInto(cam, p, W, H, out) ? out : null;
+}
+
+/** 世界点视距（零分配；与旧 `rotY/rotX` 后取 z+dist 同值）。 */
+function zOf(cam, p) {
+  toView(cam, p[0], p[1], p[2]);
+  return PROJ.vz + cam.dist;
+}
+
 /**
  * 创建引擎实例。
  * @param {object} opts
@@ -1565,6 +1915,11 @@ function inheritTrails(prevScene, nextScene) {
  * @param {(info: {kind: string, wsId: string, id: string, lifecycle?: string}|null) => void} [opts.onSelectChange]
  *        选中态变更回调（add-cosmos-selection-linkage D6）：**幂等**——以 `kind:wsId:id`
  *        键比较，键变才回调一次（置空亦然）；载荷恒星附 `lifecycle` 供客户端排除星胚。
+ * @param {(info: {kind: string, wsId: string, id: string}|null) => void} [opts.onHoverChange]
+ *        画布悬停态变更回调（p1-add-cosmos-external-hover D6）：**幂等**——以 `kind:wsId:id`
+ *        键比较（wsId 入键：同 id 可同时存在于两个工作区），键变才回调一次（含置空）；
+ *        载荷恒为**画布指针拾取态**（外部注入 / 选中不进入载荷，注入不回声）；引擎因场景
+ *        差分清除外部注入时补发一次置空通知。回调异常只 `console.warn`（同 onSelectChange）。
  * @param {(sessionId: string) => void} [opts.onDecideSession]
  *        信息卡「决策」按钮回调（cosmos-session-decide D6）：与 onOpenSession 同模式注入
  *        （客户端复用官方 openSession 链路：先关整页再切到系统会话页，决策面由 DSH 原生
@@ -1638,6 +1993,11 @@ export function createCosmosEngine(opts) {
        以 `kind:wsId:id` 键比较，键变才回调（含置空）；载荷命中 D7 `inspectSelection` 同形。 */
     onSelectChange: typeof opts.onSelectChange === "function" ? opts.onSelectChange : null,
     selectKey: "",
+    /* 悬停态订阅（p1-add-cosmos-external-hover D6）：与 onSelectChange 同款幂等通道——
+       以 `kind:wsId:id` 键比较（wsId 入键），键变才回调（含置空）；载荷恒为画布指针
+       拾取态，外部注入不进入载荷。 */
+    onHoverChange: typeof opts.onHoverChange === "function" ? opts.onHoverChange : null,
+    hoverKey: "",
     /* 拖拽平移开关回调（add-cosmos-drag-pan-toggle D4）：与 onOpenSession 同模式注入；
        未注入 → 点击只做本地翻转（静默 no-op，不抛错）。回调只携带翻转后的布尔值，
        持久化与热更回读由客户端链接管（引擎零依赖 settings.mjs）。 */
@@ -1658,6 +2018,10 @@ export function createCosmosEngine(opts) {
     focusWs: null, focusMix: 0, diveSel: null, diveSelKind: null,
     diveFrom: null, // dive 前的完整镜头快照（Esc 全量回放，平移/缩放语义配套）
     hovered: null, selected: null,
+    /* 外部悬停注入态（p1-add-cosmos-external-hover D1）：与画布拾取实体同形
+       `{ws, kind, data}`；唯一写入口 = `setExternalHover` 与 `remapFocusRefs` 自清，
+       帧内拾取（`setHovered`）MUST NOT 触碰（否则每帧被覆盖，且与拖拽门禁纠缠）。 */
+    extHover: null,
     meteor: null, nextMeteor: 3.2,
     eventMeteors: [],
     captures: new Map(), // sessionId → {t0, from, heading, trail?, trailAcc?, degraded}（成星捕获补间；t0 = fire 帧重锚值）
@@ -1674,7 +2038,7 @@ export function createCosmosEngine(opts) {
        wsId, kind, id}。跨 rebuild 按键保留（id 基），切换 = 旧键 out + 新键 in；α 因子由
        条目 t0 与帧时刻现算，不落 body（纯派生，无失效路径）。 */
     relMix: new Map(),
-    relFocusKey: "", // 当前聚焦源键（"" = 无 hover/选中；E.hovered ?? E.selected）
+    relFocusKey: "", // 当前聚焦源键（"" = 三源皆空；E.hovered ?? E.extHover ?? E.selected）
     relLast: null, // 最近一帧 rel 呈现快照（inspectRelation 观测面）
     filter: null, // 搜索过滤态（2.2）：null = 关闭 | {matched: Set<wsId>, pos: Map<wsId,[x,y,z]>}
     filterRamp: new Map(), // wsId → {from, to, t0}（α 坡道；**引擎级**：跨 rebuild 存活，MUST NOT 挂 ws body）
@@ -1711,7 +2075,16 @@ export function createCosmosEngine(opts) {
     sceneData: null, // providers 合并 scene（mock 同构）
     scene: null, ctx: null,
     picks: [], screens: {},
+    /* 渲染热路径槽位（add-cosmos-render-budget D4）：条目/拾取数组、背景与银河带
+       数组及逐点槽位、view 容器跨帧复用；`frameGen` 标记 E.screens 条目世代。 */
+    frameGen: 0,
+    itemBuf: [], pickBuf: [],
+    bgStars: [], band: null, bgPool: [], bandPool: [], view: null,
     el: {}, chips: {}, slabs: {},
+    /* 钻取态切换条目每侧槽状态（step2-add-constellation-switcher D2/D5）：`entry` = 当前呈现
+       条目（null = 空 / 淡出中）、`removeAt` = 淡出起点（E.t 秒；满 WS_SWITCH_FADE 后清内容）。
+       DOM 引用在 ensureDom 建一次（E.el.wsbar / wsbarSides / wsbarItems），内容走差分守卫。 */
+    wsbar: { left: { entry: null, removeAt: null }, right: { entry: null, removeAt: null } },
     t: 0, lastTs: 0, raf: 0, running: false, disposed: false,
     resizeObserver: null
   };
@@ -1748,6 +2121,54 @@ export function createCosmosEngine(opts) {
     } catch (error) {
       console.warn('[dsh-v-cosmos] select listener failed:', error);
     }
+  }
+
+  /* ---------- 悬停态收口与三级仲裁（p1-add-cosmos-external-hover D2/D6） ----------
+     `E.hovered` 的**唯一**写入口 = `setHovered`（帧内拾取后调用）：赋值 + 幂等通知，
+     与 `setSelection` 同款纪律。键 `kind:wsId:id`（`selectionKeyOf` 口径，wsId 入键——
+     同 id 可同时存在于两个工作区，裸 `entKey` 会互吞键变）；载荷恒为画布指针拾取态。
+     单源选择类消费点（关联聚焦焦点源 / 信息卡实体）一律经 `hoverSourceOf` 取次序，
+     MUST NOT 在消费点散布 `E.hovered || E.extHover || E.selected` 三元表达式。 */
+
+  /** 悬停载荷（onHoverChange 同形；无 lifecycle 扩展——星胚判定由客户端凭场景数据自理）。 */
+  function hoverInfoOf(ent) {
+    if (!ent || !ent.data) return null;
+    return { kind: ent.kind, wsId: ent.ws?.id ?? null, id: ent.data.id };
+  }
+
+  /** 悬停通知发出点（守卫 + try/catch 与 onSelectChange 同款）：载荷取 E.hovered。 */
+  function emitHover() {
+    if (!E.onHoverChange) return;
+    try {
+      E.onHoverChange(hoverInfoOf(E.hovered));
+    } catch (error) {
+      console.warn('[dsh-v-cosmos] hover listener failed:', error);
+    }
+  }
+
+  /** 画布拾取态写入口（每帧）：键变才通知（含置空）；同键只更新引用、不回调。 */
+  function setHovered(next) {
+    E.hovered = next || null;
+    const key = selectionKeyOf(E.hovered);
+    if (key === E.hoverKey) return;
+    E.hoverKey = key;
+    emitHover();
+  }
+
+  /** 外部注入被引擎自清时的置空通知（D5/D6，挂点 remapFocusRefs）：载荷恒为画布指针
+      拾取态（指针离场 → null）；`E.hoverKey` 同步为当前指针态，避免下一帧对同一指针
+      hover 重复回调。客户端自设的注入 / 清除不经本函数 → 无回声。 */
+  function clearExtHoverWithNotify() {
+    if (!E.extHover) return;
+    E.extHover = null;
+    E.hoverKey = selectionKeyOf(E.hovered);
+    emitHover();
+  }
+
+  /** 三级仲裁单点（D2）：画布指针 > 外部注入 > 选中。名牌 / 皮肤环标记属**同键并集**
+      判定（多源可同时点亮），不经本函数（见 updateOverlay / markHovers）。 */
+  function hoverSourceOf() {
+    return E.hovered || E.extHover || E.selected;
   }
 
   /** 实体归属推导 kind（`diveSel` 存实体、无 kind 字段——落地预选必须在此推导，
@@ -1853,6 +2274,12 @@ export function createCosmosEngine(opts) {
     return desc ? desc.wsId + '|' + desc.kind + ':' + desc.id : '';
   }
 
+  /** 外部注入判定键（`relKeyOf` 口径，wsId 入键）：跨星座同 id 的并集判定唯一出处
+      （名牌 focused / markHovers / 幂等短路共用）；裸 `entKey` 会跨星座同 id 误点亮。 */
+  function extKeyOf(ent) {
+    return ent && ent.ws && ent.data ? ent.ws.id + '|' + ent.kind + ':' + ent.data.id : '';
+  }
+
   /** 坡道 α（dir:'in' → 0→1；'out' → 1→0；由条目 t0 与当前帧时刻现算）。 */
   function relAlphaOf(entry, t) {
     if (!entry) return 0;
@@ -1861,9 +2288,10 @@ export function createCosmosEngine(opts) {
   }
 
   /** 聚焦源切换裁决（每帧一次，buildItems 首部调用）：旧键转 out（重锚 t0 保 α 连续），
-      新键转 in（同键复活亦按当前 α 续接，无瞬间跳变）；空源 = 全体 out 渐熄。 */
+      新键转 in（同键复活亦按当前 α 续接，无瞬间跳变）；空源 = 全体 out 渐熄。
+      聚焦源 = 三级仲裁（p1-add-cosmos-external-hover D2/D4）：hovered ?? extHover ?? selected。 */
   function advanceRelFocus(t) {
-    const desired = relDescriptorOf(E.hovered || E.selected);
+    const desired = relDescriptorOf(hoverSourceOf());
     const key = relKeyOf(desired);
     if (key === E.relFocusKey) return;
     const old = E.relMix.get(E.relFocusKey);
@@ -2501,61 +2929,112 @@ export function createCosmosEngine(opts) {
     return false;
   }
 
-  /* ---------- 投影 ---------- */
+  /* ---------- 投影（add-cosmos-render-budget D4） ----------
 
-  function project(cam, p, W, H) {
-    let v = [p[0] - cam.target[0], p[1] - cam.target[1], p[2] - cam.target[2]];
-    v = rotY(v, -cam.yaw); v = rotX(v, -cam.pitch);
-    const vz = v[2] + cam.dist;
-    if (vz < 12) return null;
-    const f = (H * 1.1) / (2 * Math.tan(cam.fov * Math.PI / 360));
-    const s = f / vz;
-    return { x: W / 2 + v[0] * s, y: H / 2 - v[1] * s, s: s, z: vz };
-  }
-  function zOf(cam, p) {
-    let v = [p[0] - cam.target[0], p[1] - cam.target[1], p[2] - cam.target[2]];
-    v = rotY(v, -cam.yaw); v = rotX(v, -cam.pitch);
-    return v[2] + cam.dist;
+     `project/rotY/rotX/zOf` 已上移为模块级零分配实现：热路径（尘埃/背景/银河带/
+     轨道/尾迹/子环）一律 `projectInto(XYZ)` 直写槽位；`project`（分配版）只留给与
+     天体同阶的低频调用点（连线/关系段/流星/超新星/消散幽灵）。本块仅保留调用方
+     复用的模块级槽位对象。 */
+
+  /** buildItems 专用槽位（单线程逐帧串行消费；每个槽位只服务一个调用点，防互相踩脏）。 */
+  const P_DUST = { x: 0, y: 0, s: 0, z: 0 };
+  const P_STAR = { x: 0, y: 0, s: 0, z: 0 };
+  const P_PLANET = { x: 0, y: 0, s: 0, z: 0 };
+  const P_COMET = { x: 0, y: 0, s: 0, z: 0 };
+  const P_SAT = { x: 0, y: 0, s: 0, z: 0 };
+  const P_BIRTH = { x: 0, y: 0, s: 0, z: 0 }; // 出生滑入/游入的第二投影（与主投影并存）
+  const P_BG = { x: 0, y: 0, s: 0, z: 0 };
+  const P_BAND = { x: 0, y: 0, s: 0, z: 0 };
+
+  /** 屏幕坐标槽位（D4）：条目对象原地复用 + generation 标记（帧末摘除陈旧键）。 */
+  function screenSlot(key) {
+    let scr = E.screens[key];
+    if (!scr) scr = E.screens[key] = { x: 0, y: 0, r: 0, gen: 0 };
+    scr.gen = E.frameGen;
+    return scr;
   }
 
   /* ---------- 组装绘制条目 ---------- */
 
   function buildItems(t) {
     const cam = E.cam, W = E.W, H = E.H;
-    const items = [], picks = [];
-    E.screens = {};
-    /* 关联聚焦坡道推进（cosmos-relation-focus D3）：聚焦源 = hovered ?? selected（hover
-       优先，选中环呈现不受影响）；条目 α 由帧时刻现算，活动集按星座分组消费。 */
+    /* 条目/拾取数组槽位复用（替代逐帧 `[]`）：稳态只增删数组内容，不再分配容器。 */
+    const items = E.itemBuf || (E.itemBuf = []);
+    items.length = 0;
+    const picks = E.pickBuf || (E.pickBuf = []);
+    picks.length = 0;
+    /* `E.screens` 条目原地复用（D4）：帧首不清空对象——写入口标记 generation，
+       帧末摘除本帧未命中的陈旧键（MUST NOT 退化为「槽位+count」，否则天体离屏/
+       消失后浮签引线会读到陈旧坐标）。`E.screens` 对象身份跨帧恒定。 */
+    E.frameGen += 1;
+    /* 关联聚焦坡道推进（cosmos-relation-focus D3 + p1-add-cosmos-external-hover D2）：
+       聚焦源 = hovered ?? extHover ?? selected（三级仲裁；选中环呈现不受影响）；条目 α
+       由帧时刻现算，活动集按星座分组消费。 */
     advanceRelFocus(t);
     const relFocuses = activeRelFocuses(t);
     E.relLast = { focusKey: E.relFocusKey, orbits: [], segs: [], links: [] };
 
-    E.scene.ws.forEach(function (ws, wsIndex) {
-      /* α 三因子相乘（2.2）：过滤 α × focus 因子（钻取半暗）× 点亮序曲坡道。
-         焦点判定按 id 比较（引用会随结构重建换代——remapFocusRefs 重映射 + id 基
-         双保险，防 dive 焦点失配导致全场景塌到未聚焦亮度）。既有 ws.vis 判定天然
-         承载「淡隐到 0 → 早退不产 item → 不进 picks → chip 隐藏 → 尾迹停步」全链，
-         无需逐项排除代码。 */
+    /* 预算前置（D1）：先算本帧参与尘埃渲染的星座数 n——α 三因子（过滤 × focus ×
+       点亮序曲）与可见性在此一次算好，主循环只读。均摊上限 = dustPerWsOf(n)：
+       预算/星座数变化只改变「前缀长度」，存量粒子原位原相位（D1 前缀语义）。 */
+    let dustWsCount = 0;
+    for (let wi = 0; wi < E.scene.ws.length; wi++) {
+      const ws = E.scene.ws[wi];
       const filterAlpha = ws.filterAlpha == null ? filterTargetOf(ws.id) : ws.filterAlpha;
       ws.alpha = filterAlpha
         * (E.focusMix <= 0 ? 1 : (E.focusWs && ws.id === E.focusWs.id ? 1 : 1 - 0.88 * E.focusMix))
-        * bootRampOf(t, wsIndex); // 冷启动点亮序曲（6.1）：wsIndex×0.1s 错峰坡道
+        * bootRampOf(t, wi); // 冷启动点亮序曲（6.1）：wi×0.1s 错峰坡道
       ws.vis = ws.alpha > 0.02;
+      if (ws.vis && ws.archives > 0 && ws.dust.length > 0) dustWsCount += 1;
+    }
+    const dustLimit = dustPerWsOf(dustWsCount);
+
+    E.scene.ws.forEach(function (ws) {
+      /* α 三因子相乘（2.2）：过滤 α × focus 因子（钻取半暗）× 点亮序曲坡道。焦点
+         判定按 id 比较（引用会随结构重建换代——remapFocusRefs 重映射 + id 基双保险，
+         防 dive 焦点失配导致全场景塌到未聚焦亮度）。α/vis 已由上方预算前置块写好。
+         既有 ws.vis 判定天然承载「淡隐到 0 → 早退不产 item → 不进 picks → chip
+         隐藏 → 尾迹停步」全链，无需逐项排除代码。 */
       if (!ws.vis) return;
       /* 渲染期单一中心访问器（D5/2.2）：星座集合滑移 / 过滤位移在途 → 插值中心；
          恒星 wp 与行星轨道中心由 applyWsCenter 同步重算，故 dust/星云/连线/chip
          （经 ws.proj）全部随星座中心移动。MUST NOT 旁路直读 ws.center。 */
       const center = wsCenter(ws, t);
-      ws.proj = project(cam, center, W, H);
+      /* 星座投影槽位复用（D4）：ws.proj 跨帧指向同一对象；投影不可用 → null（视口
+         语义与旧实现一致），下一帧重新指向槽位（不分配）。 */
+      const projSlot = ws.__projSlot || (ws.__projSlot = { x: 0, y: 0, s: 0, z: 0 });
+      ws.proj = projectInto(cam, center, W, H, projSlot) ? projSlot : null;
 
       if (ws.archives > 0) {
-        const pts = [];
+        /* 尘埃段（D1/D3/D4 三合一）：
+           - 预算均摊 + 种子流**前缀**裁剪：本星座取前 min(自身粒数, 均摊上限) 粒；
+           - 视口剔除：投影后按「基础余量 + 该粒屏显尺寸」判定，屏外不写槽位（零分配）；
+           - 槽位复用：pts 数组与逐粒槽位挂 ws（`__dustPts`/`__dustPool`），稳态零分配。 */
+        const k = Math.min(ws.dust.length, dustLimit);
+        const pts = ws.__dustPts || (ws.__dustPts = []);
+        const pool = ws.__dustPool || (ws.__dustPool = []);
         const R = 12 + ws.archives * 2.4; // 星云半径渲染期缩放（off 单位化 → 密度增长不位移存量粒子，D1）
-        ws.dust.forEach(function (d) {
-          const pr = project(cam, [center[0] + d.off[0] * R, center[1] + d.off[1] * R, center[2] + d.off[2] * R], W, H);
-          if (pr) pts.push({ x: pr.x, y: pr.y, s: d.s * pr.s * 3, a: ws.alpha * (0.22 + 0.3 * (0.5 + 0.5 * Math.sin(t * 1.3 + d.tw))), hue: d.hue, born: d.born ?? null });
-        });
-        if (pts.length) items.push({ kind: 'dust', z: zOf(cam, center) - 6, pts: pts, ws: ws, alpha: ws.alpha });
+        const alphaBase = ws.alpha;
+        let count = 0;
+        for (let i = 0; i < k; i++) {
+          const d = ws.dust[i];
+          if (!projectIntoXYZ(cam, center[0] + d.off[0] * R, center[1] + d.off[1] * R, center[2] + d.off[2] * R, W, H, P_DUST)) continue;
+          const ps = d.s * P_DUST.s * 3;
+          /* 剔除余量 = 基础余量 + 屏显尺寸（渲染色上限；任何缩放级下都覆盖粒子本体）。 */
+          const pad = NEBULA_CULL_MARGIN + ps;
+          if (P_DUST.x < -pad || P_DUST.x > W + pad || P_DUST.y < -pad || P_DUST.y > H + pad) continue;
+          const slot = pool[count] || (pool[count] = { x: 0, y: 0, s: 0, a: 0, hue: 0, born: null });
+          slot.x = P_DUST.x;
+          slot.y = P_DUST.y;
+          slot.s = ps;
+          slot.a = alphaBase * (NEBULA_ALPHA_BASE + NEBULA_ALPHA_SWING * (0.5 + 0.5 * Math.sin(t * 1.3 + d.tw)));
+          slot.hue = d.hue;
+          slot.born = d.born ?? null;
+          pts[count] = slot;
+          count += 1;
+        }
+        pts.length = count;
+        if (count) items.push({ kind: 'dust', z: zOf(cam, center) - 6, pts: pts, ws: ws, alpha: ws.alpha });
       }
       /* 关联聚焦集（D1 纯派生无缓存）：聚焦源限于本星座；star/planet 两分支见 relSetOf，
          comet/无关联 → null（不产生任何 rel 增强）。 */
@@ -2603,17 +3082,24 @@ export function createCosmosEngine(opts) {
         }
       }
       if (segs.length) items.push({ kind: 'constline', z: zOf(cam, center) - 4, segs: segs, ws: ws, alpha: ws.alpha });
+      /* 星座内逐天体循环：所有投影改用 projectInto(XYZ) 直写槽位，轨道点/尾迹数组
+         挂 body 复用（D4 稳态零分配）。 */
       ws.planets.forEach(function (p) {
-        const orbitPts = [];
+        const orbitPts = p.__orbitPts || (p.__orbitPts = []);
+        const orbitPool = p.__orbitPool || (p.__orbitPool = []);
         const orbitR = p.captureStart != null ? p.baseR * lerp(CAPTURE_RING_F0, 1, clamp((t - p.captureStart) / CAPTURE_DUR, 0, 1)) : p.baseR;
+        const ci = Math.cos(p.inc), si = Math.sin(p.inc);
+        let oc = 0;
         for (let i = 0; i <= 48; i++) {
           const a = p.phase + i / 48 * TAU;
           const ca = Math.cos(a) * orbitR, sa = Math.sin(a) * orbitR;
-          const ci = Math.cos(p.inc), si = Math.sin(p.inc);
-          const pr = project(cam, [p.center[0] + ca, p.center[1] + sa * si * 0.9, p.center[2] + sa * ci], W, H);
-          if (pr) orbitPts.push(pr);
+          const slot = orbitPool[oc] || (orbitPool[oc] = { x: 0, y: 0, s: 0, z: 0 });
+          if (!projectIntoXYZ(cam, p.center[0] + ca, p.center[1] + sa * si * 0.9, p.center[2] + sa * ci, W, H, slot)) continue;
+          orbitPts[oc] = slot;
+          oc += 1;
         }
-        if (orbitPts.length > 2) {
+        orbitPts.length = oc;
+        if (oc > 2) {
           /* 轨道环增亮（「行星关联聚焦呈现」/「恒星关联聚焦呈现」）：关联行星自身环标 rel；
              挂卫星时子轨道环同源增亮（下方 pushSatEnvelope 传入同一 α）。 */
           const orbitRel = relSet ? (relSet.orbit.get(p.id) || 0) : 0;
@@ -2627,61 +3113,61 @@ export function createCosmosEngine(opts) {
         }
       });
       ws.stars.forEach(function (s) {
-        const pr = project(cam, s.wp, W, H);
-        if (!pr) return;
+        if (!projectInto(cam, s.wp, W, H, P_STAR)) return;
         const act = s.act || 0;
         const dimF = act === 0 ? 0.4 : 1;
         /* act 热度通道：活跃时轻微脉动（颜色不变，in-progress 半径加成退场）。 */
         const pulse = act > 0 ? 1 + 0.06 * Math.sin(t * 2.4 + s.starIndex * 2) : 1;
-        const r = clamp((2.4 + act * 0.9) * pr.s * 1.05, 2, 26) * pulse;
+        const r = clamp((2.4 + act * 0.9) * P_STAR.s * 1.05, 2, 26) * pulse;
         const key = 'star:' + s.id;
         const starFx = E.fx.get(key) ?? null;
-        E.screens[key] = { x: pr.x, y: pr.y, r: r };
+        const scr = screenSlot(key);
+        scr.x = P_STAR.x; scr.y = P_STAR.y; scr.r = r;
         const it = {
-          kind: 'star', z: pr.z, x: pr.x, y: pr.y, r: r, alpha: ws.alpha * dimF,
+          kind: 'star', z: P_STAR.z, x: P_STAR.x, y: P_STAR.y, r: r, alpha: ws.alpha * dimF,
           data: s, ws: ws, fx: starFx,
           birth: birthInfoOf(starFx, t, 'star') // 出生绘制信息（2.4 skin-d 消费；delay 段 α=0）
         };
         markHovers(it, 'star', s.id);
         items.push(it);
-        picks.push({ x: pr.x, y: pr.y, r: r + 8, e: { kind: 'star', ws: ws, data: s } });
+        picks.push({ x: P_STAR.x, y: P_STAR.y, r: r + 8, e: { kind: 'star', ws: ws, data: s } });
       });
       ws.planets.forEach(function (p) {
-        const pr = project(cam, p.wp, W, H);
-        if (!pr) return;
+        if (!projectInto(cam, p.wp, W, H, P_PLANET)) return;
         const planetFx = E.fx.get('planet:' + p.id) ?? null;
         const birth = birthInfoOf(planetFx, t, 'planet');
-        let px = pr.x, py = pr.y;
+        let px = P_PLANET.x, py = P_PLANET.y;
         if (birth && !birth.degraded && birth.k > 0 && birth.k < 1) {
           /* 出生滑入（D2）：从所属恒星方向短滑入——位移 = baseR×1.5→0（easeOutCubic），
              起点贴近恒星、滑至轨道位。风暴降级（degraded）缩纯 α 坡道、无位移。 */
           const s = (1 - easeOutCubic(birth.k)) * p.baseR * 1.5;
           const dx = p.wp[0] - p.center[0], dy = p.wp[1] - p.center[1], dz = p.wp[2] - p.center[2];
           const L = Math.hypot(dx, dy, dz) || 1;
-          const prB = project(cam, [p.wp[0] - dx / L * s, p.wp[1] - dy / L * s, p.wp[2] - dz / L * s], W, H);
-          if (prB) { px = prB.x; py = prB.y; }
+          if (projectIntoXYZ(cam, p.wp[0] - dx / L * s, p.wp[1] - dy / L * s, p.wp[2] - dz / L * s, W, H, P_BIRTH)) {
+            px = P_BIRTH.x; py = P_BIRTH.y;
+          }
         }
         const waiting = p.state === 'waiting';
         const pulse = waiting ? 1 + 0.12 * Math.sin(t * 5) : 1;
-        const r = clamp(1.6 * pr.s * 1.15, 2.2, 14) * pulse;
-        const trail = p.trail.map(function (w) { return project(cam, w, W, H); }).filter(Boolean);
+        const r = clamp(1.6 * P_PLANET.s * 1.15, 2.2, 14) * pulse;
+        const trail = projectTrailOf(p, cam, W, H);
         const key = 'planet:' + p.id;
         /* 捕获 α 因子（风暴降级坡道；稳态恒 1）：条目摘除后 body 字段回 1。 */
         const planetAlpha = ws.alpha * (Number.isFinite(Number(p.captureAlpha)) ? Number(p.captureAlpha) : 1);
-        E.screens[key] = { x: px, y: py, r: r };
-        const it = { kind: 'planet', z: pr.z, x: px, y: py, r: r, alpha: planetAlpha, data: p, ws: ws, trail: trail, fx: planetFx, birth: birth };
+        const scr = screenSlot(key);
+        scr.x = px; scr.y = py; scr.r = r;
+        const it = { kind: 'planet', z: P_PLANET.z, x: px, y: py, r: r, alpha: planetAlpha, data: p, ws: ws, trail: trail, fx: planetFx, birth: birth };
         markHovers(it, 'planet', p.id);
         items.push(it);
         picks.push({ x: px, y: py, r: r + 8, e: { kind: 'planet', ws: ws, data: p } });
         pushSatEnvelope(items, cam, p, W, H, ws, t, planetAlpha, relSet ? (relSet.orbit.get(p.id) || 0) : 0);
       });
       ws.comets.forEach(function (c) {
-        const pr = project(cam, c.wp, W, H);
-        if (!pr) return;
+        if (!projectInto(cam, c.wp, W, H, P_COMET)) return;
         const cometFx = E.fx.get('comet:' + c.id) ?? null;
         const birth = birthInfoOf(cometFx, t, 'comet');
-        let trail = c.trail.map(function (w) { return project(cam, w, W, H); }).filter(Boolean);
-        let px = pr.x, py = pr.y;
+        let trail = projectTrailOf(c, cam, W, H);
+        let px = P_COMET.x, py = P_COMET.y;
         if (birth && !birth.degraded) {
           /* 尾迹先现（trail 长度坡道）：可见尾迹按 trailFrac 从头截取。 */
           if (birth.trailFrac < 1) trail = trail.slice(0, Math.max(2, Math.round(trail.length * birth.trailFrac)));
@@ -2691,16 +3177,18 @@ export function createCosmosEngine(opts) {
             const s = (1 - easeOutCubic(birth.k)) * 110;
             const dx = c.wp[0] - center[0], dy = c.wp[1] - center[1], dz = c.wp[2] - center[2];
             const L = Math.hypot(dx, dy, dz) || 1;
-            const prB = project(cam, [c.wp[0] + dx / L * s, c.wp[1] + dy / L * s, c.wp[2] + dz / L * s], W, H);
-            if (prB) { px = prB.x; py = prB.y; }
+            if (projectIntoXYZ(cam, c.wp[0] + dx / L * s, c.wp[1] + dy / L * s, c.wp[2] + dz / L * s, W, H, P_BIRTH)) {
+              px = P_BIRTH.x; py = P_BIRTH.y;
+            }
           }
         }
-        const r = clamp(1.6 * pr.s, 2.4, 14);
+        const r = clamp(1.6 * P_COMET.s, 2.4, 14);
         const key = 'comet:' + c.id;
-        E.screens[key] = { x: px, y: py, r: r };
+        const scr = screenSlot(key);
+        scr.x = px; scr.y = py; scr.r = r;
         const cometAlpha = ws.alpha * (c.regressAlpha != null ? c.regressAlpha : 1);
         const it = {
-          kind: 'comet', z: pr.z, x: px, y: py, r: r,
+          kind: 'comet', z: P_COMET.z, x: px, y: py, r: r,
           alpha: cometAlpha, // 回归 α 坡道（0→1 渐入；激波弹射 hold 段 α=0 不可见）
           data: c, ws: ws, trail: trail,
           fx: cometFx, // 查看渐熄（skin fx 驱动谓词消费）
@@ -2712,6 +3200,11 @@ export function createCosmosEngine(opts) {
         pushSatEnvelope(items, cam, c, W, H, ws, t, cometAlpha, 0); // 卫星随父可见度（hold α=0 同隐；彗星无关联聚焦）
       });
     });
+    /* 帧末摘除本帧未命中的陈旧屏幕坐标键（天体离屏/消失后浮签引线 MUST NOT 读陈旧
+       坐标；D4 条目复用的必备清理步骤）。 */
+    for (const key of Object.keys(E.screens)) {
+      if (E.screens[key].gen !== E.frameGen) delete E.screens[key];
+    }
 
     if (E.meteor) pushMeteorItem(items, cam, E.meteor, t);
     E.eventMeteors.forEach(function (m) { pushMeteorItem(items, cam, m, t); });
@@ -2757,8 +3250,30 @@ export function createCosmosEngine(opts) {
 
   function markHovers(it, kind, id) {
     const key = kind + ':' + id;
-    it.hovered = !!(E.hovered && entKey(E.hovered) === key);
+    /* 画布 hover 沿用既有 `entKey` 口径（无 ws，行为零变化）；外部注入 MUST 含 wsId——
+       从 `it.ws.id` 取（键 `wsId|kind:id`）：裸 entKey 会跨星座同 id 误点亮皮肤 hover 环
+       （p1-add-cosmos-external-hover D6 键纪律）。同键并集：多源可同时点亮。 */
+    const extKey = (it.ws?.id ?? '') + '|' + key;
+    it.hovered = !!(E.hovered && entKey(E.hovered) === key)
+      || !!(E.extHover && extKeyOf(E.extHover) === extKey);
     it.selected = !!(E.selected && entKey(E.selected) === key);
+  }
+
+  /** 世界尾迹 → 屏幕点数组（D4 槽位复用：`__trailPts` 数组 + `__trailPool` 点槽位挂
+      body；稳态只改内容不分配。数组每帧 length 归零重建，消费方（皮肤描线）同帧读取）。 */
+  function projectTrailOf(body, cam, W, H) {
+    const pts = body.__trailPts || (body.__trailPts = []);
+    const pool = body.__trailPool || (body.__trailPool = []);
+    const world = body.trail;
+    let n = 0;
+    for (let i = 0; i < world.length; i++) {
+      const slot = pool[n] || (pool[n] = { x: 0, y: 0, s: 0, z: 0 });
+      if (!projectInto(cam, world[i], W, H, slot)) continue;
+      pts[n] = slot;
+      n += 1;
+    }
+    pts.length = n;
+    return pts;
   }
 
   /** 子轨道环 + 卫星条目装配（卫星 MUST NOT 参与拾取：不进 picks/screens，hover 穿透父天体）。
@@ -2771,28 +3286,29 @@ export function createCosmosEngine(opts) {
     const alpha = Number.isFinite(Number(ownerAlpha)) ? Number(ownerAlpha) : ws.alpha;
     const rOrb = satOrbitR(owner);
     const ci = Math.cos(owner.inc || 0), si = Math.sin(owner.inc || 0);
-    const ringPts = [];
+    /* 子环点槽位（D4）：同样挂 owner 复用。 */
+    const ringPts = owner.__ringPts || (owner.__ringPts = []);
+    const ringPool = owner.__ringPool || (owner.__ringPool = []);
+    let rn = 0;
     for (let i = 0; i <= 40; i++) {
       const a = i / 40 * TAU;
-      const pr = project(cam, [
-        owner.wp[0] + Math.cos(a) * rOrb,
-        owner.wp[1] + Math.sin(a) * rOrb * si * 0.9,
-        owner.wp[2] + Math.sin(a) * rOrb * ci
-      ], W, H);
-      if (pr) ringPts.push(pr);
+      const slot = ringPool[rn] || (ringPool[rn] = { x: 0, y: 0, s: 0, z: 0 });
+      if (!projectIntoXYZ(cam, owner.wp[0] + Math.cos(a) * rOrb, owner.wp[1] + Math.sin(a) * rOrb * si * 0.9, owner.wp[2] + Math.sin(a) * rOrb * ci, W, H, slot)) continue;
+      ringPts[rn] = slot;
+      rn += 1;
     }
-    if (ringPts.length > 2) {
+    ringPts.length = rn;
+    if (rn > 2) {
       const ring = { kind: 'suborbit', z: zOf(cam, owner.wp) - 1, orbitPts: ringPts, alpha: alpha, data: { state: owner.state || 'idle' } };
       if (relAlpha > 0) { ring.rel = true; ring.relAlpha = relAlpha; }
       items.push(ring);
     }
     owner.sats.forEach(function (sat) {
-      const pr = project(cam, sat.wp, W, H);
-      if (!pr) return;
+      if (!projectInto(cam, sat.wp, W, H, P_SAT)) return;
       const bornK = sat.born != null ? clamp((t - sat.born) / SAT_BORN_DUR, 0, 1) : null;
-      const r = clamp(1.1 * pr.s, 1.6, 5.5);
-      const trail = sat.trail.map(function (w) { return project(cam, w, W, H); }).filter(Boolean);
-      items.push({ kind: 'sat', z: pr.z + 1, x: pr.x, y: pr.y, r: r, alpha: alpha, data: sat, ws: ws, trail: trail, bornK: bornK });
+      const r = clamp(1.1 * P_SAT.s, 1.6, 5.5);
+      const trail = projectTrailOf(sat, cam, W, H);
+      items.push({ kind: 'sat', z: P_SAT.z + 1, x: P_SAT.x, y: P_SAT.y, r: r, alpha: alpha, data: sat, ws: ws, trail: trail, bornK: bornK });
     });
   }
 
@@ -2902,6 +3418,18 @@ export function createCosmosEngine(opts) {
     tweenTo({ target: home.target, yaw: home.yaw, pitch: home.pitch, dist: home.dist, mix: 0 }, 1200, 'out');
   }
 
+  /** 按 id 钻取到场景星座（add-cosmos-add-workspace D4 的**唯一实现**；step2-add-constellation-switcher
+      D3 起钻取态切换条目的 click 与公共面 `diveToWs` 共用本函数——零新增镜头语义）。
+      命中 → 复用既有 `dive(ws, null)`（tweenTo 1300ms，与 chip 点击同一语义；钻取态下替换焦点、
+      补间 retarget）；未命中（星座尚未注入 / 已注销）→ `false`，不抛错（调用方自决降级）。 */
+  function diveToWsById(wsId) {
+    if (E.disposed || !E.scene || wsId == null) return false;
+    const ws = E.scene.ws.find(function (w) { return w.id === wsId; });
+    if (!ws) return false;
+    dive(ws, null);
+    return true;
+  }
+
   /** 恒星级重对焦（add-cosmos-selection-linkage D2/D8/D9）：短补间把相机 target 对准
       恒星的**确定性落位**（`centerTargetOf(ws) + star.off`，MUST NOT 取星座集合滑移/
       过滤位移补间的途中中点）；距离收敛 `min(当前距离, STAR_FOCUS_DIST)`、yaw/pitch
@@ -3004,14 +3532,18 @@ export function createCosmosEngine(opts) {
     const root = document.createElement('div');
     root.className = 'cos-root';
     /* HUD 精简（D5/2.1–2.2）：面包屑与右上操作提示已移除——返回银河由 Esc（桌面）与
-       右下常驻「回到银河」按钮（触屏）两条等价路径承担；顶部中央位置改由钻取态星座标牌
-       `.cos-badge` 占用（D4；polish-cosmos-drilled-hud 起自左上移居于此）。标牌与按钮
-       均在此建一次，MUST NOT 逐帧重建（吞 click）。 */
+       右下常驻「回到银河」按钮（触屏）两条等价路径承担；顶部中央位置改由钻取态行容器
+       `.cos-wsbar` 占用（step2-add-constellation-switcher D1：中央格 = 星座标牌 `.cos-badge`，
+       两侧 = 可切换星座切换条目槽）。标牌、行容器与条目均在此建一次，MUST NOT 逐帧重建（吞 click）。 */
     root.innerHTML =
       '<canvas class="cos-canvas"></canvas>' +
       '<div class="cos-scanlines"></div>' +
       '<div class="cos-overlay">' +
-      '  <div class="cos-badge"></div>' +
+      '  <div class="cos-wsbar">' +
+      '    <div class="cos-wsbar-side" data-side="left"></div>' +
+      '    <div class="cos-badge"></div>' +
+      '    <div class="cos-wsbar-side" data-side="right"></div>' +
+      '  </div>' +
       '  <div class="cos-card"></div>' +
       '  <div class="cos-empty" style="display:none"><b>COSMOS</b></div>' +
       '</div>' +
@@ -3020,11 +3552,37 @@ export function createCosmosEngine(opts) {
     E.el.root = root;
     E.el.canvas = root.querySelector('.cos-canvas');
     E.el.overlay = root.querySelector('.cos-overlay');
+    E.el.wsbar = root.querySelector('.cos-wsbar');
+    E.el.wsbarSides = {
+      left: root.querySelector('.cos-wsbar-side[data-side="left"]'),
+      right: root.querySelector('.cos-wsbar-side[data-side="right"]')
+    };
     E.el.badge = root.querySelector('.cos-badge');
     E.el.card = root.querySelector('.cos-card');
     E.el.empty = root.querySelector('.cos-empty');
     E.el.toast = root.querySelector('.cos-toast');
     E.ctx = E.el.canvas.getContext('2d');
+
+    /* 钻取态可切换星座切换条目（step2-add-constellation-switcher 2.2 / 3.1–3.2）：两侧条目槽各持
+       **一个常驻条目节点**（每槽至多一个目标）——节点建一次、内容/显隐由 `updateOverlay` 的
+       差分维护（MUST NOT 逐帧重建：innerHTML 重写会让节点活不过一帧，click 永不派发）。
+       条目 click → 与公共面 `diveToWs` 同一内部实现；多指手势期 / 抑制窗内点击抑制（与 chip
+       同款判据，捏合不误触）。未挂载时 disabled 防键盘误触。 */
+    E.el.wsbarItems = {};
+    ['left', 'right'].forEach(function (side) {
+      const item = document.createElement('button');
+      item.className = 'cos-wsbar-item';
+      item.setAttribute('type', 'button');
+      item.disabled = true;
+      item.addEventListener('click', function () {
+        if (gestureSuppressed()) return;
+        const entry = E.wsbar[side].entry;
+        if (!entry) return;
+        diveToWsById(entry.wsId); // 未命中（目标已注销）→ false 静默降级
+      });
+      E.el.wsbarSides[side].appendChild(item);
+      E.el.wsbarItems[side] = item;
+    });
 
     /* 右下「回到银河」（D3/4.1–4.2）：引擎 overlay 自建（功能纯引擎，零新 API 暴露），
        DOM 只建一次、不参与逐帧 innerHTML 更新——否则一次 mousedown→mouseup 之间元素被
@@ -3211,12 +3769,11 @@ export function createCosmosEngine(opts) {
   }
 
   /** 空星座判定（D6：「空」= 恒星/行星/彗星均为空且无归档星云）。出生高亮只对空星座
-      生效——含内容星座走既有凝聚/游入转场，MUST NOT 被 chip 高亮替代或叠加（spec）。 */
+      生效——含内容星座走既有凝聚/游入转场，MUST NOT 被 chip 高亮替代或叠加（spec）。
+      step1-add-constellation-vitality D1：本判据 = 星座活力 `sleep` ∩ 无星云（同源派生，
+      两判定并存、互不替代——仅星云的沉睡星座 MUST NOT 触发出生高亮）。 */
   function isEmptyConstellation(ws) {
-    return (ws?.stars?.length ?? 0) === 0
-      && (ws?.planets?.length ?? 0) === 0
-      && (ws?.comets?.length ?? 0) === 0
-      && !(ws?.archives > 0);
+    return constellationVitalityOf(ws) === 'sleep' && !(ws?.archives > 0);
   }
 
   /** 覆盖层 chip/slab 随场景结构增量对齐（按 id 复用既有 DOM）。
@@ -3276,16 +3833,20 @@ export function createCosmosEngine(opts) {
     updateChipText();
   }
 
-  /** chip 文本（patch 路径下就地更新，不重建 DOM）：银河态只显示星座名——计数仪表
-      迁移至钻取态顶部中央标牌（D4/3.3）。沿用 `dataset.html` 内容差分守卫：名字几乎恒定，
-      逐帧重写 innerHTML 是无谓开销，且会让 chip 内部元素活不过一帧；
-      `cos-chip-new` 出生高亮关键帧只作用于 border/box-shadow/b 的 text-shadow，
-      无 span 依赖（移除计数行不影响高亮）。 */
+  /** chip 文本（patch 路径下就地更新，不重建 DOM）：银河态只显示星座名 + 星座级活力
+      状态点——计数仪表迁移至钻取态顶部中央标牌（D4/3.3）。沿用 `dataset.html` 内容差分
+      守卫：名字几乎恒定，逐帧重写 innerHTML 是无谓开销，且会让 chip 内部元素活不过一帧；
+      活力翻转（step1-add-constellation-vitality D2）即换串重写、不变零重写。
+      `cos-chip-new` 出生高亮关键帧只作用于 border/box-shadow/b 的 text-shadow，无额外
+      元素依赖（移除计数行、追加状态点均不影响高亮）。 */
   function updateChipText() {
     E.scene.ws.forEach(function (ws) {
       const chip = E.chips[ws.id];
       if (!chip) return;
-      const html = '<b>' + escapeHtml(ws.name) + '</b>';
+      /* 两态状态点取色与恒星名牌 `cos-slab-life` 同源；沉睡态 chip 的降饱和由
+         `cos-chip-sleep` 类承担（class 单点写入在 updateOverlay）。 */
+      const html = '<b>' + escapeHtml(ws.name)
+        + '<i class="cos-chip-life ' + constellationVitalityOf(ws) + '"></i></b>';
       if (chip.dataset.html !== html) { chip.innerHTML = html; chip.dataset.html = html; }
     });
   }
@@ -3429,6 +3990,66 @@ export function createCosmosEngine(opts) {
     return '';
   }
 
+  /** 切换条目内容串（step2-add-constellation-switcher D2/D6）：星座名（`escapeHtml`，超长由
+      CSS 省略）+ 活跃状态点。清单成员恒为**有提案或星胚**的星座（按 step1 存在口径必然活跃）
+      ——点为语义一致性呈现而非信息增量。 */
+  function wsbarItemHtmlOf(entry) {
+    return '<b>' + escapeHtml(entry.name) + '</b><i></i>';
+  }
+
+  /** 单侧条目槽差分维护（step2-add-constellation-switcher D2/D5）：槽至多一个常驻条目节点。
+      - 目标变化 → 就地换内容（`dataset.html` 差分守卫，不变零重写）并挂 / 摘 `.on`；
+      - 出现 = 加 `.on`（.25s opacity 过渡淡入）；消失 = 摘 `.on` 淡出，满 `WS_SWITCH_FADE`
+        后清内容（槽零内容，宽度由槽固定宽保留——布局不塌）；
+      - 条目 click 读本状态 `E.wsbar[side].entry`（不依赖 DOM 属性，换代零陈旧）。 */
+  function syncWsbarSide(side, entry) {
+    const item = E.el.wsbarItems[side];
+    const st = E.wsbar[side];
+    const prevId = st.entry ? st.entry.wsId : null;
+    const nextId = entry ? entry.wsId : null;
+    if (nextId !== prevId) {
+      st.entry = entry ? { wsId: entry.wsId, name: entry.name } : null;
+      st.removeAt = null;
+      if (st.entry) {
+        item.disabled = false;
+        item.classList.add('on');
+      } else if (prevId != null) {
+        item.disabled = true; // 淡出期不可点（视觉在退场）
+        item.classList.remove('on');
+        st.removeAt = E.t; // 淡出窗口起点（满 0.25s 清内容）
+      }
+    }
+    if (st.entry) {
+      if (st.entry.name !== entry.name) st.entry.name = entry.name; // 重命名就地刷新
+      const html = wsbarItemHtmlOf(st.entry);
+      if (item.dataset.html !== html) {
+        item.innerHTML = html;
+        item.dataset.html = html;
+        item.setAttribute('title', st.entry.name);
+        item.setAttribute('aria-label', '切换到 ' + st.entry.name);
+      }
+      if (item.dataset.ws !== String(st.entry.wsId)) item.dataset.ws = String(st.entry.wsId);
+      return;
+    }
+    if (st.removeAt != null && E.t - st.removeAt >= WS_SWITCH_FADE) {
+      if (item.innerHTML !== '') item.innerHTML = '';
+      if (item.dataset.html !== '') item.dataset.html = '';
+      if (item.dataset.ws !== '') item.dataset.ws = '';
+      st.removeAt = null;
+    }
+  }
+
+  /** 两侧条目同步（`updateOverlay` 每帧唯一调用点；items 来自纯函数 `wsSwitcherItemsOf`）。 */
+  function syncWsbarItems(items) {
+    let left = null, right = null;
+    for (let i = 0; i < items.length; i += 1) {
+      if (items[i].side === 'left') left = items[i];
+      else if (items[i].side === 'right') right = items[i];
+    }
+    syncWsbarSide('left', left);
+    syncWsbarSide('right', right);
+  }
+
   function updateOverlay() {
     const W = E.W, H = E.H;
     /* 引线逐帧缓存（D3 单一来源）：本函数是本帧浮签定位/换算的**唯一点**——三族可见性、
@@ -3450,9 +4071,24 @@ export function createCosmosEngine(opts) {
     // 显示阈值沿用旧 crumb 的 focusMix > 0.4（与钻取镜头推进同步，不闪）。
     let badge = '';
     if (E.focusWs && E.focusMix > 0.4) {
-      badge = '<b>' + escapeHtml(E.focusWs.name) + '</b><span>' + countsHtml(E.focusWs) + '</span>';
+      /* 星座级活力标识（step1-add-constellation-vitality D2/D3）：名称行 `<b>` 内名称后附
+         两态点 + 文案（复用 `E.labels.vitality` 同源标签组）；计数行 `<span>` 不变。
+         与恒星级名牌标识可区分：星座级铬件在此（页顶标牌）、恒星级在天体浮签，位置即
+         语境；判据不同（星座级 = 存在口径、恒星级 = 热度口径），呈现层不额外消歧。
+         内容仍走 `dataset.html` 差分守卫——活力翻转即换串重写、不变零重写。 */
+      const life = constellationVitalityOf(E.focusWs);
+      badge = '<b>' + escapeHtml(E.focusWs.name)
+        + '<i class="cos-ws-life ' + life + '"><i></i>'
+        + escapeHtml(life === 'active' ? E.labels.vitality.active : E.labels.vitality.sleep)
+        + '</i></b><span>' + countsHtml(E.focusWs) + '</span>';
     }
     if (E.el.badge.dataset.html !== badge) { E.el.badge.innerHTML = badge; E.el.badge.dataset.html = badge; }
+
+    /* 钻取态可切换星座切换条目（step2-add-constellation-switcher 3.1 / D2/D4/D5）：清单 =
+       有提案/星胚的星座 ∖ 当前（导航铬件——MUST NOT 与搜索过滤求交集；过滤把当前星座排除触发
+       flyOut 时切换器随钻取态整体退场）。显隐与标牌同一阈值（focusMix > 0.4）；银河态 / 阈值
+       下传空清单 → 条目淡出退场（零布局呈现）。内容差分与 `.on` 过渡由 syncWsbarItems 单点维护。 */
+    syncWsbarItems(E.focusWs && E.focusMix > 0.4 ? wsSwitcherItemsOf(E.scene, E.focusWs.id) : []);
 
     // 星座 chip(仅银河视图)
     Object.keys(E.chips).forEach(function (id) {
@@ -3466,6 +4102,11 @@ export function createCosmosEngine(opts) {
         return;
       }
       el.classList.add('on');
+      /* 星座级活力两态（step1-add-constellation-vitality D2/D4）：沉睡 class 的**单一写入点**
+         = 本循环，逐帧 `classList.toggle` 廉价幂等（`rebuildOverlayDom` 的整类赋值只给
+         基类，一帧内被此处收敛）。只切 class——MUST NOT 在此写 opacity/transform
+         （下方逐帧 inline 动画面）或改 click/dive 语义（沉睡 chip 照常钻入）。 */
+      el.classList.toggle('cos-chip-sleep', constellationVitalityOf(ws) === 'sleep');
       const alpha = clamp(ws.alpha * (1 - E.focusMix * 1.6), 0, 1);
       el.style.opacity = String(alpha);
       /* 避让偏移（D2）：chip 悬空于星座投影中心上方 TIP_GAP.chip；
@@ -3493,7 +4134,13 @@ export function createCosmosEngine(opts) {
       const key = 'star:' + id;
       const scr = E.screens[key];
       const inSystem = ownerWs && E.focusWs && ownerWs.id === E.focusWs.id && E.focusMix > 0.5;
-      const focused = (E.selected && entKey(E.selected) === key) || (E.hovered && entKey(E.hovered) === key);
+      /* 名牌 focused 判定 = 同键**并集**（多源可同时点亮，D4）：hover/selected 沿用 `entKey`
+         既有口径；外部注入按 `ownerWs.id + kind + id` 判定（键含 wsId——MUST NOT 用 entKey
+         裸键，跨星座同 id 会误亮名牌/抬满 α）。 */
+      const focused = (E.selected && entKey(E.selected) === key)
+        || (E.hovered && entKey(E.hovered) === key)
+        || !!(E.extHover && E.extHover.kind === 'star'
+          && E.extHover.ws?.id === ownerWs?.id && E.extHover.data?.id === id);
       if (!info || !scr || !ownerWs || !(inSystem || focused)) {
         slab.classList.remove('on');
         /* 同 chip：清内联 opacity，否则名牌冻结在最后位置、永不消失。 */
@@ -3529,8 +4176,8 @@ export function createCosmosEngine(opts) {
       });
     });
 
-    // 信息卡
-    const ent = E.hovered || E.selected;
+    // 信息卡（三级仲裁单点：画布指针 > 外部注入 > 选中，p1-add-cosmos-external-hover D2）
+    const ent = hoverSourceOf();
     const key2 = ent ? entKey(ent) : '';
     const scr2 = ent ? E.screens[key2] : null;
     /* 收卡清理（add-cosmos-embryo-dismiss 3.2 / D7）：无 hover/选中或投影缺失 → 卡片不再
@@ -3567,10 +4214,15 @@ export function createCosmosEngine(opts) {
     const flip = scr2.x > W - (scr2.r + TIP_GAP.card + E.tipCardW + TIP_LINE.flipMargin);
     /* 信息卡避让（D2 语义修正）：锚点自「星中心旁 ±18px」改为**星缘外** TIP_GAP.card
        ——引线必须起笔于星缘，锚在星内则线不可见（原值 < 恒星屏幕半径，实际压星）。
-       翻转与纵向钳制口径保持既有（翻转阈值 W−300 / 纵向 70..H−240）。 */
+       纵向锚点（polish-cosmos-tip-leader-upward D1/D2）：卡近缘**中点**定在星心上方
+       TIP_GAP.cardLift（上浮幅度集中定义 → 斜出段 dy<0 故向上出笔），卡顶 cy = 中点 −
+       卡半高（半高来自上面的缓存测量）。翻转与纵向钳制口径保持既有（阈值「星缘 +
+       间距 + 卡宽 + 留白」/ 纵向 70..H−240）：顶部钳制把中点压回星心下方属**钳制例外
+       路径**（斜出段随实际 dy 局部下行），端点仍取钳后实际卡缘。 */
     const dir = flip ? -1 : 1;
     const cx = snap1(scr2.x + dir * (scr2.r + TIP_GAP.card));
-    const cy = snap1(clamp(scr2.y - 10, 70, H - 240));
+    const cardMidY = scr2.y - TIP_GAP.cardLift;
+    const cy = snap1(clamp(cardMidY - E.tipCardH / 2, 70, H - 240));
     E.el.card.style.transform = 'translate(' + cx.toFixed(1) + 'px,' + cy.toFixed(1) + 'px)' + (flip ? ' translateX(-100%)' : '');
     /* 折线引线（D5）：起笔星缘侧点（高度对齐星心），止于卡近缘**中点**
        （半高来自上面的缓存测量）。钳制生效时 cy 已钳后 → 线止于实际卡缘（D3）。 */
@@ -4207,27 +4859,60 @@ export function createCosmosEngine(opts) {
     ctx.setTransform(E.dpr, 0, 0, E.dpr, 0, 0);
 
     const cam = E.cam;
-    const bgStars = [];
-    E.scene.bg.forEach(function (b) {
-      const pr = project(cam, b.p, E.W, E.H);
-      if (pr) bgStars.push({ x: pr.x, y: pr.y, m: b.m, a: clamp(1 - pr.z / 2400, 0.04, 0.8) * (0.45 + 0.55 * b.m) });
-    });
+    /* 背景星/银河带（D4 槽位复用 + 视口剔除）：数组与逐点槽位跨帧复用（`E.bgPool`/
+       `E.bandPool` 挂引擎侧，不挂场景 body——bg/band 是场景级共享流）。视口外点不写入
+       view（纯呈现层：屏内视觉与无剔除基线零差异）。 */
+    const bgStars = E.bgStars || (E.bgStars = []);
+    const bgPool = E.bgPool || (E.bgPool = []);
+    let bgCount = 0;
+    for (let bi = 0; bi < E.scene.bg.length; bi++) {
+      const b = E.scene.bg[bi];
+      if (!projectInto(cam, b.p, E.W, E.H, P_BG)) continue;
+      const padBg = NEBULA_CULL_MARGIN + 4; // 高亮背景星带 3.6px 辉光（skin-d drawGlow）
+      if (P_BG.x < -padBg || P_BG.x > E.W + padBg || P_BG.y < -padBg || P_BG.y > E.H + padBg) continue;
+      const slot = bgPool[bgCount] || (bgPool[bgCount] = { x: 0, y: 0, m: 0, a: 0 });
+      slot.x = P_BG.x;
+      slot.y = P_BG.y;
+      slot.m = b.m;
+      slot.a = clamp(1 - P_BG.z / 2400, 0.04, 0.8) * (0.45 + 0.55 * b.m);
+      bgStars[bgCount] = slot;
+      bgCount += 1;
+    }
+    bgStars.length = bgCount;
     let band = null;
     if (style.useBand) {
-      band = [];
-      E.scene.band.forEach(function (b) {
-        const pr = project(cam, b.p, E.W, E.H);
-        if (pr) band.push({ x: pr.x, y: pr.y, m: b.m, a: clamp(1 - pr.z / 2600, 0.02, 0.5) * (0.3 + 0.7 * b.m) });
-      });
+      const bandArr = E.band || (E.band = []);
+      const bandPool = E.bandPool || (E.bandPool = []);
+      let bandCount = 0;
+      for (let bi = 0; bi < E.scene.band.length; bi++) {
+        const b = E.scene.band[bi];
+        if (!projectInto(cam, b.p, E.W, E.H, P_BAND)) continue;
+        const padBand = NEBULA_CULL_MARGIN + 3;
+        if (P_BAND.x < -padBand || P_BAND.x > E.W + padBand || P_BAND.y < -padBand || P_BAND.y > E.H + padBand) continue;
+        const slot = bandPool[bandCount] || (bandPool[bandCount] = { x: 0, y: 0, m: 0, a: 0 });
+        slot.x = P_BAND.x;
+        slot.y = P_BAND.y;
+        slot.m = b.m;
+        slot.a = clamp(1 - P_BAND.z / 2600, 0.02, 0.5) * (0.3 + 0.7 * b.m);
+        bandArr[bandCount] = slot;
+        bandCount += 1;
+      }
+      bandArr.length = bandCount;
+      band = bandArr;
     }
-    const view = { W: E.W, H: E.H, t: E.t, bgStars: bgStars, band: band };
+    /* view 对象跨帧复用（皮肤只读；同帧背景与 drawBody 共享同一引用）。 */
+    const view = E.view || (E.view = { W: E.W, H: E.H, t: E.t, bgStars: bgStars, band: band });
+    view.W = E.W; view.H = E.H; view.t = E.t; view.bgStars = bgStars; view.band = band;
 
     style.background(ctx, view);
 
     const items = buildItems(E.t);
     for (let i = 0; i < items.length; i++) style.drawBody(ctx, items[i], view);
 
-    E.hovered = (E.pointerIn && !E.dragging) ? pickAt(E.px, E.py) : null;
+    /* hover 拾取态写入口（p1-add-cosmos-external-hover D6）：拖拽 / 指针离场门禁沿用既有
+       拾取判定（拖拽中无逐天体通知、门禁置空至多一次；离场置空）；键变才回调
+       onHoverChange（载荷恒为画布指针拾取态，外部注入不进入载荷）。 */
+    setHovered((E.pointerIn && !E.dragging) ? pickAt(E.px, E.py) : null);
     E.el.canvas.style.cursor = E.hovered ? 'pointer' : (E.dragging ? 'grabbing' : 'grab');
 
     updateOverlay();
@@ -4248,6 +4933,21 @@ export function createCosmosEngine(opts) {
       `E.selected` 置空，`updateOverlay` 的 `!scr2` 早退同时隐藏信息卡——既有守卫已覆盖
       「选中实体被场景移除」，本 capability 无需新增收卡逻辑（行为由冒烟固化）。 */
   function remapFocusRefs() {
+    /* 外部注入自清 / 引用重映射（p1-add-cosmos-external-hover D5/D6）：实体摘除只发生在
+       rebuild 路径（patch 属性补丁集合不变，由 diffLevel 保证）→ 校验挂点恒为本函数。
+       目标不在册 → 静默清除 + 置空通知（防悬停残影钉死在已归档目标）；仍在册 → `ws`/
+       `data` 引用重映射到新场景对象（同 selected 分支纪律：防陈旧快照、保后续 patch 触达）。
+       客户端自设的注入 / 清除不经本函数 → 无回声。置于 focus 分支之前：焦点星座注销的
+       早退路径不得漏掉注入清理。 */
+    if (E.extHover) {
+      const ws = E.scene.ws.find(function (w) { return w.id === E.extHover.ws?.id; });
+      const list = ws
+        ? (E.extHover.kind === 'star' ? ws.stars : E.extHover.kind === 'planet' ? ws.planets : ws.comets)
+        : null;
+      const data = (list ?? []).find(function (x) { return x.id === E.extHover.data?.id; });
+      if (!ws || !data) clearExtHoverWithNotify();
+      else { E.extHover.ws = ws; E.extHover.data = data; }
+    }
     if (E.focusWs) {
       const mapped = E.scene.ws.find(function (w) { return w.id === E.focusWs.id; }) ?? null;
       if (!mapped) {
@@ -4504,9 +5204,55 @@ export function createCosmosEngine(opts) {
       dive(ws, body);
       return true;
     },
+    /**
+     * 外部悬停注入（p1-add-cosmos-external-hover D1/D3）：DOM 面板行 / 卡悬停 → 引擎侧
+     * 「悬停意图」注入入口。目标获得与画布指针 hover 同形的 tips 呈现（名牌 / 信息卡 /
+     * 浮签引线 / 皮肤 hover 标记）并纳入关联聚焦；三级仲裁为 画布指针 > 外部注入 >
+     * 选中（D2）。MUST NOT 移动相机、MUST NOT 触发钻取或视图切换——带镜头的聚焦仍属
+     * 点击链路（`focusStar` / `focusBody`）。
+     *
+     * 降级契约镜像 `focusStar` / `focusBody`：目标不在册（时序差 / 已归档 / 已摘除）、
+     * kind 非法、入参残缺或引擎已销毁 → `false` 且不抛错，既有悬停态不受影响；`null` →
+     * 清除注入（返回 `true`）。同键重复注入幂等：只刷新场景引用，不重置关联聚焦坡道。
+     * 注入不区分星胚（proto 恒星与画布拾取同口径接受；星胚排除属调用方职责）。
+     * @param {{wsId: string, kind: 'star'|'planet'|'comet', id: string}|null} desc
+     * @returns {boolean} 是否接受注入 / 清除
+     */
+    setExternalHover(desc) {
+      if (E.disposed) return false;
+      if (desc === null || desc === undefined) {
+        E.extHover = null;
+        return true;
+      }
+      if (typeof desc !== "object" || desc.wsId == null || desc.id == null) return false;
+      const kind = desc.kind;
+      if (kind !== "star" && kind !== "planet" && kind !== "comet") return false;
+      if (!E.scene) return false;
+      const ws = E.scene.ws.find(function (w) { return w.id === desc.wsId; });
+      if (!ws) return false;
+      const list = kind === "star" ? ws.stars : kind === "planet" ? ws.planets : ws.comets;
+      const data = (list ?? []).find(function (x) { return x.id === desc.id; });
+      if (!data) return false;
+      const key = ws.id + "|" + kind + ":" + data.id;
+      if (E.extHover && extKeyOf(E.extHover) === key) {
+        /* 同键幂等短路：不重置关联聚焦渐入坡道 / 不产生状态翻转；只刷新场景引用
+           （重建换代后补丁仍触达）。 */
+        E.extHover.ws = ws;
+        E.extHover.data = data;
+        return true;
+      }
+      E.extHover = { kind: kind, ws: ws, data: data };
+      return true;
+    },
     /** 选中态观测面（D4 页面点击守卫消费 + 冒烟直测）：与 onSelectChange 载荷同形。 */
     inspectSelection() {
       return E.disposed ? null : selectionInfoOf(E.selected);
+    },
+    /** 外部悬停观测面（p1-add-cosmos-external-hover 3.3）：与 `setExternalHover` 入参同形
+        `{wsId, kind, id} | null`；已销毁 → null（纪律同 `inspectSelection`）。 */
+    inspectExternalHover() {
+      if (E.disposed || !E.extHover) return null;
+      return { wsId: E.extHover.ws?.id ?? null, kind: E.extHover.kind, id: E.extHover.data?.id ?? null };
     },
     /**
      * 浮签引线观测面（polish-cosmos-tip-leader-line 1.3/2.3 冒烟直测）：返回本帧
@@ -4519,16 +5265,10 @@ export function createCosmosEngine(opts) {
         return { kind: tip.kind, alpha: tip.alpha, hx: tip.hx, hy: tip.hy, x: tip.x, y: tip.y };
       });
     },
-    /** 钻取到指定星座（add-cosmos-add-workspace D4/3.1）：按 id 在场景查星座，命中 →
-        复用既有 `dive(ws, null)`（tweenTo 1300ms，与 chip 点击同一语义；钻取态下替换
-        焦点）；未命中（星座尚未注入）→ 返回 false，不抛错（调用方自行决定降级）。 */
-    diveToWs(wsId) {
-      if (E.disposed || !E.scene || wsId == null) return false;
-      const ws = E.scene.ws.find(function (w) { return w.id === wsId; });
-      if (!ws) return false;
-      dive(ws, null);
-      return true;
-    },
+    /** 钻取到指定星座（add-cosmos-add-workspace D4/3.1；step2-add-constellation-switcher D3）：
+        内部单实现 `diveToWsById` 的公共面——钻取态切换条目点击与本方法同源（1300ms 补间、
+        钻取态下替换焦点、补间可 retarget）；未命中（星座尚未注入 / 已注销）→ false 不抛错。 */
+    diveToWs: diveToWsById,
     /**
      * 搜索过滤应用（add-cosmos-search-filter 2.2 公共面 / design D1）：
      *  - `matchedIds` 为空集 = **过滤关闭**（回到全显 + 骨架原位置）——但查询无匹配时
@@ -4800,6 +5540,17 @@ export function createCosmosEngine(opts) {
         wsGhosts: E.wsGhosts.length
       };
     },
+    /** 屏幕坐标缓存观测面（add-cosmos-render-budget 3.2 冒烟直测）：键集合与坐标快照。
+        条目对象跨帧原地复用（D4，避免逐帧对象分配），本方法只返回**拷贝**，MUST NOT
+        暴露内部引用；帧末未命中键的清理可经键集合断言。 */
+    inspectScreens() {
+      const out = {};
+      for (const key of Object.keys(E.screens)) {
+        const scr = E.screens[key];
+        out[key] = { x: scr.x, y: scr.y, r: scr.r };
+      }
+      return out;
+    },
     /** 关联聚焦观测面（cosmos-relation-focus D1/D2/D3 冒烟直测，只读快照）：当前聚焦源键、
         relMix 坡道条目（dir + 帧时刻 α）、最近一帧 rel 呈现产出（轨道环 / 星↔行星关系段 /
         共享会话虚线段，均含 α）。focusKey 为 ""：无 hover/选中（渐熄窗口内条目仍在册）。 */
@@ -5045,6 +5796,10 @@ export function createCosmosEngine(opts) {
       E.relMix.clear(); // 关联聚焦坡道随实例销毁（cosmos-relation-focus D3：呈现层瞬态）
       E.relFocusKey = "";
       E.relLast = null;
+      /* 外部悬停注入随实例销毁（p1-add-cosmos-external-hover 3.3）：瞬态，无需通知
+         （destroyed 后调用方经 onHoverChange 已无意义，setExternalHover 恒 false）。 */
+      E.extHover = null;
+      E.hoverKey = "";
       /* 搜索过滤态随引擎实例销毁（2.6）：查询为会话态、MUST NOT 跨实例/跨页开合。
          位移补间挂 ws body（scene 置空即弃），α 坡道为引擎级 Map 需显式清。 */
       E.filter = null;

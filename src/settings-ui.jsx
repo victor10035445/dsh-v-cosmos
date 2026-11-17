@@ -310,7 +310,7 @@ export const COSMOS_SETTINGS_CSS = `
 /* 行内快捷键的生效条件注（带前置状态的按钮）：小字、不换行、可悬停看完整说明 */
 .cs-shortcutRowNote{flex:none;font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary);white-space:nowrap}
 /* ── 「通用」页签（add-cosmos-standalone-window 2.2）：打开方式单选（内嵌整页 / 独立窗口）。
-      即时保存（无草稿-保存模式）；桌面形态（file://）整组禁用 + 说明文案（design D7）。 ── */
+      即时保存（无草稿-保存模式）；桌面形态（非 http(s) 协议）整组禁用 + 说明文案。 ── */
 .cs-launch{display:flex;flex-direction:column;gap:2px;margin:2px 0 0;padding:8px 10px 6px;border:1px solid var(--dsw-alias-border-l2);border-radius:10px}
 .cs-launch[data-desktop=true]{opacity:.75}
 .cs-launchLegend{padding:0 4px;font-size:12px;line-height:16px;color:var(--dsw-alias-label-secondary)}
@@ -386,8 +386,9 @@ const LAUNCH_MODE_FIELDS = Object.freeze([
  *  - 「打开方式」单选：内嵌整页（缺省）/ 独立窗口——**即时保存**（无草稿-保存模式），
  *    改动经 face.set → `applyLaunchMode`（净房持久化 + 受控镜像）；跨窗口即时生效由
  *    同源 localStorage + `storage` 事件桥承接（座位按钮点击时现读配置）。
- *  - 桌面形态（`file://`，无 HTTP origin，design D7）：整组禁用 + 说明文案——独立窗口
- *    无处落地；注入 `desktop` 为浏览器侧可观察事实（MUST NOT 依赖宿主探测）。
+ *  - 桌面形态（非 http(s) 协议，无同源 HTTP origin；判据见 fix-cosmos-standalone-desktop-degrade D1）：
+ *    整组禁用 + 说明文案——独立窗口无处落地；注入 `desktop` 为浏览器侧可观察事实
+ *    （MUST NOT 依赖宿主探测）。
  *  - face 缺失（旧宿主未注入）→ 降级占位（不渲染可点却永不生效的控件，与其它页签同纪律）。
  * @param {{t: Function, launch?: object, desktop?: boolean}} props
  */
@@ -440,7 +441,7 @@ export function CosmosGeneralPanel(props) {
       </fieldset>
       {desktop ? (
         <div className="cs-hint" role="status" data-notice="desktop">
-          {tr(t, "cosmos.settings.launchModeDesktop", "桌面形态（file://）无 HTTP origin，独立窗口不可用：入口固定为内嵌整页（历史配置保留，桌面形态忽略）。")}
+          {tr(t, "cosmos.settings.launchModeDesktop", "独立窗口仅 web（浏览器）形态可用：当前为桌面形态，入口固定为内嵌整页（历史配置保留，切回 web 端仍生效）。")}
         </div>
       ) : null}
       <div className="cs-meta">{tr(t, "cosmos.settings.launchModeInstant", "改动立即生效并保存")}</div>

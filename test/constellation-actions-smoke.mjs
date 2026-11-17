@@ -201,6 +201,140 @@ const button = { name: "探索新需求", prompt: "请使用 /cosmos-explore 探
   assert.equal(floatPrefHero.peek()?.submit, true, "autoSend 分支仍提交");
 }
 
+/* ── 3b. 独立窗口服务端送达通道（add-cosmos-standalone-jump-feedback D1/D3） ──
+   只承接 autoSend 分支：startSession 服务端落稿、不自动提交、不登记标记、模型切换不执行；
+   float / native 分支分流不变（native 意图被改写由注入方 preflight 反馈）。 */
+{
+  /* autoSend + 通道开启：startSession → 注入方反馈；零 create/open/标记/关页 */
+  {
+    const hero = createPendingActionStore();
+    const floats = createFloatMarkerStore();
+    const calls = [];
+    const notices = [];
+    const executor = createConstellationExecutor({
+      pending: hero,
+      floats,
+      standaloneServerChannel: true,
+      standaloneNotice: (info) => notices.push(info),
+      createSession: async () => {
+        calls.push("create");
+        return "never";
+      },
+      openSession: () => calls.push("open"),
+      closePage: () => calls.push("close"),
+      startSession: async (wsId, message, groupArg) => calls.push({ kind: "start", wsId, message, wsGroup: groupArg }),
+      now: () => 25_000
+    });
+    const auto = await executor.run({
+      button: { ...button, autoSend: true, model: { provider: "deepseek", model: "deepseek-chat" } },
+      group
+    });
+    assert.equal(auto.ok, true);
+    assert.equal(auto.standalone, true, "结果注明独立窗口通道");
+    assert.equal(auto.serverDraft, true, "落稿由 startSession 服务端承担");
+    assert.equal(auto.channel, "standalone-server", "通道观测值 = standalone-server");
+    assert.equal(auto.autoSendSkipped, true, "autoSend 未执行（提交依赖窗口内输入区）");
+    assert.equal(auto.modelSkipped, true, "模型切换未执行");
+    assert.equal(auto.marker, null, "不登记标记（零返回标记）");
+    assert.deepEqual(calls.map((call) => (typeof call === "string" ? call : call.kind)), ["start"], "只走 startSession（零 create、零 openSession、零关页）");
+    assert.equal(calls[0].wsId, "ws1", "startSession 收到工作区 id（replace 语义由注入方承担）");
+    assert.equal(calls[0].message, auto.message, "startSession 收到纯提示词消息");
+    assert.equal(calls[0].wsGroup, group, "startSession 收到钻取分组（实现侧解析权威 id）");
+    assert.deepEqual(notices, [{ autoSend: true }], "通道成功后通知注入方（执行器不感知文案）");
+    assert.equal(hero.peek(), null, "hero 通道零标记（登记恒悬空）");
+    assert.equal(floats.peek(), null, "浮窗通道零标记（分流互斥）");
+  }
+
+  /* 通道开启但未勾选 autoSend：float 分支分流不变（create → open，零关页、零 startSession） */
+  {
+    const hero = createPendingActionStore();
+    const floats = createFloatMarkerStore();
+    const calls = [];
+    const executor = createConstellationExecutor({
+      pending: hero,
+      floats,
+      standaloneServerChannel: true,
+      preflight: () => "float",
+      createSession: async () => "float-sess",
+      openSession: (sessionId) => calls.push("open:" + sessionId),
+      closePage: () => calls.push("close"),
+      startSession: () => calls.push("start"),
+      now: () => 26_000
+    });
+    const floatRun = await executor.run({ button, group });
+    assert.equal(floatRun.ok, true);
+    assert.equal(floatRun.channel, "float", "float 分支分流不变");
+    assert.deepEqual(calls, ["open:float-sess"], "恒新建 → 导航（零关页、零 startSession）");
+    assert.equal(floats.peek()?.targetSessionId, "float-sess", "浮窗标记按既有语义登记");
+  }
+
+  /* 通道开启但未勾选 autoSend：native 分支分流不变（create → open → close） */
+  {
+    const hero = createPendingActionStore();
+    const floats = createFloatMarkerStore();
+    const calls = [];
+    const executor = createConstellationExecutor({
+      pending: hero,
+      floats,
+      standaloneServerChannel: true,
+      preflight: () => "native",
+      createSession: async () => "native-sess",
+      openSession: () => calls.push("open"),
+      closePage: () => calls.push("close"),
+      startSession: () => calls.push("start"),
+      now: () => 27_000
+    });
+    const nativeRun = await executor.run({ button, group });
+    assert.equal(nativeRun.ok, true);
+    assert.equal(nativeRun.channel, "preflight", "native 分支分流不变");
+    assert.deepEqual(calls, ["open", "close"], "恒新建 → 导航 → 关页");
+  }
+
+  /* startSession 失败 → start-failed（零标记、零关页、toast） */
+  {
+    const hero = createPendingActionStore();
+    const calls = [];
+    const executor = createConstellationExecutor({
+      pending: hero,
+      floats: createFloatMarkerStore(),
+      standaloneServerChannel: true,
+      createSession: async () => "never",
+      openSession: () => calls.push("open"),
+      startSession: async () => {
+        throw new Error("host refused");
+      },
+      closePage: () => calls.push("close"),
+      notify: (text, isError) => calls.push({ kind: "notify", text, isError }),
+      now: () => 28_000
+    });
+    const failed = await executor.run({ button: { ...button, autoSend: true }, group });
+    assert.equal(failed.ok, false);
+    assert.equal(failed.reason, "start-failed");
+    assert.equal(failed.standalone, true, "失败结果同样注明通道口径");
+    assert.deepEqual(calls.map((call) => (typeof call === "string" ? call : call.kind)), ["notify"], "失败 toast、零关页");
+    assert.equal(hero.peek(), null, "失败不登记标记");
+  }
+
+  /* 缺省关闭：autoSend 行为逐字不变（hero 通道 + 标记提交；零 startSession） */
+  {
+    const hero = createPendingActionStore();
+    const calls = [];
+    const executor = createConstellationExecutor({
+      pending: hero,
+      floats: createFloatMarkerStore(),
+      createSession: async () => "hero-default",
+      openSession: () => calls.push("open"),
+      startSession: () => calls.push("start"),
+      now: () => 29_000
+    });
+    const auto = await executor.run({ button: { ...button, autoSend: true }, group });
+    assert.equal(auto.channel, "hero", "缺省关闭 → 既有 hero 通道（行为逐字不变）");
+    assert.equal(auto.standalone, undefined, "无通道标记");
+    assert.deepEqual(calls, ["open"], "恒新建 → 导航（零 startSession）");
+    assert.equal(hero.peek()?.submit, true, "既有提交意图登记不变");
+  }
+}
+
 /* ── 4. 双通道标记隔离（spec 场景「标记互不误食」） ── */
 {
   const hero = createPendingActionStore();

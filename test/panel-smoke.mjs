@@ -1,15 +1,21 @@
 /**
  * 提案列表面板投影冒烟（add-cosmos-proposal-actions 3.1/3.6 / cosmos-proposal-panel；
- * add-cosmos-embryo-cards 3.1/3.2/3.5）：分组与组内排序、星胚合并卡片（归并/排序/
- * 不触发分组/不携带 dir）、钻取过滤、搜索过滤联动（工作区名 ∪ 星胚 slug）、选中保留
- * 语义、空态可见性、确定性；以及 mergeScene `ws.path` 透传（D1 勘误）。
+ * add-cosmos-embryo-cards 3.1/3.2/3.5；add-cosmos-galaxy-embryo-cards 3.1–3.4）：分组与
+ * 组内排序、星胚合并卡片（归并/排序/银河态触发分组/不携带 dir）、钻取过滤、搜索过滤联动
+ * （工作区名 ∪ 星胚 slug，含仅星胚工作区命中呈现）、选中保留语义、空态可见性（活跃提案 ∨
+ * 星胚锚点）、确定性；mergeScene `ws.path` 透传（D1 勘误）；以及
+ * p1-add-cosmos-card-progress-bars 4.1 的进度数字对派生（会话行 todos 解析 / 提案卡 tasks
+ * 直取 / 星胚恒 null）。
  * 运行：node test/panel-smoke.mjs
  */
 import assert from "node:assert/strict";
 import {
   SELECTION_SURFACE_SELECTOR,
+  cardIsLinkedOf,
+  crossHoverTargets,
   embryoKeyOf,
   findCard,
+  hoverSourceAlive,
   isSelectionSurface,
   keepSelection,
   pendingCategoryOf,
@@ -17,6 +23,7 @@ import {
   projectSessionPanel,
   proposalDirOf,
   proposalKeyOf,
+  rowIsLinkedOf,
   sessionKeyOf,
   sessionRowStateOf
 } from "../src/panel.mjs";
@@ -47,7 +54,7 @@ const scene = {
       ]
     },
     {
-      /* 无活跃提案的工作区（只有星胚锚点）→ 银河态不生成分组（自动隐藏）。 */
+      /* 仅星胚锚点的工作区（零正式提案）→ 银河态照常生成分组（组内仅星胚合并卡片）。 */
       id: "ws3",
       name: "gamma",
       path: "C:/proj/gamma",
@@ -78,7 +85,7 @@ const scene = {
   assert.equal(model.total, 5, "活跃提案 5 条（星胚不计入提案计数）");
   assert.equal(model.embryoTotal, 2, "星胚合并卡片 2 张（ws1 一张 + ws3 一张，均一锚点一组）");
   assert.equal(model.drillWsId, null);
-  assert.deepEqual(model.groups.map((group) => group.wsName), ["alpha", "beta"], "分组按星座名字典序");
+  assert.deepEqual(model.groups.map((group) => group.wsName), ["alpha", "beta", "gamma"], "分组按星座名字典序（仅星胚星座同样参与全序）");
   const alpha = model.groups[0];
   assert.deepEqual(
     alpha.cards.filter((card) => !card.isEmbryo).map((card) => card.name),
@@ -93,6 +100,9 @@ const scene = {
   assert.equal(alpha.cards.find((card) => card.id === "add-gamma").lifecycle, "reviewed");
   assert.equal(alpha.cards.find((card) => card.id === "add-broken").lifecycle, "created", "非法 lifecycle → created 兜底");
   assert.deepEqual(alpha.cards.find((card) => card.id === "add-gamma").tasks, [1, 2], "tasks x/y 透传");
+  /* 进度数字对（p1-add-cosmos-card-progress-bars 1.2/4.1）：正式卡直取 tasks；y=0 → null。 */
+  assert.deepEqual(alpha.cards.find((card) => card.id === "add-gamma").progress, { done: 1, total: 2 }, "提案卡 progress = tasks 直取");
+  assert.equal(alpha.cards.find((card) => card.id === "add-broken").progress, null, "tasks [0,0] → progress null（y=0 门控）");
   assert.equal(alpha.cards.find((card) => card.id === "add-gamma").setBy, "cosmos-review", "setBy 透传");
   assert.equal(alpha.cards.find((card) => card.id === "add-gamma").at, 200, "at 透传");
   assert.equal(alpha.cards.find((card) => card.id === "add-alpha").setBy, null, "缺失 setBy → null（UI 省略徽标）");
@@ -127,7 +137,8 @@ const scene = {
   assert.deepEqual(protoCard.slugs, ["proto-one"], "组内 slug 清单");
   assert.equal(protoCard.at, 400, "组 at = 最早锚点时间");
   assert.deepEqual(protoCard.tasks, [0, 0], "星胚无任务进度");
-  assert.equal(protoCard.act, 0, "星胚无关联会话 → 沉睡");
+  assert.equal(protoCard.progress, null, "星胚合并卡 progress 恒 null（无任务进度行纪律）");
+  assert.equal(protoCard.act, 0, "星胚 act 缺失（scene 未聚合）→ 0（沉睡，门控通用兜底）");
   assert.ok(!("dir" in protoCard), "星胚卡 MUST NOT 携带 dir（动作按无目标守卫降级）");
   assert.equal(
     model.allCards.find((card) => card.wsId === "ws3").sessionId,
@@ -136,18 +147,20 @@ const scene = {
   );
   assert.equal(alpha.cards[0].dir, "C:/proj/alpha/openspec/changes/add-alpha", "卡片携带 @目录（正斜杠）");
   assert.equal(model.groups[1].cards[0].dir, "C:/proj/beta/openspec/changes/add-z", "他工作区路径同源归一");
-  assert.deepEqual(model.groups.map((group) => group.wsId), ["ws1", "ws2"], "无提案工作区（gamma）不生成分组（自动隐藏）");
-  assert.ok(!model.groups.some((group) => group.wsId === "ws3"), "星胚工作区不进银河态分组");
-  /* 搜索命中无提案工作区 → 同样不生成分组 */
-  const hiddenByQuery = projectPanel(scene, { matchedIds: new Set(["ws3"]) });
-  assert.equal(hiddenByQuery.groups.length, 0, "命中无提案工作区 → 无分组可显（不渲染空标题）");
-  assert.equal(hiddenByQuery.total, 5, "计数仍为全部活跃提案");
+  assert.deepEqual(model.groups.map((group) => group.wsId), ["ws1", "ws2", "ws3"], "分组条件 = 活跃提案 ∨ 星胚锚点（仅星胚的 gamma 亦生成分组）");
+  const gammaGroup = model.groups.find((group) => group.wsId === "ws3");
+  assert.deepEqual(gammaGroup.cards.map((card) => card.isEmbryo), [true], "仅星胚分组组内仅星胚合并卡片");
+  assert.deepEqual(gammaGroup.cards[0].slugs, ["proto-gamma"], "星胚卡片 slug 清单（合并卡呈现）");
+  /* 搜索命中仅星胚工作区 → 该分组可呈现（详测见 3.3 场景块） */
+  const hitOnlyEmbryo = projectPanel(scene, { matchedIds: new Set(["ws3"]) });
+  assert.deepEqual(hitOnlyEmbryo.groups.map((group) => group.wsName), ["gamma"], "命中仅星胚工作区 → 分组呈现");
+  assert.equal(hitOnlyEmbryo.total, 5, "计数仍为全部活跃提案");
 
   /* 确定性：重复投影逐字段一致 */
   assert.deepEqual(projectPanel(scene), model, "相同输入重复投影确定性");
   /* 骨架传入顺序不影响分组顺序 */
-  const shuffled = { workspaces: [scene.workspaces[1], scene.workspaces[0]] };
-  assert.deepEqual(projectPanel(shuffled).groups.map((g) => g.wsName), ["alpha", "beta"], "分组顺序与传入顺序解耦");
+  const shuffled = { workspaces: [scene.workspaces[2], scene.workspaces[1], scene.workspaces[0]] };
+  assert.deepEqual(projectPanel(shuffled).groups.map((g) => g.wsName), ["alpha", "beta", "gamma"], "分组顺序与传入顺序解耦（仅星胚星座同样参与全序）");
 }
 
 /* ── 3. 钻取过滤 + 空态口径（spec「钻取态列表过滤联动」） ── */
@@ -175,11 +188,22 @@ const scene = {
   const emptyDrill = projectPanel(emptyScene, { drillWsId: "ws-empty" });
   assert.equal(emptyDrill.visible, true, "钻取无提案星座 → 面板仍渲染（星胚卡片）");
   assert.equal(emptyDrill.groups[0].cards.length, 1, "仅星胚锚点 → 一张星胚卡片");
-  assert.equal(emptyDrill.total, 0, "提案计数仍为 0（星胚不计入可见性判定）");
+  assert.equal(emptyDrill.total, 0, "提案计数仍为 0（星胚不计入正式提案计数）");
 
-  /* 银河态全无提案 → 零布局 */
-  const none = projectPanel(emptyScene);
-  assert.equal(none.visible, false, "无任何活跃提案 → 面板不渲染（零布局）");
+  /* 银河态：全部工作区仅星胚 → 面板照常渲染（3.2：MUST NOT 零布局） */
+  const onlyEmbryoGalaxy = projectPanel(emptyScene);
+  assert.equal(onlyEmbryoGalaxy.visible, true, "仅星胚锚点 → 银河态面板照常渲染（MUST NOT 零布局）");
+  assert.equal(onlyEmbryoGalaxy.hasProposals, false, "hasProposals 仍按正式提案口径（无正式提案 → false）");
+  assert.equal(onlyEmbryoGalaxy.total, 0, "主计数仍为 0（星胚不计入正式提案数）");
+  assert.equal(onlyEmbryoGalaxy.embryoTotal, 1, "星胚数独立计数（头部附注徽标数据源）");
+  assert.deepEqual(onlyEmbryoGalaxy.groups.map((group) => group.wsName), ["gamma"], "仅星胚星座照常生成分组");
+  assert.deepEqual(onlyEmbryoGalaxy.groups[0].cards.map((card) => card.isEmbryo), [true], "组内仅星胚合并卡片");
+
+  /* 银河态无提案且无锚点 → 零布局（spec「无提案且无锚点零布局」） */
+  const none = projectPanel({ workspaces: [{ id: "ws-blank", name: "delta", path: "C:/proj/delta", stars: [] }] });
+  assert.equal(none.visible, false, "无活跃提案且无星胚锚点 → 面板不渲染（零布局）");
+  assert.equal(none.groups.length, 0, "不生成空分组/空标题占位");
+  assert.equal(none.embryoTotal, 0, "星胚计数 0");
 
   /* 钻取目标消失（注销）→ 无分组、标记 missing */
   const gone = projectPanel(emptyScene, { drillWsId: "ws-gone" });
@@ -195,8 +219,8 @@ const scene = {
   assert.equal(matched.hasProposals, true, "hasProposals 不受搜索影响");
   assert.equal(matched.allCards.length, 7, "allCards 不受搜索影响（5 提案 + 2 星胚卡）");
 
-  const clear = projectPanel(scene, { matchedIds: new Set(["ws1", "ws2"]) });
-  assert.equal(clear.groups.length, 2, "清空/全命中恢复全量分组");
+  const clear = projectPanel(scene, { matchedIds: new Set(["ws1", "ws2", "ws3"]) });
+  assert.equal(clear.groups.length, 3, "清空/全命中恢复全量分组（含仅星胚星座）");
 
   const noneMatched = projectPanel(scene, { matchedIds: new Set() });
   assert.equal(noneMatched.groups.length, 0, "零命中 → 无分组");
@@ -411,6 +435,58 @@ const scene = {
   assert.equal(degraded.waiting, 0);
 }
 
+/* ── 8b. 进度数字对派生（p1-add-cosmos-card-progress-bars 1.1/1.2/4.1 / design D3） ── */
+{
+  /* 会话行：todos 徽标字符串 → progress 数字对（防御解析；文本徽标原样保留）。 */
+  const rowOf = (todos) => {
+    const scene = {
+      workspaces: [{
+        id: "w", name: "w", stars: [], comets: [],
+        planets: [{ id: "p", title: "p", state: "idle", todos, when: "刚刚", updatedAt: 1 }]
+      }]
+    };
+    return projectSessionPanel(scene).allSessions[0];
+  };
+  assert.deepEqual(rowOf("2/5").progress, { done: 2, total: 5 }, "会话行 \"2/5\" → {done:2,total:5}");
+  assert.deepEqual(rowOf("0/4").progress, { done: 0, total: 4 }, "\"0/4\" → {0,4}（全空轨仍渲染）");
+  assert.deepEqual(rowOf("7/20").progress, { done: 7, total: 20 }, "\"7/20\" 数字对原样（上限退化属呈现层）");
+  assert.equal(rowOf("2/5").todos, "2/5", "todos 文本徽标保留（条为比例增强，非数字替代）");
+  assert.equal(rowOf("—").progress, null, "\"—\" → null（无 todos 不渲染进度条）");
+  for (const bad of ["2/5x", "a/b", "5/2", "0/0", "2", "2/", "/5", " 2/5", "2/5\n", "-1/5", "1.5/2", 42, null, undefined]) {
+    assert.equal(rowOf(bad).progress, null, "格式外/越界 todos → null（MUST NOT 抛错）：" + JSON.stringify(bad));
+  }
+
+  /* 提案卡：tasks 直取（`tasks[1] > 0` 才给值）；星胚合并卡恒 null。 */
+  const cardScene = {
+    workspaces: [{
+      id: "wsC",
+      name: "gamma",
+      path: "C:/proj/gamma",
+      stars: [
+        { id: "add-a", name: "add-a", lifecycle: "reviewed", tasks: [3, 7] },
+        { id: "add-b", name: "add-b", lifecycle: "created", tasks: [0, 0] },
+        { id: "add-c", name: "add-c", lifecycle: "created", tasks: [0, 4] }
+      ]
+    }]
+  };
+  const cards = projectPanel(cardScene).allCards;
+  assert.deepEqual(cards.find((card) => card.id === "add-a").progress, { done: 3, total: 7 }, "提案卡 tasks [3,7] → progress 直取");
+  assert.equal(cards.find((card) => card.id === "add-b").progress, null, "tasks [0,0] → null（y=0 不渲染）");
+  assert.deepEqual(cards.find((card) => card.id === "add-c").progress, { done: 0, total: 4 }, "tasks [0,4] → 全空轨进度");
+
+  const embryoScene = {
+    workspaces: [{
+      id: "wsE",
+      name: "delta",
+      path: "C:/proj/delta",
+      stars: [{ id: "proto-x", name: "proto-x", lifecycle: "proto", sessionId: "s1", at: 10, tasks: [3, 7] }]
+    }]
+  };
+  const embryoCard = projectPanel(embryoScene).allCards[0];
+  assert.equal(embryoCard.isEmbryo, true, "星胚合并卡进入 allCards");
+  assert.equal(embryoCard.progress, null, "星胚卡即使骨架带 tasks 也恒 null（排除纪律）");
+}
+
 /* ── 9. 会话行纯函数：键 / 分类归一 / 四态优先级（design D3） ── */
 {
   assert.equal(sessionKeyOf("ws1", "s1"), "ws1\u0000s1", "行键跨星座唯一");
@@ -460,7 +536,7 @@ const scene = {
     ]
   };
   const model = projectPanel(embryoScene);
-  assert.deepEqual(model.groups.map((g) => g.wsName), ["alpha"], "仅星胚工作区（beta）不生成分组（星胚不触发分组）");
+  assert.deepEqual(model.groups.map((g) => g.wsName), ["alpha", "beta"], "仅星胚工作区（beta）照常生成分组（分组条件 = 活跃提案 ∨ 星胚锚点）");
   assert.equal(model.visible, true, "存在活跃提案 → 银河态面板渲染");
   assert.equal(model.total, 1, "提案计数 1（zzz-last）");
   assert.equal(model.embryoTotal, 4, "星胚组 4 张（sess-1 合并 1 + 旧锚点 2 + beta 1）");
@@ -485,14 +561,40 @@ const scene = {
   assert.equal(cards[2].sessionId, null, "旧锚点各自成卡（无关联）");
   assert.equal(cards[2].at, 50, "旧锚点 at 照常");
   assert.equal(cards[3].at, null, "at 全缺 → null（UI 省略时间徽标）");
-  /* 仅星胚工作区的卡片在 allCards（选中校验）但无分组（银河不呈现） */
+  /* 星胚卡 act 透传（keep-embryo-active-while-exploring 2.2/3.2）：组 act = 组内 proto 星
+     act 最大值（锚点探索会话活跃度），panel 纯加法透传 → 动作条门控直接消费。 */
+  {
+    const embryoActiveScene = {
+      workspaces: [{
+        id: "wsE",
+        name: "embryo-active",
+        path: "C:/proj/embryo",
+        stars: [
+          { id: "e-a", name: "e-a", lifecycle: "proto", sessionId: "sess-E", at: 1, tasks: [0, 0], act: 1 },
+          { id: "e-b", name: "e-b", lifecycle: "proto", sessionId: "sess-E", at: 2, tasks: [0, 0], act: 0 },
+          { id: "e-solo", name: "e-solo", lifecycle: "proto", at: 3, tasks: [0, 0], act: 0 }
+        ]
+      }]
+    };
+    const embryoCards = projectPanel(embryoActiveScene).allCards.filter((card) => card.isEmbryo);
+    assert.equal(embryoCards.find((card) => card.sessionId === "sess-E").act, 1, "组内任一锚点 act=1 → 组卡 act=1（探索会话进行中）");
+    assert.equal(embryoCards.find((card) => card.sessionId === "sess-E").slugs.length, 2, "同会话仍归并为一张卡（act 透传不改分组）");
+    assert.equal(embryoCards.find((card) => card.sessionId === null).act, 0, "自组星胚按自身 act 透传（沉睡 0）");
+  }
+  /* 仅星胚工作区：卡片进入 allCards（选中校验）**且**生成分组（银河态可呈现） */
   assert.ok(model.allCards.some((card) => card.wsId === "wsB" && card.isEmbryo), "星胚卡进入 allCards");
-  assert.ok(!model.groups.some((group) => group.wsId === "wsB"), "星胚不占空分组位");
-  /* 银河态零布局：全部工作区仅星胚 */
+  const betaGroup = model.groups.find((group) => group.wsId === "wsB");
+  assert.ok(betaGroup, "仅星胚工作区生成分组（银河态可呈现）");
+  assert.deepEqual(betaGroup.cards.map((card) => card.isEmbryo), [true], "组内仅星胚合并卡片（无空态占位）");
+  assert.deepEqual(betaGroup.cards[0].slugs, ["only-proto"], "星胚卡 slug 清单");
+  /* 银河态：全部工作区仅星胚 → 面板照常渲染（3.2 断言翻转） */
   const onlyEmbryo = projectPanel({ workspaces: [embryoScene.workspaces[1]] });
-  assert.equal(onlyEmbryo.visible, false, "仅星胚 → 面板零布局（不渲染零分组空壳）");
-  assert.equal(onlyEmbryo.groups.length, 0);
-  assert.equal(onlyEmbryo.total, 0);
+  assert.equal(onlyEmbryo.visible, true, "仅星胚 → 面板照常渲染（MUST NOT 零布局）");
+  assert.deepEqual(onlyEmbryo.groups.map((g) => g.wsName), ["beta"], "仅星胚星座生成分组");
+  assert.deepEqual(onlyEmbryo.groups[0].cards.map((card) => card.isEmbryo), [true], "组内仅星胚卡");
+  assert.equal(onlyEmbryo.total, 0, "主计数 0（无正式提案）");
+  assert.equal(onlyEmbryo.embryoTotal, 1, "星胚计数 1（头部附注徽标数据源）");
+  assert.equal(onlyEmbryo.hasProposals, false, "hasProposals 保持原语义（total > 0）");
   assert.equal(onlyEmbryo.allCards.length, 1, "星胚卡仍在 allCards（钻取/选中可查）");
   /* 钻取仅星胚星座 → 照常呈现分组与卡片 */
   const drilled = projectPanel(embryoScene, { drillWsId: "wsB" });
@@ -501,17 +603,18 @@ const scene = {
 
   /* 搜索谓词（3.2）：工作区名 ∪ 星胚 slug；正式提案名不参与 */
   assert.deepEqual([...matchWorkspaces(embryoScene, "add-y")], ["wsA"], "星胚 slug 命中 → 工作区命中");
-  assert.deepEqual([...matchWorkspaces(embryoScene, "only-proto")], ["wsB"], "仅星胚工作区也可被 slug 命中（面板无分组可显）");
+  assert.deepEqual([...matchWorkspaces(embryoScene, "only-proto")], ["wsB"], "仅星胚工作区也可被 slug 命中（分组随之呈现）");
   assert.deepEqual([...matchWorkspaces(embryoScene, "zzz-last")], [], "正式提案名 MUST NOT 参与匹配");
   assert.deepEqual([...matchWorkspaces(embryoScene, "alpha add-z")], ["wsA"], "多 token AND（名称 + slug 跨域）");
   const searched = projectPanel(embryoScene, { matchedIds: matchWorkspaces(embryoScene, "add-y") });
   assert.deepEqual(searched.groups.map((g) => g.wsName), ["alpha"], "星胚 slug 命中 → 分组呈现（组内不过滤）");
   assert.equal(searched.groups[0].cards.length, 4, "组内正式提案与星胚卡片一并展示");
-  assert.equal(
-    projectPanel(embryoScene, { matchedIds: matchWorkspaces(embryoScene, "only-proto") }).groups.length,
-    0,
-    "命中仅星胚工作区 → 无分组可显"
-  );
+  /* 3.3：仅星胚工作区被 slug 命中 → 分组呈现（组内仅星胚卡；断言翻转） */
+  const onlyEmbryoHit = projectPanel(embryoScene, { matchedIds: matchWorkspaces(embryoScene, "only-proto") });
+  assert.deepEqual(onlyEmbryoHit.groups.map((g) => g.wsName), ["beta"], "命中仅星胚工作区 → 分组呈现（MUST NOT 因无正式提案被隐藏）");
+  assert.deepEqual(onlyEmbryoHit.groups[0].cards.map((card) => card.isEmbryo), [true], "组内仅星胚合并卡片（matchedIds 过滤后不丢卡）");
+  assert.deepEqual(onlyEmbryoHit.groups[0].cards[0].slugs, ["only-proto"], "命中呈现的星胚卡 slug 清单");
+  assert.equal(onlyEmbryoHit.groups[0].matched, true, "命中标记透传（UI 显隐判据）");
 
   /* 选中（3.4）：星胚键可选中 / 消失清除 / 与提案键互不干扰 */
   const mergedKey = embryoKeyOf("wsA", "sess-1");
@@ -531,6 +634,200 @@ const scene = {
   };
   assert.equal(keepSelection(projectPanel(litScene), mergedKey), null, "星胚组从骨架消失（ff 点燃/锚点删除）→ 选中清除");
   assert.ok(findCard(model, proposalKeyOf("wsA", "zzz-last")), "提案键照常可查（与星胚键互不干扰）");
+
+  /* ── 3.4 星胚锚点清空回落隐藏 / 点燃转正（spec「星胚锚点清空回落隐藏」） ── */
+  /* 仅星胚工作区的锚点被全部移除（星胚 dismiss）且无正式提案 → 分组消失、银河态回落零布局。 */
+  const dismissed = projectPanel({
+    workspaces: [{ id: "wsB", name: "beta", path: "C:/proj/beta", stars: [] }]
+  });
+  assert.equal(dismissed.groups.length, 0, "锚点清空且无正式提案 → 分组消失");
+  assert.equal(dismissed.visible, false, "银河态可见性回落（零布局）");
+  assert.equal(dismissed.embryoTotal, 0, "星胚计数归零（头部附注徽标不渲染）");
+  assert.equal(dismissed.allCards.length, 0, "骨架无卡片（选中随 keepSelection 清除）");
+  /* ff 点燃转正（同 slug 正式提案出现 + 锚点删除）→ 分组保留并以正式卡片呈现。 */
+  const litOnly = projectPanel({
+    workspaces: [{
+      id: "wsB",
+      name: "beta",
+      path: "C:/proj/beta",
+      stars: [{ id: "only-proto", name: "only-proto", lifecycle: "created", tasks: [0, 1] }]
+    }]
+  });
+  assert.deepEqual(litOnly.groups.map((group) => group.wsName), ["beta"], "点燃转正 → 分组保留");
+  assert.equal(litOnly.groups[0].cards.length, 1, "组内 1 张正式提案卡");
+  assert.equal(litOnly.groups[0].cards[0].isEmbryo, undefined, "转正后不再走星胚卡片分支");
+  assert.equal(litOnly.groups[0].cards[0].lifecycle, "created", "转正卡片呈现正式四态");
+  assert.equal(litOnly.embryoTotal, 0, "星胚卡随锚点删除消失");
+  assert.equal(litOnly.visible, true, "正式提案存在 → 面板渲染");
+  /* 无 slug 的畸形锚点不产卡 → 与「无锚点」同口径隐藏（design D1）。 */
+  const malformed = projectPanel({
+    workspaces: [{ id: "wsM", name: "mu", path: "C:/proj/mu", stars: [{ id: "", name: "x", lifecycle: "proto" }] }]
+  });
+  assert.equal(malformed.groups.length, 0, "无 slug 的畸形锚点不产星胚卡 → 不生成分组");
+  assert.equal(malformed.visible, false, "畸形锚点不参与可见性判定");
+}
+
+/* ── 跨面板悬停关联派生与受体判定（p2-add-cosmos-cross-hover-markers 2.1–2.3） ──
+   `crossHoverTargets` 以合流悬停描述 + 单星座 merge 产物派生受体集（零 DOM/零网络）；
+   受体判定辅助按行 id / 卡 id（星胚卡任一 slug 整卡）；`hoverSourceAlive` 供场景刷新
+   残留清理守卫。场景为 merge 产物同形（stars / links 索引对 / planets / comets）。 */
+{
+  const hoverWs = {
+    id: "wh",
+    name: "hover",
+    stars: [
+      { id: "star-a", lifecycle: "reviewed" },
+      { id: "star-b", lifecycle: "created" },
+      { id: "star-c", lifecycle: "executed" },
+      { id: "proto-p1", lifecycle: "proto" },
+      { id: "proto-p2", lifecycle: "proto" }
+    ],
+    /* 恒星索引对：a↔b、b↔c（共享会话）。 */
+    links: [[0, 1], [1, 2]],
+    planets: [
+      { id: "s1", stars: ["star-a", "star-b"] }, // 联星行星
+      { id: "s2", stars: ["star-b"] },
+      { id: "s3", stars: ["proto-p1"] }, // 关联星胚（锚点 slug 在册即可为行星关联受体）
+      { id: "s4", stars: ["proto-p2"] },
+      { id: "s5", stars: ["star-a", "star-a"] } // 畸形重复：派生去重
+    ],
+    comets: [{ id: "free-1" }]
+  };
+  const otherWs = {
+    id: "wo",
+    name: "other",
+    stars: [{ id: "star-a", lifecycle: "reviewed" }],
+    links: [],
+    planets: [{ id: "s1", stars: ["star-a"] }],
+    comets: []
+  };
+  const hoverScene = { workspaces: [hoverWs, otherWs] };
+
+  /* 行星源：联星全量不截断；DOM 源自身行不标；画布源自含（对应行 `<`）。 */
+  assert.deepEqual(
+    crossHoverTargets({ source: "row", wsId: "wh", kind: "planet", id: "s1" }, hoverWs),
+    { sessionIds: [], proposalIds: ["star-a", "star-b"] },
+    "行星行源：proposalIds = planet.stars 全量；DOM 源 sessionIds 不含自身"
+  );
+  assert.deepEqual(
+    crossHoverTargets({ source: "canvas", wsId: "wh", kind: "planet", id: "s1" }, hoverWs),
+    { sessionIds: ["s1"], proposalIds: ["star-a", "star-b"] },
+    "画布行星源：sessionIds 含自身会话 id（对应行 `<`）"
+  );
+  assert.deepEqual(
+    crossHoverTargets({ source: "row", wsId: "wh", kind: "planet", id: "s5" }, hoverWs).proposalIds,
+    ["star-a"],
+    "planet.stars 重复项去重（联星全量语义不重复渲染）"
+  );
+
+  /* 彗星源：关联集为空；画布源自含。 */
+  assert.deepEqual(
+    crossHoverTargets({ source: "row", wsId: "wh", kind: "comet", id: "free-1" }, hoverWs),
+    { sessionIds: [], proposalIds: [] },
+    "彗星行源：无关联卡、自身行不标"
+  );
+  assert.deepEqual(
+    crossHoverTargets({ source: "canvas", wsId: "wh", kind: "comet", id: "free-1" }, hoverWs),
+    { sessionIds: ["free-1"], proposalIds: [] },
+    "画布彗星源：自身行 `<`，无卡亮"
+  );
+
+  /* 恒星源：反向索引全量 + 共享会话其他恒星（排除自身），镜像画布星↔星共享段。 */
+  const starA = crossHoverTargets({ source: "card", wsId: "wh", kind: "star", id: "star-a" }, hoverWs);
+  assert.deepEqual(starA.sessionIds, ["s1", "s5"], "恒星 A 反查关联会话全量（含联星/重复星对象）");
+  assert.deepEqual(starA.proposalIds, ["star-b"], "恒星 A 的共享会话其他恒星（排除自身）");
+  assert.ok(!starA.proposalIds.includes("star-a"), "恒星源自身卡不标（proposalIds 排除自身）");
+  const starB = crossHoverTargets({ source: "canvas", wsId: "wh", kind: "star", id: "star-b" }, hoverWs);
+  assert.deepEqual(starB.sessionIds, ["s1", "s2"], "恒星 B 反查关联会话全量");
+  assert.deepEqual(starB.proposalIds, ["star-a", "star-c"], "恒星 B 共享星双向映射（a、c；不含自身）");
+  assert.deepEqual(
+    crossHoverTargets({ source: "canvas", wsId: "wh", kind: "star", id: "proto-p1" }, hoverWs),
+    { sessionIds: ["s3"], proposalIds: [] },
+    "画布星胚（proto 恒星）源：反查关联会话行；无共享段（links 未含）"
+  );
+
+  /* 星胚合并卡源：slug 并集反查；不注入引擎、无 proposalIds（整卡粒度由受体判定消费）。 */
+  const embryoHover = {
+    source: "embryo",
+    wsId: "wh",
+    kind: "proto",
+    id: "proto-p1",
+    slugs: ["proto-p1", "proto-p2"]
+  };
+  assert.deepEqual(
+    crossHoverTargets(embryoHover, hoverWs),
+    { sessionIds: ["s3", "s4"], proposalIds: [] },
+    "星胚合并卡源：各 slug 反查会话并集（两行亮 `<`）"
+  );
+  assert.deepEqual(
+    crossHoverTargets({ source: "embryo", wsId: "wh", kind: "proto", slugs: [] }, hoverWs),
+    { sessionIds: [], proposalIds: [] },
+    "空 slug 清单 → 空集（MUST NOT 抛错）"
+  );
+
+  /* 跨工作区隔离：悬停源属其他星座 → 双方均空集。 */
+  assert.deepEqual(
+    crossHoverTargets({ source: "row", wsId: "wh", kind: "planet", id: "s1" }, otherWs),
+    { sessionIds: [], proposalIds: [] },
+    "跨工作区：宿主 ws 与悬停源 wsId 不同 → 无标记"
+  );
+  assert.deepEqual(
+    crossHoverTargets({ source: "canvas", wsId: "wo", kind: "planet", id: "s1" }, otherWs),
+    { sessionIds: ["s1"], proposalIds: ["star-a"] },
+    "同星座画布源照常派生（隔离只按 wsId 不按同名 id）"
+  );
+
+  /* 非法输入防御：空 / 非对象 / 未知 kind → 空集，不抛错。 */
+  assert.deepEqual(crossHoverTargets(null, hoverWs), { sessionIds: [], proposalIds: [] }, "null 悬停描述 → 空集");
+  assert.deepEqual(crossHoverTargets({ wsId: "wh", kind: "planet", id: "s1" }, null), { sessionIds: [], proposalIds: [] }, "null 星座 → 空集");
+  assert.deepEqual(
+    crossHoverTargets({ source: "row", wsId: "wh", kind: "moon", id: "m1" }, hoverWs),
+    { sessionIds: [], proposalIds: [] },
+    "未知 kind → 空集"
+  );
+
+  /* 受体判定：行 id ∈ sessionIds；正式卡 id ∈ proposalIds；星胚卡任一 slug 命中整卡。 */
+  const crossHover = {
+    source: "row",
+    wsId: "wh",
+    kind: "planet",
+    id: "s1",
+    sessionIds: ["s1"],
+    proposalIds: ["star-a", "proto-p2"]
+  };
+  assert.equal(rowIsLinkedOf(crossHover, { wsId: "wh", id: "s1" }), true, "受体行命中（行 id ∈ sessionIds）");
+  assert.equal(rowIsLinkedOf(crossHover, { wsId: "wh", id: "s2" }), false, "非关联行不标");
+  assert.equal(rowIsLinkedOf(crossHover, { wsId: "wo", id: "s1" }), false, "跨工作区同名行不标");
+  assert.equal(cardIsLinkedOf(crossHover, { wsId: "wh", id: "star-a" }), true, "正式卡命中（card.id ∈ proposalIds）");
+  assert.equal(cardIsLinkedOf(crossHover, { wsId: "wh", id: "star-b" }), false, "非关联正式卡不标");
+  assert.equal(cardIsLinkedOf(crossHover, { wsId: "wh", isEmbryo: true, id: "proto-p1", slugs: ["proto-p1", "proto-p2"] }), true, "星胚任一 slug 命中 → 整卡标");
+  assert.equal(cardIsLinkedOf(crossHover, { wsId: "wh", isEmbryo: true, id: "proto-p1", slugs: ["proto-p1"] }), false, "星胚 slug 未命中不标");
+  assert.equal(cardIsLinkedOf(crossHover, { wsId: "wo", isEmbryo: true, id: "x", slugs: ["star-a"] }), false, "跨工作区星胚卡不标");
+
+  /* 源自身不标（派生口径闭环）：行源自身行不标、卡源自身卡不标。 */
+  const rowDerived = {
+    ...{ source: "row", wsId: "wh", kind: "planet", id: "s1" },
+    ...crossHoverTargets({ source: "row", wsId: "wh", kind: "planet", id: "s1" }, hoverWs)
+  };
+  assert.equal(rowIsLinkedOf(rowDerived, { wsId: "wh", id: "s1" }), false, "悬停行自身不标（DOM 源 sessionIds 空集）");
+  const cardDerived = {
+    ...{ source: "card", wsId: "wh", kind: "star", id: "star-b" },
+    ...crossHoverTargets({ source: "card", wsId: "wh", kind: "star", id: "star-b" }, hoverWs)
+  };
+  assert.equal(cardIsLinkedOf(cardDerived, { wsId: "wh", id: "star-b" }), false, "悬停卡自身不标（proposalIds 排除自身）");
+  assert.equal(cardIsLinkedOf(cardDerived, { wsId: "wh", id: "star-a" }), true, "悬停卡共享星卡照常标（同实体同亮面）");
+
+  /* 场景刷新残留清理：源实体键仍在册 → true；归档/摘除 → false。 */
+  assert.equal(hoverSourceAlive(hoverScene, { source: "row", wsId: "wh", kind: "planet", id: "s1" }), true, "行星行源在册");
+  assert.equal(hoverSourceAlive(hoverScene, { source: "row", wsId: "wh", kind: "planet", id: "gone" }), false, "行星行源被摘除 → 清理");
+  assert.equal(hoverSourceAlive(hoverScene, { source: "row", wsId: "wh", kind: "comet", id: "free-1" }), true, "彗星行源在册");
+  assert.equal(hoverSourceAlive(hoverScene, { source: "card", wsId: "wh", kind: "star", id: "star-a" }), true, "正式卡源在册");
+  assert.equal(hoverSourceAlive(hoverScene, { source: "card", wsId: "wh", kind: "star", id: "proto-p1" }), false, "正式卡源不认 proto 恒星（星胚走合并卡分支）");
+  assert.equal(hoverSourceAlive(hoverScene, { source: "canvas", wsId: "wh", kind: "star", id: "proto-p1" }), true, "画布源认 proto 恒星（画布星胚悬停可回推）");
+  assert.equal(hoverSourceAlive(hoverScene, { source: "embryo", wsId: "wh", kind: "proto", id: "proto-p1", slugs: ["proto-p1", "proto-p2"] }), true, "星胚合并卡源在册");
+  assert.equal(hoverSourceAlive(hoverScene, { source: "embryo", wsId: "wh", kind: "proto", id: "gone", slugs: ["gone"] }), false, "星胚 slug 被摘除 → 清理");
+  assert.equal(hoverSourceAlive({ workspaces: [] }, { source: "row", wsId: "wh", kind: "planet", id: "s1" }), false, "工作区注销 → 清理");
+  assert.equal(hoverSourceAlive(hoverScene, null), false, "无悬停描述 → false");
 }
 
 console.log("panel-smoke: all assertions passed");

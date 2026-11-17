@@ -1073,8 +1073,16 @@ const BUTTON = { name: "审查", prompt: "请使用 /cosmos-review 审查本提�
     client.indexOf("const clearPendingDive")
   );
   assert.ok(
-    constExecutorBody.includes('preflight: () => (STANDALONE ? "float" : loadCosmosSettings().constPreflight),'),
-    "执行器现读设置面（独立窗口态强制 float：add-cosmos-standalone-window D6；MUST NOT 构造期缓存）"
+    constExecutorBody.includes("const intent = loadCosmosSettings().constPreflight;"),
+    "执行器现读设置面（MUST NOT 构造期缓存）"
+  );
+  assert.ok(
+    constExecutorBody.includes("if (!STANDALONE) return intent;") && constExecutorBody.includes('return "float";'),
+    "独立窗口态强制 float（add-cosmos-standalone-window D6）"
+  );
+  assert.ok(
+    constExecutorBody.includes('if (intent === "native") {'),
+    "native 意图被改写时呈现反馈（add-cosmos-standalone-jump-feedback D3）"
   );
   assert.ok(constExecutorBody.includes("closePage: () => cosmosOpenStore.set(false),"), "native 分支关整页 = 整页开合 store（与提案动作同通道）");
   assert.ok(constExecutorBody.includes("pending: heroMarkers,") && constExecutorBody.includes("floats: floatMarkers,"), "双通道注入不变（native 复用 hero / float 保留浮窗）");

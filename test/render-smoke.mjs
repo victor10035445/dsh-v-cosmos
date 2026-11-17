@@ -8,7 +8,7 @@
  */
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { createCosmosEngine } from "../src/cosmos/engine.mjs";
+import { createCosmosEngine, ENGINE_CSS, WS_SWITCH_FADE } from "../src/cosmos/engine.mjs";
 import { createSkinD } from "../src/cosmos/skin-d.mjs";
 import { mergeScene } from "../src/merge.mjs";
 
@@ -31,6 +31,31 @@ function makeCtx2d() {
   });
 }
 
+/* classList 桩：真实维护 className 令牌集（与 engine-smoke 同款）——引擎的
+   classList.toggle（chip 沉睡态 / on 类）在桩上可观测。 */
+function classListOf(el) {
+  const tokens = () => String(el.className).split(/\s+/).filter(Boolean);
+  const write = (list) => { el.className = list.join(" "); };
+  return {
+    add(...names) {
+      const list = tokens();
+      for (const name of names) if (name && !list.includes(name)) list.push(name);
+      write(list);
+    },
+    remove(...names) { write(tokens().filter((name) => !names.includes(name))); },
+    toggle(name, force) {
+      const list = tokens();
+      const has = list.includes(name);
+      const want = force === undefined ? !has : !!force;
+      if (want === has) return want;
+      if (want) list.push(name); else list.splice(list.indexOf(name), 1);
+      write(list);
+      return want;
+    },
+    contains(name) { return tokens().includes(name); }
+  };
+}
+
 function makeElement(tag) {
   const listeners = {};
   const el = {
@@ -44,7 +69,7 @@ function makeElement(tag) {
     height: 0,
     children: [],
     listeners,
-    classList: { add() {}, remove() {}, contains: () => false },
+    classList: null,
     appendChild(child) {
       el.children.push(child);
       return child;
@@ -69,6 +94,7 @@ function makeElement(tag) {
     setPointerCapture() {},
     getBoundingClientRect: () => ({ left: 0, top: 0, right: 800, bottom: 600, width: 800, height: 600 })
   };
+  el.classList = classListOf(el);
   return el;
 }
 
@@ -308,8 +334,144 @@ function findCanvas(node) {
   );
 }
 
+/* ── 星座活力两态呈现回归（step1-add-constellation-vitality 2.2/3.1）：真实 merge 场景
+   （恒星 + 星胚 + 会话）下 chip 呈活跃态与状态点、不呈沉睡态；钻取入口不被活力态阻断。
+   沉睡 ⇄ 活跃 class 翻转与标牌标识由 engine-smoke 以假时钟确定性直测。 ── */
+{
+  const root = container.children[0];
+  const overlay = root._byClass["cos-overlay"];
+  const chip = overlay.children.find((el) => String(el.className).startsWith("cos-chip"));
+  assert.ok(chip, "真实场景星座 chip 已挂载");
+  assert.ok(String(chip.dataset.html).includes("cos-chip-life active"), "真实场景 chip 内容含活跃状态点（存在口径活跃）");
+  assert.ok(!String(chip.className).includes("cos-chip-sleep"), "有恒星/会话的星座 chip 不呈沉睡态");
+  assert.equal(engine.diveToWs("ws1"), true, "钻取真实星座（活力态不阻断入口）");
+  now += 50;
+  step(now);
+  assert.equal(engine.inspectFilter().focus.diving, true, "钻取态成立");
+}
+
 engine.stop();
 engine.dispose();
+rafQueue.length = 0; // 清掉已停引擎的陈旧帧回调（新增块从确定帧序起步）
+
+/* ── 钻取态可切换星座切换器几何回归（step2-add-constellation-switcher D1/D2/D6 / 2.3）：
+   可切换星座 = 有提案或星胚（`stars` 非空）；几何级断言取代旧「逐位定位样式」口径——居中承诺由
+   **结构恒成立**证明（两侧条目槽几何完全一致 ⇒ 任意 0/1/≥2 条目组合下标牌页面水平居中），
+   容器预算/下限/断点/条目点击目标与显隐纪律逐条钉住；运行时以真实引擎路径验证条目挂载与退场。 ── */
+{
+  /* ① 结构契约：行容器承接定位与限宽（标牌旧绝对定位/百分比限宽 MUST 已移除）。 */
+  const wsbarM = /\.cos-wsbar \{([^}]*)\}/.exec(ENGINE_CSS);
+  const sideM = /\.cos-wsbar-side \{([^}]*flex: 0 1[^}]*)\}/.exec(ENGINE_CSS);
+  const leftSideM = /\.cos-wsbar-side\[data-side="left"\] \{([^}]*)\}/.exec(ENGINE_CSS);
+  const rightSideM = /\.cos-wsbar-side\[data-side="right"\] \{([^}]*)\}/.exec(ENGINE_CSS);
+  const badgeM = /\.cos-badge \{([^}]*)\}/.exec(ENGINE_CSS);
+  const itemM = /\.cos-wsbar-item \{([^}]*)\}/.exec(ENGINE_CSS);
+  assert.ok(wsbarM && sideM && leftSideM && rightSideM && badgeM && itemM, "五组切换器样式规则在册");
+  assert.ok(wsbarM[1].includes("left: 50%") && wsbarM[1].includes("transform: translateX(-50%)"), "行容器以 left:50% + translateX(-50%) 页面居中（顶部中央锚点）");
+  assert.ok(/position: absolute; top: 14px/.test(wsbarM[1]), "行容器绝对定位 top:14px（既有标牌纵向锚点等价迁移）");
+  assert.ok(wsbarM[1].includes("pointer-events: none"), "容器 pointer-events:none（不形成点击死区）");
+  assert.ok(wsbarM[1].includes("display: flex") && wsbarM[1].includes("gap: 12px"), "行容器 flex 行 + 固定 12px 间隙");
+
+  /* ② 居中恒成立：两侧槽几何完全一致（仅内对齐方向不同）——条目组合不参与槽宽决定。 */
+  assert.ok(!/:has\(|nth-child|nth-of-type|:not\(:empty\)/.test(ENGINE_CSS), "槽宽不依赖条目数量选择器（条目数量不参与 flex 基准）");
+  assert.equal(
+    leftSideM[1].replace("flex-end", "").replace(/\s+/g, " ").trim(),
+    rightSideM[1].replace("flex-start", "").replace(/\s+/g, " ").trim(),
+    "左右条目槽规则除对齐方向外逐字一致（等基准/等宽/等收缩 → 标牌中心恒为容器中心）"
+  );
+  const sideFlexM = /flex: 0 1 var\(--cos-wsbar-side-w, (\d+)px\)/.exec(sideM[1]);
+  const sideWidthM = /width: var\(--cos-wsbar-side-w, (\d+)px\)/.exec(sideM[1]);
+  assert.ok(sideFlexM && sideWidthM && sideFlexM[1] === sideWidthM[1], "槽 flex 基准与宽度同值（对称固定宽）");
+  assert.ok(sideM[1].includes("min-width: 0"), "槽 min-width:0（容器收窄时条目先行省略）");
+  assert.equal(WS_SWITCH_FADE, 0.25, "淡入淡出时长常量 = 0.25s");
+  assert.ok(itemM[1].includes("transition: opacity .25s"), "条目显隐走 .25s opacity 过渡（与常量同源）");
+  assert.ok(/\.cos-wsbar-item\.on \{([^}]*)\}/.exec(ENGINE_CSS)[1].includes("opacity: 1"), ".on 态可见（淡入终态）");
+
+  /* ③ 容器预算与 160px 下限兜底：844 = 标牌 480 + 2×(槽 170 + 间隙 12)；470 = 2×(面板 187 + 48)。 */
+  const budgetM = /max-width: max\((\d+)px, min\((\d+)px, calc\(100% - (\d+)px\)\)\)/.exec(wsbarM[1]);
+  assert.ok(budgetM, "容器限宽口径可解析（下限 / 上限 / 避让预留）");
+  const floor = Number(budgetM[1]);
+  const cap = Number(budgetM[2]);
+  const reserve = Number(budgetM[3]);
+  const sideW = Number(sideFlexM[1]);
+  const gap = Number(/gap: (\d+)px/.exec(wsbarM[1])[1]);
+  assert.equal(cap, 480 + 2 * (sideW + gap), "上限 = 标牌 480 + 2×(条目槽宽 + 间隙)（结构预算同源）");
+  assert.equal(reserve, 470, "避让预留 = 470（187 面板 + 48 安全边距 ×2，既有口径不变）");
+  assert.equal(floor, 160, "160px 下限兜底保留（页宽不足时标牌文本仍可读）");
+  const containerWidth = (pageW) => Math.max(floor, Math.min(cap, pageW - reserve));
+  assert.equal(containerWidth(480), floor, "页宽 480（侧栏在场退化档）：min() 为负 → 下限兜底，容器不塌为 0");
+  assert.equal(containerWidth(2000), cap, "超宽页：容器封顶 844（标牌上限 480 不被百分比二次折减）");
+  assert.ok(badgeM[1].includes("max-width: 480px") && !badgeM[1].includes("calc(100% - 470px)"),
+    "标牌收敛为单一上限 480px（百分比限宽基准 MUST NOT 原样带入）");
+  assert.ok(/\.cos-badge b \{[^}]*font-size: var\(--cos-ws-title-size, 13px\)/.test(ENGINE_CSS), "标牌名称视觉样式不变（字号令牌保留）");
+  assert.ok(/\.cos-badge span \{[^}]*display: block/.test(ENGINE_CSS), "标牌计数行视觉样式不变");
+  assert.ok(badgeM[1].includes("pointer-events: none"), "标牌仍 pointer-events:none（纯信息元素，不形成点击死区）");
+
+  /* ④ 断点：<520px 改挂容器（放宽 + 隐藏条目槽），标牌旧媒体查询 MUST 已退役。 */
+  assert.ok(ENGINE_CSS.includes("@media (max-width: 520px) { .cos-wsbar { max-width: calc(100% - 40px); } .cos-wsbar-side { display: none; } }"),
+    "窄视口断点改挂行容器：放宽 calc(100% - 40px) + 隐藏条目槽（仅留标牌）");
+  assert.ok(!ENGINE_CSS.includes("@media (max-width: 520px) { .cos-badge"), "标牌旧媒体查询已移除（断点不双写）");
+
+  /* ⑤ 条目纪律：≥40px 触屏点击目标 / 暖金描边 HUD 语言 / 皮肤 CSS 变量取色 / 显隐两态指针语义。 */
+  assert.ok(itemM[1].includes("min-height: 40px"), "条目点击目标高 ≥40px（触屏下限）");
+  assert.ok(itemM[1].includes("border: 1px dashed rgb(var(--cos-accent-rgb, 255 210 140) / .4)"), "条目描边沿用暖金 HUD 语言（--cos-accent-rgb 令牌链）");
+  assert.ok(itemM[1].includes("color: var(--cos-accent-ink, #ffe3b8)") && itemM[1].includes("var(--cos-chip-bg"), "条目文字/底色经皮肤 CSS 变量取色（皮肤零改动）");
+  assert.ok(itemM[1].includes("pointer-events: none") && /\.cos-wsbar-item\.on \{[^}]*pointer-events: auto/.test(ENGINE_CSS),
+    "条目默认不可点、.on 时可点（容器不形成点击死区）");
+  assert.ok(/\.cos-wsbar-item i \{[^}]*var\(--dsw-alias-state-warn-primary/.test(ENGINE_CSS), "活跃状态点取活力琥珀令牌链（与 chip/名牌同源）");
+
+  /* ⑥ 运行时：三个可切换星座钻取 → 左右条目挂载；银河态零呈现；退场清内容。 */
+  const realPerformance = globalThis.performance;
+  let fakeNow = realPerformance.now() + 60000; // 假时钟推进钻取补间（只影响镜头补间时刻口径）
+  globalThis.performance = { now: () => fakeNow };
+  const container = makeElement("div");
+  const switcher = createCosmosEngine({ container, style: createSkinD() });
+  try {
+    const root = container.children[0];
+    /* 桩的 querySelector 键 = 选择器去掉首个 "."（render-smoke 桩约定）。 */
+    const leftSlot = root._byClass['cos-wsbar-side[data-side="left"]'];
+    const rightSlot = root._byClass['cos-wsbar-side[data-side="right"]'];
+    const badgeEl = root._byClass["cos-badge"];
+    assert.ok(leftSlot && rightSlot, "左右条目槽 DOM 在册（引擎自建）");
+    const leftItem = leftSlot.children[0];
+    const rightItem = rightSlot.children[0];
+    assert.equal(leftSlot.children.length, 1, "左槽常驻一个条目节点（MUST NOT 逐帧重建）");
+    assert.equal(rightSlot.children.length, 1, "右槽常驻一个条目节点");
+    const markup = String(root.innerHTML);
+    assert.ok(markup.includes("cos-wsbar") && markup.includes('data-side="left"') && markup.includes('data-side="right"'),
+      "ensureDom 产物含行容器与左右条目槽");
+    const order = ['data-side="left"', "cos-badge", 'data-side="right"'].map((token) => markup.indexOf(token));
+    assert.ok(order[0] >= 0 && order[0] < order[1] && order[1] < order[2], "DOM 顺序 [左槽][标牌][右槽]");
+    const starOf = (id) => ({ id, name: id, lifecycle: "created", setBy: null, at: null, tasks: [1, 1], age: "刚刚", act: 0, off: [0, 0, 0] });
+    const wsOf = (id, name, pos) => ({ id, name, pos, stars: [starOf(id + "-s")], links: [], planets: [], comets: [], archives: 0, satelliteCount: 0 });
+    switcher.setScene({
+      workspaces: [wsOf("a", "Alpha", [-200, 0, 0]), wsOf("b", "Bravo", [0, 0, 0]), wsOf("c", "Charlie", [200, 0, 0])]
+    }, "rebuild");
+    switcher.start();
+    let frameTs = now;
+    const frameStep = (n = 1) => { for (let i = 0; i < n; i++) { frameTs += 50; step(frameTs); } };
+    frameStep(30);
+    assert.ok(!leftItem.classList.contains("on") && !rightItem.classList.contains("on"), "银河态条目零呈现（零布局）");
+    assert.equal(String(leftItem.innerHTML), "", "银河态左槽零内容");
+    assert.equal(switcher.diveToWs("b"), true, "钻取中位星座 Bravo");
+    fakeNow += 1400; // 钻取补间落地（focusMix → 1）
+    frameStep(3);
+    assert.equal(switcher.inspectFilter().focus.diving, true, "钻取态成立");
+    assert.ok(String(badgeEl.dataset.html).includes("Bravo"), "标牌仍呈当前星座（中央格内容不变）");
+    assert.ok(leftItem.classList.contains("on") && String(leftItem.innerHTML).includes("Alpha"), "左槽 = 环上前驱 Alpha");
+    assert.ok(rightItem.classList.contains("on") && String(rightItem.innerHTML).includes("Charlie"), "右槽 = 环上后继 Charlie");
+    assert.equal(switcher.consumeEscape(), true, "Esc 飞回银河");
+    fakeNow += 1400;
+    frameStep(3);
+    assert.ok(!leftItem.classList.contains("on") && !rightItem.classList.contains("on"), "飞回银河：条目退场（随钻取态整体）");
+    frameStep(6);
+    assert.equal(String(leftItem.innerHTML), "", "退场淡出满窗后条目零内容");
+  } finally {
+    switcher.stop();
+    switcher.dispose();
+    globalThis.performance = realPerformance;
+  }
+}
 
 /* ── 场景未就绪启动（真机「Cannot read 'ws' of null」回归）：无 scene 时 start
    → 帧循环跳帧等待 → 场景到达后正常渲染。 ── */

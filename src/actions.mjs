@@ -30,6 +30,15 @@
  * `createEmbryoActionExecutor` 承接——消息无 @提案引用（`assembleEmbryoMessage`）、
  * 目标 = 星胚组锚点探索会话（`explorationTargetOf` 做在册/归档解析）、独立标记通道、
  * 恒不新建会话；守卫一律 toast 不回落新建。
+ *
+ * 独立窗口服务端送达通道（add-cosmos-standalone-jump-feedback D1/D2）：
+ * `createActionExecutor` 构造期可选 `standaloneServerChannel` 开关——独立窗口内无会话页
+ * 挂载 hero 相位（标记是每窗口内存 store），「create + 标记 + openSession 接力」的落稿
+ * 不可达；开启后主路径跳过该接力，改走 `startSession(workspaceId, { prompt })` 服务端
+ * 落稿（草稿在打开该会话时可见）。语义损耗如实接受并落返回值：恒新建退化为
+ * `startSession` 的「复用首个 reusable blank + whenDraftExists」语义；显式关联绑定跳过
+ * （无新会话 id）；绑定模型切换不执行；autoSend **不登记标记、不自动提交**（跨窗口标记
+ * 恒悬空 ⇒ 草稿由用户在主窗口手动发送）。缺省关闭 = 既有行为逐字不变。
  */
 import { actionButtonVisible } from "./buttons.mjs";
 import { proposalDirOf } from "./panel.mjs";
@@ -391,7 +400,9 @@ export async function consumePendingAction(input) {
  * @param {(input: {sessionId: string, proposals: string[]}) => Promise<unknown>} [options.bindSession]
  *        **⑤ 显式关联绑定**：新会话 SessionId 取得后非阻断调用（不 await、失败静默；
  *        缺省不绑定——老宿主/测试面行为不变）。降级路径（无新会话 id）MUST 跳过。
- * @param {() => void} [options.closePage] 按钮 `jumpNewSession !== false` 时调用（关页跳转）
+ * @param {(context?: {autoSend?: boolean}) => void} [options.closePage] 按钮
+ *        `jumpNewSession !== false` 时调用（关页跳转）；`context.autoSend` 供注入方在
+ *        独立窗口「跳转被抑制」时附加如实反馈（MUST NOT 据此承诺自动发送）
  * @param {() => void} [options.keepPage] 按钮 `jumpNewSession === false` 时调用（保持整页，
  *        由注入方呈现反馈 toast）
  * @param {(text: string, isError?: boolean) => void} [options.notify]
@@ -400,6 +411,11 @@ export async function consumePendingAction(input) {
  * @param {number} [options.cooldownMs] 私有门的冷却窗（未注入 gate 时生效）
  * @param {object} [options.gate] **跨链路共享**的防重入门（星座动作与提案动作同门；
  *        缺省=私有门，行为与从前逐字一致）
+ * @param {boolean} [options.standaloneServerChannel] 独立窗口**服务端送达通道**
+ *        （add-cosmos-standalone-jump-feedback D1）：true 时主路径跳过「create + 标记 +
+ *        openSession 接力」，改走 `startSession(card.wsId, message, card)` 服务端落稿
+ *        （恒新建退化为「复用 reusable blank + whenDraftExists」；关联绑定/模型切换/
+ *        autoSend 提交意图均不执行，见返回值标注）。缺省 false = 行为逐字不变。
  * @returns {{run: (input: {button: object, card: object}) => Promise<object>}}
  */
 export function createActionExecutor(options = {}) {
@@ -411,6 +427,8 @@ export function createActionExecutor(options = {}) {
   const keepPage = typeof options.keepPage === "function" ? options.keepPage : () => {};
   const notify = typeof options.notify === "function" ? options.notify : () => {};
   const bindSession = typeof options.bindSession === "function" ? options.bindSession : null;
+  /* 独立窗口服务端送达通道（D1）：缺省关闭，关闭时全部既有分支逐字不变。 */
+  const standaloneServerChannel = options.standaloneServerChannel === true;
   const degradedLabel = typeof options.labels?.degraded === "string" && options.labels.degraded
     ? options.labels.degraded
     : "新建会话通道不可用，已降级为复用空白会话";
@@ -450,9 +468,49 @@ export function createActionExecutor(options = {}) {
       if (armed) pending.clear(armed.token); // 降级链路自身失败 → 清标记（外层报 start-failed）
       throw error;
     }
-    if (jump) closePage();
+    if (jump) closePage({ autoSend: submit });
     else keepPage();
     return { ok: true, message, armed, degraded: true };
+  };
+
+  /**
+   * 独立窗口服务端送达通道（add-cosmos-standalone-jump-feedback D1）：
+   *
+   * 独立窗口内无会话页挂载 hero 相位（标记是每窗口内存 store），「create + 标记 +
+   * openSession 接力」的落稿不可达——改走 `startSession` 服务端落稿，主入口本次点击即
+   * 完成。语义损耗（如实体现于返回值，供注入方/冒烟观测）：
+   *  - 恒新建退化为 `startSession` 的「复用首个 reusable blank + `whenDraftExists`」
+   *    语义（MUST NOT 承诺「新建」）；
+   *  - 显式关联绑定跳过（无新会话 id，关联退回启发式，非阻断）；
+   *  - 绑定模型切换不执行（依赖窗口内会话输入区）；
+   *  - autoSend **不登记标记、不自动提交**——每个窗口的标记 store 是独立内存实例，
+   *    跨窗口不可达；草稿落盘后由用户在主窗口打开该会话手动发送。
+   * 反馈由注入方 closePage（跳转尾巴被抑制时）承担，本分支不感知呈现。
+   */
+  const runStandaloneServerChannel = async (card, message, model, submit, jump) => {
+    try {
+      await startSession(card.wsId, message, card);
+    } catch (error) {
+      const detail = String(error?.message || error);
+      notify("创建会话失败：" + detail, true);
+      return { ok: false, reason: "start-failed", error: detail, standalone: true };
+    }
+    /* 跳转尾巴仍按该按钮的 jumpNewSession 分流：独立窗口下 closePage 由注入方实现为
+       「no-op + 专属反馈」，内嵌态不会走到本分支。 */
+    if (jump) closePage({ autoSend: submit });
+    else keepPage();
+    return {
+      ok: true,
+      message,
+      armed: null,
+      sessionId: "",
+      degraded: false,
+      standalone: true,
+      serverDraft: true,
+      bindSkipped: true,
+      autoSendSkipped: submit,
+      modelSkipped: model !== undefined
+    };
   };
 
   return {
@@ -470,6 +528,11 @@ export function createActionExecutor(options = {}) {
         notify("创建会话不可用（当前宿主未提供）", true);
         return { ok: false, reason: "unavailable" };
       }
+      /* 服务端通道以 `startSession` 为唯一送达动词：恒新建通道在也与它无关。 */
+      if (standaloneServerChannel && typeof startSession !== "function") {
+        notify("创建会话不可用（当前宿主未提供）", true);
+        return { ok: false, reason: "unavailable" };
+      }
       const model = buttonModelOf(button.model);
       const submit = button.autoSend === true;
       /* 每按钮「执行后跳转」：缺省 = 跳转（旧配置零迁移）。 */
@@ -477,6 +540,10 @@ export function createActionExecutor(options = {}) {
       if (!gate.enter()) return { ok: false, reason: "busy" };
       let armed = null;
       try {
+        if (standaloneServerChannel) {
+          /* 独立窗口服务端送达（D1）：跳过 create/标记/openSession 接力。 */
+          return await runStandaloneServerChannel(card, message, model, submit, jump);
+        }
         if (!canCreateNew) {
           /* 宿主未提供恒新建通道（老宿主）：直接降级，行为 = 今日。 */
           return await fallback(button, card, message, model, submit, jump, "当前宿主未提供新建会话通道");
@@ -496,7 +563,7 @@ export function createActionExecutor(options = {}) {
            恒新建路径恒登记（autoSend=false 也要落稿），判据 = 目标 SessionId。 */
         armed = pending.arm({ message, model, submit, targetSessionId: sessionId, setDraft: true });
         openSession(sessionId);
-        if (jump) closePage();
+        if (jump) closePage({ autoSend: submit });
         else keepPage();
         return { ok: true, message, armed, sessionId, degraded: false };
       } catch (error) {

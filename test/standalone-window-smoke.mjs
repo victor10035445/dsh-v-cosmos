@@ -137,13 +137,22 @@ const read = (path) => readFileSync(new URL("../src/" + path, import.meta.url), 
   assert.equal(isStandaloneSearch(undefined), false, "缺值否");
   assert.equal(isStandaloneSearch("?%E0%A4%A=window"), false, "坏编码段不抛错");
 
-  /* 桌面降级（D7）：file:// 无 HTTP origin */
+  /* 桌面降级（D1）：页面协议非 http(s) 即桌面（dsh-app: 桌面壳 / file:） */
   assert.equal(isDesktopProtocol("file:"), true, "file: 判桌面");
+  assert.equal(isDesktopProtocol("dsh-app:"), true, "dsh-app: 桌面壳判桌面");
+  assert.equal(isDesktopProtocol("DSH-APP:"), true, "大小写归一判桌面");
+  assert.equal(isDesktopProtocol("custom-shell:"), true, "未来自定义协议同样判桌面（宽口径）");
   assert.equal(isDesktopProtocol("http:"), false);
   assert.equal(isDesktopProtocol("https:"), false);
+  assert.equal(isDesktopProtocol("HTTP:"), false, "HTTP: 归一保持非桌面");
+  assert.equal(isDesktopProtocol("HTTPS:"), false, "HTTPS: 归一保持非桌面");
+  assert.equal(isDesktopProtocol(""), false, "空协议按非桌面（缺省守卫）");
   assert.equal(isDesktopProtocol(undefined), false, "缺省按非桌面");
+  assert.equal(isDesktopProtocol(null), false, "非字符串按非桌面");
   assert.equal(isStandalonePage({ search: "?cosmos=window", protocol: "http:" }), true, "web 命中独立窗口");
+  assert.equal(isStandalonePage({ search: "?cosmos=window", protocol: "https:" }), true, "https web 命中独立窗口");
   assert.equal(isStandalonePage({ search: "?cosmos=window", protocol: "file:" }), false, "桌面形态不进入独立窗口态");
+  assert.equal(isStandalonePage({ search: "?cosmos=window", protocol: "dsh-app:" }), false, "dsh-app: 桌面壳不进入独立窗口态");
   assert.equal(isStandalonePage({ search: "?cosmos=1", protocol: "http:" }), false, "未命中参数不进入");
   assert.equal(isStandalonePage(), false, "空输入安全");
 
@@ -156,6 +165,7 @@ const read = (path) => readFileSync(new URL("../src/" + path, import.meta.url), 
   /* 启动分流：桌面形态恒 embedded（忽略历史 window 配置，MUST NOT 报错） */
   assert.equal(effectiveLaunchModeOf({ launchMode: "window", protocol: "http:" }), "window", "web + window → 独立窗口");
   assert.equal(effectiveLaunchModeOf({ launchMode: "window", protocol: "file:" }), "embedded", "桌面忽略 window 配置");
+  assert.equal(effectiveLaunchModeOf({ launchMode: "window", protocol: "dsh-app:" }), "embedded", "dsh-app: 桌面忽略 window 配置");
   assert.equal(effectiveLaunchModeOf({ launchMode: "embedded", protocol: "http:" }), "embedded", "embedded 保持内嵌");
   assert.equal(effectiveLaunchModeOf({ launchMode: "bogus", protocol: "http:" }), "embedded", "非法配置回落内嵌");
   assert.equal(effectiveLaunchModeOf({}), "embedded", "空输入 → 内嵌");
@@ -285,6 +295,10 @@ const read = (path) => readFileSync(new URL("../src/" + path, import.meta.url), 
   assert.ok(seat.includes('tr("cosmos.seat.windowAria"'), "独立窗口打开文案（跨窗口配置跟随）");
   assert.ok(client.includes('tr("cosmos.seat.popupBlocked", "浏览器拦截了独立窗口，请放行弹窗后重试")'), "弹窗拦截引导（MUST NOT 静默失败）");
   assert.ok(client.includes("showCosmosToast(blockedText, true);"), "拦截提示走页面外 toast（整页未开也可用）");
+  assert.ok(
+    seat.indexOf("if (windowMode)") >= 0 && seat.indexOf("if (windowMode)") < seat.indexOf("openStandaloneWindow("),
+    "window.open 仅在 window 分支内（桌面形态必走 embedded 分支，死提示不可达）"
+  );
 
   /* presence 消费：standalone 连接带 role，不触发骨架重拉 */
   assert.ok(client.includes('}, { role: STANDALONE ? COSMOS_WINDOW_ROLE : "" }));'), "连接角色按 standalone 分流");
@@ -300,9 +314,35 @@ const read = (path) => readFileSync(new URL("../src/" + path, import.meta.url), 
   assert.ok(openAction.indexOf("if (STANDALONE) return") < openAction.indexOf("cosmosOpenStore.set(false)"), "standalone 短路先于关整页");
   assert.ok(openAction.includes("ctx.uiWorkspace?.openSession"), "内嵌态既有导航链路零变化");
   assert.ok(client.includes("openSessionVia = (sessionId) => {\n    if (STANDALONE) return false;"), "执行器导航尾巴同款短路");
-  assert.ok(client.includes("const closePageAfterJump = () => {"), "动作跳转尾巴关页收口");
-  assert.ok(client.includes("closePage: () => closePageAfterJump(),"), "提案/星胚执行器注入短路尾巴");
-  assert.ok(client.includes('preflight: () => (STANDALONE ? "float" : loadCosmosSettings().constPreflight),'), "星座动作 native 分支强制 float");
+
+  /* 动作链路反馈与送达（add-cosmos-standalone-jump-feedback D1–D3）：跳转尾巴按链路口径
+     参数化（内嵌关整页零变化 / standalone no-op + 专属 toast）；提案与星座 autoSend 在
+     STANDALONE 下开启服务端送达通道（startSession 落稿，不经窗口内标记接力）。 */
+  assert.ok(client.includes('const closePageAfterJump = (link = "proposal", context = {}) => {'), "动作跳转尾巴关页收口（按链路口径参数化）");
+  const jumpTail = client.slice(
+    client.indexOf('const closePageAfterJump = (link = "proposal", context = {}) => {'),
+    client.indexOf("const startSessionVia =")
+  );
+  assert.ok(jumpTail.length > 0, "closePageAfterJump 函数体可定位");
+  assert.ok(jumpTail.includes("if (!STANDALONE) {") && jumpTail.includes("cosmosOpenStore.set(false);"), "内嵌态关整页（行为零变化）");
+  assert.ok(jumpTail.includes('if (link === "embryo") {'), "星胚链路专属口径分支");
+  assert.ok(jumpTail.includes('tr("cosmos.actions.standaloneJumpFeedback"'), "提案反馈文案（会话草稿已在主窗口准备）");
+  assert.ok(jumpTail.includes('tr("cosmos.actions.standaloneAutoSendNote"'), "autoSend 未执行说明（MUST NOT 承诺已发送）");
+  assert.ok(jumpTail.includes('tr("cosmos.actions.standaloneEmbryoFeedback"'), "星胚引导反馈（探索会话需在主窗口操作）");
+  assert.ok((jumpTail.match(/notifyToast\?\./g) ?? []).length >= 2, "独立窗口反馈走 toast（窗口保持打开）");
+  assert.ok(!/window\.close/.test(jumpTail), "动作跳转永不关窗（关页短路保持）");
+  assert.ok(client.includes('closePage: (context) => closePageAfterJump("proposal", context),'), "提案执行器注入提案口径反馈尾巴");
+  assert.ok(client.includes('closePage: () => closePageAfterJump("embryo"),'), "星胚执行器注入星胚口径反馈尾巴");
+  assert.equal((client.match(/standaloneServerChannel: STANDALONE,/g) ?? []).length, 2, "提案/星座执行器在 STANDALONE 下开启服务端送达通道（星胚不开启）");
+  assert.ok(client.includes("standaloneNotice: () => notifyToast?.("), "星座 autoSend 通道反馈走注入回调（执行器不感知文案）");
+  assert.ok(client.includes('tr("cosmos.actions.standaloneConstDraft"'), "星座 autoSend 草稿落盘反馈文案");
+  const preflightAt = client.indexOf("preflight: () => {");
+  const preflightInjection = client.slice(preflightAt, client.indexOf("standaloneNotice: () => notifyToast?.(", preflightAt));
+  assert.ok(preflightInjection.length > 0, "preflight 注入点可定位");
+  assert.ok(preflightInjection.includes("const intent = loadCosmosSettings().constPreflight;"), "preflight 每次 run 现读设置面");
+  assert.ok(preflightInjection.includes('if (!STANDALONE) return intent;') && preflightInjection.includes('return "float";'), "独立窗口强制 float（星空保持）");
+  assert.ok(preflightInjection.includes('if (intent === "native") {'), "仅 native 意图被改写时呈现反馈（float 缺省不 toast）");
+  assert.ok(preflightInjection.includes('tr("cosmos.actions.standalonePreflightFeedback"'), "native 改写反馈文案键");
 
   /* 引擎导航可用性注入 */
   assert.ok(client.includes("sessionNavAvailable: !STANDALONE,"), "引擎注入导航可用性");
@@ -329,6 +369,11 @@ const read = (path) => readFileSync(new URL("../src/" + path, import.meta.url), 
     "cosmos.card.openDisabled",
     "cosmos.standalone.otherWindow",
     "cosmos.standalone.manualClose",
+    "cosmos.actions.standaloneJumpFeedback",
+    "cosmos.actions.standaloneAutoSendNote",
+    "cosmos.actions.standaloneEmbryoFeedback",
+    "cosmos.actions.standalonePreflightFeedback",
+    "cosmos.actions.standaloneConstDraft",
     "cosmos.settings.tabGeneral",
     "cosmos.settings.launchModeLabel",
     "cosmos.settings.launchModeHint",
@@ -343,15 +388,21 @@ const read = (path) => readFileSync(new URL("../src/" + path, import.meta.url), 
       "词典 zh/en 成对：" + key
     );
   }
+  /* 桌面降级说明（D3）：不点名具体协议（`dsh-app:` 桌面下「file://」字样自相矛盾） */
+  const desktopCopy = dict.match(/"cosmos\.settings\.launchModeDesktop": "([^"]*)"/g) ?? [];
+  assert.equal(desktopCopy.length, 2, "桌面降级说明 zh/en 成对");
+  assert.ok(desktopCopy.every((line) => !line.includes("file://")), "桌面降级说明不硬编码 file://");
+  assert.ok(desktopCopy.every((line) => line.includes("web")), "桌面降级说明点明「仅 web 形态可用」");
 
   /* settings-ui：通用面板（单选 + 桌面禁用 + 即时保存语义） */
   const ui = read("settings-ui.jsx");
   const panel = ui.slice(ui.indexOf("export function CosmosGeneralPanel"), ui.indexOf("export function CosmosActionsPanel"));
   assert.ok(panel.length > 0, "CosmosGeneralPanel 可定位");
   assert.ok(panel.includes('type="radio"'), "单选控件（非下拉/开关）");
-  assert.ok(panel.includes("disabled={desktop}"), "桌面形态控件禁用（D7）");
+  assert.ok(panel.includes("disabled={desktop}"), "桌面形态控件禁用（非 http(s) 判据联动）");
   assert.ok(panel.includes("data-desktop={desktop ? \"true\" : undefined}"), "禁用态呈现稳定钩子");
   assert.ok(panel.includes('tr(t, "cosmos.settings.launchModeDesktop"'), "桌面降级说明文案");
+  assert.ok(!panel.includes("file://"), "settings-ui 桌面降级 fallback 不硬编码 file://");
   assert.ok(panel.includes("face?.set?.(mode)"), "改动即写 face（即时保存，无保存钮）");
   assert.ok(!/face\.save\(\)/.test(panel), "无「保存」按钮（轻量偏好语义）");
   assert.ok(!/controllerRef/.test(panel), "不依赖整页控制器存活（无引擎热更需求）");

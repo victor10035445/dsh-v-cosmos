@@ -10,7 +10,7 @@ metadata:
   contractVersion: "1"
 ---
 
-使用 C:\project\dsh-plugin-v\dsh-v-skill-links\.trae\skills\openspec-explore\SKILL.md 技能，探索并讨论功能需求，如果建议多提案的时候，多个提案如有先后依赖顺序，则在提案命名前缀上体现出来。
+读取（read 工具） C:\project\dsh-plugin-v\dsh-v-skill-links\.trae\skills\openspec-explore\SKILL.md，探索并讨论功能需求，如果建议多提案的时候，多个提案如有先后依赖顺序（注意不要以数字开头），则在提案命名前缀上体现出来。
 
 并且按以下流程调整提案状态：
 **状态步骤：探索结论建议创建提案时，写待创建锚点**

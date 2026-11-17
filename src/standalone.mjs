@@ -1,12 +1,13 @@
 /**
- * Cosmos 独立窗口纯逻辑（add-cosmos-standalone-window design D1/D5/D7）。
+ * Cosmos 独立窗口纯逻辑（add-cosmos-standalone-window design D1/D5/D7；
+ * 桌面判据经 fix-cosmos-standalone-desktop-degrade D1 加宽为非 http(s) 协议）。
  *
  * 形态 = 同源「根 URL + 查询参数」：`window.open(location.origin + "/?cosmos=window")`。
  * 否决独立端口（webServer 单监听 / 异 origin 无 Cookie / localStorage 分裂 / SSE 跨源）与
  * 路径式 URL（frontend-static fallback 只在根渲染 SPA、`<base href="./">` 冻结资源目录）。
  *
  * 本模块只收敛**浏览器侧可判定的纯函数面**（零依赖、可冒烟直测）：
- *  - 独立窗口检测（`?cosmos=window` 精确匹配 + `file://` 形态排除）；
+ *  - 独立窗口检测（`?cosmos=window` 精确匹配 + 非 http(s) 桌面形态排除）；
  *  - 独立窗口 URL 构造；
  *  - 启动分流（launchMode × 桌面降级）；
  *  - 座位锁定 / 双窗提示 / 关页动作裁决；
@@ -58,20 +59,26 @@ export function isStandaloneSearch(search) {
 }
 
 /**
- * 桌面形态判据（design D7）：`file://` 无 HTTP origin，独立窗口无处落地。
+ * 桌面形态判据（fix-cosmos-standalone-desktop-degrade D1；前身见 add-cosmos-standalone-window D7）：
+ * 独立窗口的语义根基是**同源 HTTP origin**（SSE 同播、localStorage 设置桥、Cookie 同池），
+ * 页面协议非 `http:` 亦非 `https:`（`dsh-app://` 桌面壳、`file://` 及未来自定义协议壳）即判桌面。
  * 判定取浏览器侧可观察事实，MUST NOT 依赖宿主探测。
+ *
+ * 缺省守卫：非字符串 / 空串回落 false（`pageProtocol()` 缺席返回空串，按非桌面处理——
+ * Node/旧宿主降级面；宽口径 MUST NOT 翻转该既有语义）。
  * @param {unknown} protocol `location.protocol`
  * @returns {boolean}
  */
 export function isDesktopProtocol(protocol) {
-  return protocol === "file:";
+  if (typeof protocol !== "string" || protocol === "") return false;
+  const normalized = protocol.toLowerCase();
+  return normalized !== "http:" && normalized !== "https:";
 }
 
 /**
  * 独立窗口态判定 = 查询参数命中 **且** 非桌面形态。
- * 桌面 composition 的页面来源恒为 `file://`（webServer README：Electron loads dist over
- * `file://`），即便宿主另跑 webserver，当前页也没有可共享同源 Cookie 的 HTTP origin，
- * 故查询参数在桌面形态 MUST NOT 生效（降级为普通内嵌形态，无副作用）。
+ * 桌面壳（D1：非 http(s) 协议——`dsh-app://` 或 `file://`）页面没有可作为独立窗口地基的
+ * 同源 HTTP origin，故查询参数在桌面形态 MUST NOT 生效（降级为普通内嵌形态，无副作用）。
  * @param {{search?: unknown, protocol?: unknown}} [input]
  * @returns {boolean}
  */
@@ -93,8 +100,9 @@ export function standaloneUrlOf(origin) {
 }
 
 /**
- * 启动方式分流（design D4/D7）：桌面形态恒 `embedded`（忽略历史 `window` 配置——
- * MUST NOT 尝试打开独立窗口、MUST NOT 报错）；其余按配置，非法值回落 `embedded`。
+ * 启动方式分流（design D1/D2；前身见 add-cosmos-standalone-window D4/D7）：桌面形态
+ * （非 http(s) 协议）恒 `embedded`——忽略历史 `window` 配置、MUST NOT 尝试打开独立窗口、
+ * MUST NOT 报错；其余（web 形态）按配置，非法值回落 `embedded`。
  * @param {{launchMode?: unknown, protocol?: unknown}} [input]
  * @returns {"embedded"|"window"}
  */

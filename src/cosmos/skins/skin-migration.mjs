@@ -27,7 +27,8 @@
 import {
   TAU, clamp, lerp, easeOutK, mix, hexA, hashSeed, hashRand,
   makeGlowCache, trailStroke, sessColor, mixFade, viewKOf, birthAlphaOf, segAlphaOf,
-  dustBornK, satBornKOf, createVesselGuard, vesselAnchor
+  dustBornK, satBornKOf, createVesselGuard, vesselAnchor,
+  makeDustSprite, dustBatchDraw
 } from '../skin-kit.mjs';
 
 /* ── 肤色（暮色紫橙主调；design D5 词汇映射后的四态 / 五态） ── */
@@ -150,6 +151,7 @@ function ridges(ctx, W, H) {
 /** 创建雁阵暮色皮肤实例（每次调用独立 glow 缓存 + 独立器皿守卫）。 */
 export function createSkinMigration() {
   const glow = makeGlowCache();
+  const dustBrush = makeDustSprite(); // 尘埃 sprite 缓存（每皮肤实例独立，防跨皮肤串色）
   const palette = { prop: PROP, sess: SESS };
   const vesselOnce = createVesselGuard();
 
@@ -340,16 +342,13 @@ export function createSkinMigration() {
       if (it.ws && vesselOnce(it.ws, t)) drawVessel(ctx, it.ws);
 
       if (it.kind === 'dust') {
-        /* 鸟浪 murmuration：活体涌动的小点群（换位 + born 坡道，双色按 hue 分派） */
-        it.pts.forEach(function (p) {
-          const bornK = dustBornK(p, t);
-          const px = p.x + Math.sin(t * 1.3 + p.hue * 21) * 1.6;
-          const py = p.y + Math.cos(t * 1.1 + p.hue * 33) * 1.2;
-          ctx.globalAlpha = clamp(p.a * bornK * 0.5, 0, 1);
-          ctx.fillStyle = DUST[p.hue < 0.5 ? 0 : 1];
-          ctx.fillRect(px - 0.6, py - 0.6, 1.2, 1.2);
+        /* 鸟浪 murmuration：活体涌动的小点群——方点 sprite 批量 + 逐粒换位抖动
+           （posX/posY 母语参数；born 坡道 0.8s 沿用）。 */
+        dustBatchDraw(dustBrush, ctx, it.pts, DUST, t, {
+          shape: 'square', alphaK: 0.5, radiusK: 0, minR: 0.6,
+          posX: function (p, tt) { return p.x + Math.sin(tt * 1.3 + p.hue * 21) * 1.6; },
+          posY: function (p, tt) { return p.y + Math.cos(tt * 1.1 + p.hue * 33) * 1.2; }
         });
-        ctx.globalAlpha = 1;
         return;
       }
 

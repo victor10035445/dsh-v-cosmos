@@ -16,7 +16,7 @@
 import {
   TAU, clamp, lerp, easeOutK, mix, hexA, engraveStar, hashSeed, hashRand,
   makeGlowCache, trailStroke, sessColor, mixFade, viewKOf, birthAlphaOf, segAlphaOf,
-  dustBornK, satBornKOf
+  dustBornK, satBornKOf, makeDustSprite, dustBatchDraw
 } from '../skin-kit.mjs';
 
 const CREATED = '#5b84a8';
@@ -75,6 +75,7 @@ function makePaper() {
 /** 创建费登莎暖矿皮肤实例（纸面 light 模式）。 */
 export function createSkinFidenza() {
   const glow = makeGlowCache();
+  const dustBrush = makeDustSprite(); // 尘埃 sprite 缓存（每皮肤实例独立，防跨皮肤串色）
   const palette = { prop: PROP, sess: SESS };
 
   function wash(ctx, hex, x, y, R, a) { glow.wash(ctx, hex, x, y, R, a); }
@@ -253,15 +254,13 @@ export function createSkinFidenza() {
       const t = view.t;
 
       if (it.kind === 'dust') {
-        it.pts.forEach(function (p) {
-          const bornK = dustBornK(p, t);
-          ctx.globalAlpha = clamp(p.a * bornK * 0.26, 0, 1);
-          ctx.fillStyle = p.hue < 0.5 ? '#b8563e' : '#3f6f74';
-          ctx.beginPath();
-          ctx.arc(p.x, p.y, Math.max(0.7, p.s * 0.42), 0, TAU);
-          ctx.fill();
+        /* 纸面（light 模式）：共享原语 MUST NOT 引入 lighter——不声明合成模式，
+           继承 source-over（与旧逐粒 arc+fill 同合成）；born 坡道 0.8s 沿用。 */
+        dustBatchDraw(dustBrush, ctx, it.pts, ['#b8563e', '#3f6f74'], t, {
+          alphaK: 0.26,
+          radiusK: 0.42,
+          minR: 0.7
         });
-        ctx.globalAlpha = 1;
         return;
       }
 

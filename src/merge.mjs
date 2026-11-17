@@ -12,7 +12,8 @@
  *
  * 天体口径（add-celestial-states spec）：
  *  - 恒星 = 活跃提案 + 星胚（pending 锚点，lifecycle:"proto"）；颜色 = 生命周期四态；
- *    act = 关联会话 busy/waiting/委托忙碌数量（热度通道，不改颜色）；
+ *    act = 关联会话 busy/waiting/委托忙碌数量（热度通道，不改颜色）；星胚 act 由锚点
+ *    探索会话（锚点 sessionId）状态推导，口径与行星 act 同构（keep-embryo-active-while-exploring）；
  *  - 行星 = 有关联条目的会话（state 四态推导：待决策 > 执行中 > 完成未读 > 待机中；
  *    信号源 = statuses（ctx.uiSession.sessionStatus 快照），不可达降级 idle/busy）；
  *  - 卫星 = subagent 会话挂父天体（行星/彗星均可），单层渲染、单父上限 6、深层折叠计数；
@@ -54,6 +55,27 @@ export function planetStateOf(summary, status) {
   if (running) return "busy";
   if (status && status.completionUnread) return "done-unread";
   return "idle";
+}
+
+/**
+ * 星胚锚点会话活跃判定（keep-embryo-active-while-exploring 1.1 / design D2）。
+ *
+ * 行星 act 聚合分支的**逐字复用**（`mergeScene` 行星循环内的
+ * `state === "busy" || state === "waiting" || delegatedBusy`）：同一 `planetStateOf`
+ * 推导、同一统一会话状态快照、同一降级路径（statuses 不可达 → 回落 `summary.running`
+ * 的 idle/busy 两态）。星胚 act 的唯一来源 = 其锚点探索会话，值域恒 {0,1}——
+ * 本函数产出活跃布尔，调用方直接据此落 act。
+ *
+ * @param {object} input
+ * @param {object} [input.summary] 探索会话镜像 summary（SessionSummary）
+ * @param {{running?: boolean, pendingInteraction?: object, completionUnread?: boolean}|undefined} [input.status]
+ *        ctx.uiSession.sessionStatus 快照条目（不可达 → undefined 走降级路径）
+ * @param {boolean} [input.delegatedBusy] 父待机而直属卫星执行中（口径见 `satelliteBagOf`）
+ * @returns {boolean} true = 探索仍在推进（星胚 act ≥ 1）
+ */
+export function embryoActiveOf({ summary, status, delegatedBusy } = {}) {
+  const state = planetStateOf(summary, status);
+  return state === "busy" || state === "waiting" || delegatedBusy === true;
 }
 
 /** 相对时间（age/when 的统一口径；<60s 刚刚 / <60m N分钟前 / <24h N小时前 / N天前）。 */
@@ -193,16 +215,19 @@ function embryoSlugsOf(ws) {
  *    由调用方叠加 wsId 保证）；
  *  - `slugs` 字典序去重（组内展示先后确定，与骨架传入顺序解耦）；
  *  - `at` = 组内**最早**锚点写入时间（有效值全缺失 → null）；
+ *  - `act` = 组内 proto 星 act **最大值**（keep-embryo-active-while-exploring 2.1 / design
+ *    D3–D4）：组按单一 `sessionId` 归并 → 理论恒单值；max 仅防御未来分组口径漂移。
+ *    呈现门控（`actionButtonVisible`）消费该字段，缺省 0 = 沉睡；
  *  - 组间按**首 slug** 字典序（确定性；正式提案优先与其后的星胚组呈层排列）。
  *
  * @param {Array<object>} stars 单工作区 scene 恒星（仅 `lifecycle === "proto"` 参与）
- * @returns {Array<{key: string, sessionId: string|null, slugs: string[], at: number|null}>}
+ * @returns {Array<{key: string, sessionId: string|null, slugs: string[], at: number|null, act: number}>}
  */
 export function embryoGroupsOf(stars) {
   const list = Array.isArray(stars) ? stars : [];
   /* 内层分桶键带命名空间前缀：`sessionId` 与 slug 的取值域不同，但混合命名会让
      极端同名输入（会话 id 恰好等于某 slug）被错误归并——隔离两域，组键对外仍是裸值。 */
-  const buckets = new Map(); // "session\0<id>" | "solo\0<slug>" → { key, sessionId, slugs, at }
+  const buckets = new Map(); // "session\0<id>" | "solo\0<slug>" → { key, sessionId, slugs, at, act }
   for (const star of list) {
     if (!star || star.lifecycle !== "proto") continue;
     const slug = typeof star.id === "string" ? star.id : "";
@@ -211,17 +236,18 @@ export function embryoGroupsOf(stars) {
     const bucketKey = sessionId === null ? "solo\u0000" + slug : "session\u0000" + sessionId;
     let bucket = buckets.get(bucketKey);
     if (!bucket) {
-      bucket = { key: sessionId ?? slug, sessionId, slugs: [], at: null };
+      bucket = { key: sessionId ?? slug, sessionId, slugs: [], at: null, act: 0 };
       buckets.set(bucketKey, bucket);
     }
     if (!bucket.slugs.includes(slug)) bucket.slugs.push(slug);
     const at = Number(star.at) > 0 ? Number(star.at) : null;
     if (at !== null && (bucket.at === null || at < bucket.at)) bucket.at = at;
+    bucket.act = Math.max(bucket.act, Number(star.act) || 0);
   }
   const groups = [];
   for (const bucket of buckets.values()) {
     bucket.slugs.sort(compareText);
-    groups.push({ key: bucket.key, sessionId: bucket.sessionId, slugs: bucket.slugs, at: bucket.at });
+    groups.push({ key: bucket.key, sessionId: bucket.sessionId, slugs: bucket.slugs, at: bucket.at, act: bucket.act });
   }
   /* 组间：首 slug 字典序（首 slug 在同一工作区内唯一 → 无需二次兜底，仍给出确定序）。 */
   groups.sort((a, b) => compareText(a.slugs[0], b.slugs[0]));
@@ -443,6 +469,29 @@ export function mergeScene({ skeleton, sessions, workspaces, statuses = null, no
     };
   };
 
+  /**
+   * 星胚 act 推导（keep-embryo-active-while-exploring 1.2 / design D2）：
+   *  - 锚点无 `sessionId`（旧锚点）→ 0（零迁移：行为与变更前一致）；
+   *  - 会话不在 `renderable`（镜像中消失 / 已归档 / blank / 子代理）→ 0
+   *    （「活跃信息缺失按沉睡处理」，呈现门控 MUST NOT 因缺失隐藏按钮）；
+   *  - 其余走 `embryoActiveOf`：与行星 act 同一状态快照、同一降级路径、同一委托忙碌
+   *    判定；值域恒 {0,1}（锚点组按单一 `sessionId` 归并），不参与行星计数。
+   */
+  const protoActOf = (star) => {
+    const sessionId = typeof star?.sessionId === "string" && star.sessionId ? star.sessionId : "";
+    if (!sessionId) return 0;
+    const entry = renderable.get(sessionId);
+    if (!entry) return 0;
+    const summary = entry.summary;
+    return embryoActiveOf({
+      summary,
+      status: statusOf(sessionId),
+      delegatedBusy: satelliteBagOf(sessionId, summary).delegatedBusy
+    })
+      ? 1
+      : 0;
+  };
+
   const positions = constellationPositions(skeletonWorkspaces.map((ws) => ({ id: ws.id })));
 
   const outWorkspaces = skeletonWorkspaces.map((ws) => {
@@ -517,7 +566,10 @@ export function mergeScene({ skeleton, sessions, workspaces, statuses = null, no
     }
 
     /* 活跃度（3.4 扩展口径）：act = 关联会话 busy/waiting 数量 + 委托忙碌行星
-       （父待机而直属卫星执行中——活确实在推进）；彗星不关联提案、不计 act。 */
+       （父待机而直属卫星执行中——活确实在推进）；彗星不关联提案、不计 act。
+       keep-embryo-active-while-exploring 1.2：星胚 act **唯一来源 = 锚点探索会话推导**
+       （design D2）——下方覆写循环对 `lifecycle === "proto"` 的恒星跳过 actByProposal
+       计数，畸形关联（`associations` 引用 proto slug）不得让星胚 act 膨胀或误隐藏。 */
     const actByProposal = new Map();
     for (const planet of planets) {
       const active = planet.state === "busy" || planet.state === "waiting" || planet.delegatedBusy === true;
@@ -526,7 +578,12 @@ export function mergeScene({ skeleton, sessions, workspaces, statuses = null, no
         actByProposal.set(proposal, (actByProposal.get(proposal) ?? 0) + 1);
       }
     }
-    for (const star of stars) star.act = actByProposal.get(star.id) ?? 0;
+    /* **相位约束**（1.3）：本循环是全部恒星 act 的最终覆写点，位于 `ws.pending` 装配
+       之后——星胚 act MUST 在此处（或其后）落值，不得只改 pending 装配处的 `act: 0`
+       占位，否则 proto act 被本循环清零、变更静默失效。正式星计数逐字不变。 */
+    for (const star of stars) {
+      star.act = star.lifecycle === "proto" ? protoActOf(star) : (actByProposal.get(star.id) ?? 0);
+    }
 
     /* 彗星 = 该工作区其余可渲染自由会话（含回归彗星）；彗星可挂卫星（委托忙碌
        仅附加光环，不计 act——彗星无提案关联）。状态色数据链（add-comet-states-

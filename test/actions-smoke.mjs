@@ -21,6 +21,7 @@ import {
   explorationTargetOf
 } from "../src/actions.mjs";
 import { proposalKeyOf } from "../src/panel.mjs";
+import { actionButtonVisible } from "../src/buttons.mjs";
 
 const card = {
   key: proposalKeyOf("ws1", "add-a"),
@@ -556,6 +557,44 @@ const button = { name: "审查", prompt: "请使用 /cosmos-review 审查本提�
       .run({ button: { ...embryoButton, prompt: "  " }, card: embryoCard })).reason, "no-message", "空 prompt → 拒执行");
   }
 
+  /* 星胚门控矩阵（keep-embryo-active-while-exploring 3.3）：`preState:"proto"` 按钮 ×
+     探索会话四态。会话状态 → 星胚卡 act 的推导在 merge-smoke / panel-smoke 直测；此处
+     断言门控消费面：活跃三态（busy / waiting / 委托忙碌）同映射 act=1 → 谓词隐藏 +
+     复验早退；待机 → act=0 → 呈现且可执行；无会话（旧锚点）→ act=0 照常呈现，点击按
+     目标守卫静默早退（不是门控拦截——活跃信息缺失不隐藏按钮）。 */
+  {
+    for (const [label, act] of [["执行中", 1], ["待决策", 1], ["委托忙碌", 1]]) {
+      assert.equal(actionButtonVisible(embryoButton, { ...embryoCard, act }), false, label + "（act=1）→ 按钮不渲染");
+      const calls = [];
+      const outcome = await runEmbryo({
+        pending: createPendingActionStore(),
+        openSession: () => calls.push("open"),
+        notify: (text) => calls.push(text),
+        now: () => 80_000
+      }).run({ button: embryoButton, card: { ...embryoCard, act } });
+      assert.equal(outcome.reason, "gate", label + " → 点击复验早退");
+      assert.deepEqual(calls, [], label + " → 复验早退零组装零导航零 toast");
+    }
+    assert.equal(actionButtonVisible(embryoButton, { ...embryoCard, act: 0 }), true, "待机（act=0）→ 按钮渲染");
+    const idleRun = await runEmbryo({
+      pending: createPendingActionStore(),
+      closePage: () => {},
+      now: () => 82_000
+    }).run({ button: embryoButton, card: { ...embryoCard, act: 0 } });
+    assert.equal(idleRun.ok, true, "待机（act=0）→ 正常执行（门控放行）");
+    const noSessionCard = { ...embryoCard, sessionId: undefined, act: 0 };
+    assert.equal(actionButtonVisible(embryoButton, noSessionCard), true, "无 sessionId 旧锚点 → 照常渲染（缺失不隐藏）");
+    const noSessionCalls = [];
+    const noSession = await runEmbryo({
+      pending: createPendingActionStore(),
+      openSession: () => noSessionCalls.push("open"),
+      notify: (text) => noSessionCalls.push(text),
+      now: () => 83_000
+    }).run({ button: embryoButton, card: noSessionCard });
+    assert.equal(noSession.reason, "no-session", "无 sessionId → 目标守卫早退（与门控谓词不同层）");
+    assert.deepEqual(noSessionCalls, [], "无 sessionId → 静默（不导航不 toast）");
+  }
+
   /* 共享防重入门：与提案动作同门（冷却窗内 busy）。 */
   {
     const gate = createActionGate({ now: () => 95_000 });
@@ -736,6 +775,128 @@ const button = { name: "审查", prompt: "请使用 /cosmos-review 审查本提�
     const run = await executor.run({ button, card: noIdCard });
     assert.equal(run.ok, true);
     assert.equal(bound, 0, "缺目标提案名不绑定（端点面禁止空清单）");
+  }
+}
+
+/* ── 4e. 独立窗口服务端送达通道（add-cosmos-standalone-jump-feedback D1） ──
+   开关开启：主路径跳过「create + 标记 + openSession」改走 startSession 服务端落稿；
+   恒新建退化为复用 blank 语义、绑定/模型切换不执行、autoSend 不登记标记不提交；
+   跳转尾巴仍按 jumpNewSession 分流（内嵌 / 独立窗口由注入方实现）。 */
+{
+  /* 跳转（缺省）：startSession → closePage（context.autoSend=false）；零 create/open/绑定/标记 */
+  {
+    const store = createPendingActionStore();
+    const calls = [];
+    let bound = 0;
+    const executor = createActionExecutor({
+      pending: store,
+      standaloneServerChannel: true,
+      createSession: async () => {
+        calls.push("create");
+        return "never";
+      },
+      openSession: () => calls.push("open"),
+      startSession: async (wsId, message, cardArg) => calls.push({ kind: "start", wsId, message, dir: cardArg?.dir }),
+      bindSession: () => {
+        bound += 1;
+        return Promise.resolve({ ok: true });
+      },
+      closePage: (context) => calls.push({ kind: "closed", context }),
+      keepPage: () => calls.push("kept"),
+      now: () => 900_000
+    });
+    const result = await executor.run({ button, card });
+    assert.equal(result.ok, true);
+    assert.equal(result.standalone, true, "结果注明独立窗口通道");
+    assert.equal(result.serverDraft, true, "落稿由 startSession 服务端承担");
+    assert.equal(result.sessionId, "", "服务端通道无新会话 id");
+    assert.equal(result.bindSkipped, true, "显式关联绑定跳过（无新会话 id）");
+    assert.equal(result.autoSendSkipped, false, "未勾选自动发送 → 无需注明跳过");
+    assert.equal(result.modelSkipped, false, "未绑定模型 → 无需注明跳过");
+    assert.deepEqual(calls.map((call) => (typeof call === "string" ? call : call.kind)), ["start", "closed"], "startSession → 关页（跳转分流保持）");
+    assert.equal(calls[0].wsId, "ws1", "startSession 收到工作区 id（注入方解析权威 workspaceId）");
+    assert.equal(calls[0].message, result.message, "startSession 收到组装消息");
+    assert.equal(calls[0].dir, card.dir, "startSession 收到卡片");
+    assert.deepEqual(calls[1].context, { autoSend: false }, "closePage 携带 autoSend 语义（注入方据此附加反馈）");
+    assert.equal(bound, 0, "关联绑定跳过");
+    assert.equal(store.peek(), null, "不登记标记（跳转尾巴仅反馈，无消费相位）");
+  }
+
+  /* autoSend + 绑定模型：不自动提交、不登记标记、模型切换不执行；closePage context 如实 */
+  {
+    const store = createPendingActionStore();
+    const calls = [];
+    const executor = createActionExecutor({
+      pending: store,
+      standaloneServerChannel: true,
+      startSession: async () => calls.push("start"),
+      closePage: (context) => calls.push({ kind: "closed", context }),
+      now: () => 910_000
+    });
+    const result = await executor.run({
+      button: { ...button, autoSend: true, model: { provider: "p", model: "m" } },
+      card
+    });
+    assert.equal(result.ok, true);
+    assert.equal(result.autoSendSkipped, true, "autoSend 未执行（服务端无提交通道）");
+    assert.equal(result.modelSkipped, true, "模型切换未执行（依赖窗口内输入区）");
+    assert.equal(store.peek(), null, "autoSend 同样不登记标记（每窗口内存 store 跨窗口不可达）");
+    assert.deepEqual(calls.map((call) => (typeof call === "string" ? call : call.kind)), ["start", "closed"], "startSession → 关页");
+    assert.deepEqual(calls[1].context, { autoSend: true }, "closePage 如实收到 autoSend=true（反馈附加未自动发送说明）");
+  }
+
+  /* jumpNewSession=false：keepPage（既有跳转分流语义不减） */
+  {
+    const calls = [];
+    const executor = createActionExecutor({
+      pending: createPendingActionStore(),
+      standaloneServerChannel: true,
+      startSession: async () => calls.push("start"),
+      closePage: () => calls.push("closed"),
+      keepPage: () => calls.push("kept"),
+      now: () => 920_000
+    });
+    const result = await executor.run({ button: { ...button, jumpNewSession: false }, card });
+    assert.equal(result.ok, true);
+    assert.deepEqual(calls, ["start", "kept"], "jumpNewSession=false → 保持整页");
+  }
+
+  /* 开关缺省关闭：既有主路径逐字不变（create → open → close，零 startSession） */
+  {
+    const calls = [];
+    const executor = createActionExecutor({
+      pending: createPendingActionStore(),
+      createSession: async () => "sess-default",
+      openSession: (sessionId) => calls.push({ kind: "open", sessionId }),
+      startSession: () => calls.push("start"),
+      closePage: () => calls.push("closed"),
+      now: () => 930_000
+    });
+    const result = await executor.run({ button, card });
+    assert.equal(result.ok, true);
+    assert.equal(result.standalone, undefined, "缺省关闭 → 无通道标记（行为逐字不变）");
+    assert.deepEqual(calls.map((call) => (typeof call === "string" ? call : call.kind)), ["open", "closed"], "create → open → close（零 startSession）");
+  }
+
+  /* startSession 失败 → start-failed（不关页、不登记标记） */
+  {
+    const calls = [];
+    const executor = createActionExecutor({
+      pending: createPendingActionStore(),
+      standaloneServerChannel: true,
+      startSession: async () => {
+        throw new Error("host refused");
+      },
+      closePage: () => calls.push("closed"),
+      notify: (text, isError) => calls.push({ kind: "notify", text, isError }),
+      now: () => 940_000
+    });
+    const result = await executor.run({ button, card });
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, "start-failed");
+    assert.equal(result.standalone, true, "失败结果同样注明通道口径");
+    assert.deepEqual(calls.map((call) => (typeof call === "string" ? call : call.kind)), ["notify"], "失败 toast、零关页");
+    assert.ok(String(calls[0].text).includes("创建会话失败"), "失败文案");
   }
 }
 

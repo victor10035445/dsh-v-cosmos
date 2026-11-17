@@ -35,7 +35,8 @@
 import {
   TAU, clamp, lerp, easeOutK, mix, hexA, hashSeed, hashRand,
   makeGlowCache, trailStroke, sessColor, mixFade, viewKOf, birthAlphaOf,
-  segAlphaOf, dustBornK, satBornKOf, createVesselGuard, vesselAnchor
+  segAlphaOf, dustBornK, satBornKOf, createVesselGuard, vesselAnchor,
+  makeDustSprite, dustBatchDraw
 } from '../skin-kit.mjs';
 
 /* 谱金（demo `complete`）——本皮肤唯一的高光色：总谱的暖黑谱金主调。 */
@@ -67,6 +68,7 @@ const DUST = Object.freeze(['#4a4436', '#6a5a3e']);
 /** 创建总谱延音皮肤实例（每次调用独立 glow 缓存与器皿守卫）。 */
 export function createSkinFermata() {
   const glow = makeGlowCache();
+  const dustBrush = makeDustSprite(); // 尘埃 sprite 缓存（每皮肤实例独立，防跨皮肤串色）
   const palette = { prop: PROP, sess: SESS };
   const vesselOnce = createVesselGuard();
 
@@ -331,23 +333,24 @@ export function createSkinFermata() {
       if (it.ws && vesselOnce(it.ws, t)) staffVessel(ctx, it.ws);
 
       if (it.kind === 'dust') {
-        /* 踏板雾：暖尘粒（born 坡道参与；双色按 hue 分流） */
-        it.pts.forEach(function (p) {
+        /* 踏板雾：暖尘粒（共享低开销原语；α 同时乘星座 α——旧分支双乘口径保留）
+           + 踏板泛音（母语装饰层：少数亮点浮在雾上，留在原语之外）。 */
+        const alphaK = 0.34 * it.alpha;
+        dustBatchDraw(dustBrush, ctx, it.pts, DUST, t, { alphaK: alphaK, radiusK: 0.55, minR: 0.7 });
+        const pts = it.pts;
+        const extraK = 0.26 * it.alpha;
+        for (let i = 0; i < pts.length; i++) {
+          const p = pts[i];
+          if (!(p.hue > 0.65)) continue;
           const bornK = dustBornK(p, t);
-          ctx.globalAlpha = clamp(p.a * bornK * it.alpha * 0.34, 0, 1);
-          ctx.fillStyle = DUST[p.hue < 0.5 ? 0 : 1];
+          const a = clamp(p.a * bornK * extraK, 0, 1);
+          if (!(a > 0)) continue;
+          ctx.globalAlpha = a;
+          ctx.fillStyle = STAFF;
           ctx.beginPath();
-          ctx.arc(p.x, p.y, Math.max(0.7, p.s * 0.55), 0, TAU);
+          ctx.arc(p.x, p.y, 0.8, 0, TAU);
           ctx.fill();
-          /* 踏板泛音：少数亮点浮在雾上 */
-          if (p.hue > 0.65) {
-            ctx.globalAlpha = clamp(p.a * bornK * it.alpha * 0.26, 0, 1);
-            ctx.fillStyle = STAFF;
-            ctx.beginPath();
-            ctx.arc(p.x, p.y, 0.8, 0, TAU);
-            ctx.fill();
-          }
-        });
+        }
         ctx.globalAlpha = 1;
         return;
       }

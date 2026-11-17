@@ -31,7 +31,8 @@
 import {
   TAU, clamp, lerp, easeOutK, mix, hexA, hashSeed, hashRand,
   makeGlowCache, trailStroke, sessColor, mixFade, viewKOf, birthAlphaOf, segAlphaOf,
-  dustBornK, satBornKOf, createVesselGuard, vesselAnchor
+  dustBornK, satBornKOf, createVesselGuard, vesselAnchor,
+  makeDustSprite, dustBatchDraw
 } from '../skin-kit.mjs';
 
 /* 荷塘色谱（demo 血统）：水色冷青 = 已创建冷亮域（demo draft 的藕荷粉属暖域，按「皮肤语义
@@ -78,6 +79,7 @@ function petalPath(ctx, cx, cy, len, wid) {
 /** 创建荷塘月色皮肤实例。 */
 export function createSkinLotus() {
   const glow = makeGlowCache();
+  const dustBrush = makeDustSprite(); // 尘埃 sprite 缓存（每皮肤实例独立，防跨皮肤串色）
   const palette = { prop: PROP, sess: SESS };
   const vesselOnce = createVesselGuard();
 
@@ -504,27 +506,16 @@ export function createSkinLotus() {
       if (it.ws && vesselOnce(it.ws, t)) drawVessel(ctx, it.ws);
 
       if (it.kind === 'dust') {
-        /* 落英 / 浮萍藻荇（尘埃 born 坡道 0.8s 渐入） */
-        it.pts.forEach(function (p) {
-          const bornK = dustBornK(p, t);
-          if (p.hue < 0.5) {
-            ctx.save();
-            ctx.globalAlpha = clamp(p.a * bornK * 0.55, 0, 1);
-            ctx.translate(p.x, p.y);
-            ctx.rotate(hashRand(p.x * 3.7 + p.y) * TAU);
-            petalPath(ctx, 0, 0, 2.2, 1.1);
-            ctx.fillStyle = DUST[0];
-            ctx.fill();
-            ctx.restore();
-          } else {
-            ctx.globalAlpha = clamp(p.a * bornK * 0.3, 0, 1);
-            ctx.fillStyle = DUST[1];
-            ctx.beginPath();
-            ctx.arc(p.x, p.y, Math.max(1.1, p.s * 0.7), 0, TAU);
-            ctx.fill();
-          }
+        /* 落英 / 浮萍藻荇：两个母语形状各自批量——荷瓣走 petal sprite（8 旋转档，
+           替代逐粒 rotate+petalPath），浮萍走 dot sprite；born 坡道 0.8s 沿用。 */
+        dustBatchDraw(dustBrush, ctx, it.pts, [DUST[0]], t, {
+          shape: 'petal', alphaK: 0.55, radiusK: 0, minR: 2.93,
+          select: function (p) { return p.hue < 0.5; }
         });
-        ctx.globalAlpha = 1;
+        dustBatchDraw(dustBrush, ctx, it.pts, [DUST[1]], t, {
+          shape: 'dot', alphaK: 0.3, radiusK: 0.7, minR: 1.1,
+          select: function (p) { return p.hue >= 0.5; }
+        });
         return;
       }
 

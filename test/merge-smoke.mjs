@@ -215,8 +215,131 @@ assert.equal(protoScene.workspaces[1].stars[0].lifecycle, "proto");
 assert.equal(protoScene.workspaces[1].stars[0].sessionId, null, "缺 sessionId → null（读取方容错）");
 assert.equal(protoWs.stars.find((s) => s.id === "explore-old").sessionId, null, "旧锚点（无该字段）→ null");
 
+/* ── 星胚 act 推导（keep-embryo-active-while-exploring 3.1）：锚点探索会话活跃度
+      直连判定——与行星 act 同口径（busy ∨ waiting ∨ 委托忙碌）、同快照、同降级路径；
+      值域 {0,1}，不参与行星计数。 ── */
+function protoActScene({
+  statuses = null,
+  summary = { displayTitle: "explore", updatedAt: NOW },
+  archived = [],
+  assignee = "ws1",
+  anchor = { name: "embryo-a", by: "cosmos-explore", at: NOW - 5 * MIN, sessionId: "sess-explore" },
+  extraSessions = null,
+  extraStars = [],
+  associations = []
+} = {}) {
+  const sessions = {
+    ids: ["sess-explore", ...(extraSessions?.ids ?? [])],
+    byId: { "sess-explore": summary, ...(extraSessions?.byId ?? {}) }
+  };
+  return mergeScene({
+    skeleton: {
+      workspaces: [{
+        id: "ws1",
+        name: "ws-one",
+        path: "C:/ws",
+        stars: [{ id: "real", name: "real", lifecycle: "created", tasks: [0, 1] }, ...extraStars],
+        pending: anchor ? [anchor] : [],
+        archives: 0,
+        links: [],
+        associations
+      }]
+    },
+    sessions,
+    workspaces: { items: [{ workspaceId: assignee, sessionIds: sessions.ids }], archivedSessionIds: archived },
+    statuses,
+    now: NOW
+  });
+}
+const protoActOfScene = (scene, id = "embryo-a") => scene.workspaces[0].stars.find((star) => star.id === id)?.act;
+
+{
+  /* 活跃三态 → act=1（与行星 act 聚合分支同构） */
+  const busy = protoActScene({ statuses: new Map([["sess-explore", { running: true }]]) });
+  assert.equal(protoActOfScene(busy), 1, "探索会话执行中（busy）→ 星胚 act=1");
+  const waiting = protoActScene({
+    statuses: new Map([["sess-explore", { running: false, pendingInteraction: { kind: "approval" } }]])
+  });
+  assert.equal(protoActOfScene(waiting), 1, "探索会话待决策（waiting）→ 星胚 act=1（与行星口径一致）");
+  const delegated = protoActScene({
+    statuses: new Map([["sess-explore", { running: false }]]),
+    extraSessions: {
+      ids: ["sess-child"],
+      byId: { "sess-child": { origin: "subagent", parentSessionId: "sess-explore", running: true, updatedAt: NOW } }
+    }
+  });
+  assert.equal(protoActOfScene(delegated), 1, "父待机而直属子代理执行中（委托忙碌）→ 星胚 act=1");
+
+  /* 沉睡两态 → act=0 */
+  const idle = protoActScene({ statuses: new Map([["sess-explore", { running: false }]]) });
+  assert.equal(protoActOfScene(idle), 0, "探索会话待机（idle）→ 星胚 act=0（门控恢复点亮）");
+  const doneUnread = protoActScene({ statuses: new Map([["sess-explore", { running: false, completionUnread: true }]]) });
+  assert.equal(protoActOfScene(doneUnread), 0, "探索会话完成未读（done-unread）→ 星胚 act=0");
+
+  /* 活跃信息缺失 → act=0（呈现门控 MUST NOT 因缺失隐藏按钮） */
+  assert.equal(
+    protoActOfScene(protoActScene({ anchor: { name: "embryo-a", by: "x", at: NOW } })),
+    0,
+    "无 sessionId 旧锚点 → act=0"
+  );
+  assert.equal(
+    protoActOfScene(protoActScene({ anchor: { name: "embryo-a", by: "x", at: NOW, sessionId: "sess-ghost" } })),
+    0,
+    "探索会话在镜像中消失 → act=0"
+  );
+  assert.equal(
+    protoActOfScene(protoActScene({ statuses: new Map([["sess-explore", { running: true }]]), archived: ["sess-explore"] })),
+    0,
+    "探索会话已归档 → act=0（不在 renderable）"
+  );
+  assert.equal(
+    protoActOfScene(protoActScene({
+      summary: { blank: true, updatedAt: NOW },
+      statuses: new Map([["sess-explore", { running: true }]])
+    })),
+    0,
+    "探索会话为 blank → act=0"
+  );
+
+  /* statuses 不可达 → 回落 summary.running（降级 idle/busy 两态） */
+  assert.equal(
+    protoActOfScene(protoActScene({ summary: { displayTitle: "e", running: true, updatedAt: NOW } })),
+    1,
+    "statuses 不可达：summary.running → act=1（同一降级路径）"
+  );
+  assert.equal(protoActOfScene(protoActScene()), 0, "statuses 不可达且未运行 → act=0");
+
+  /* 锚点会话跨工作区可达（renderable 全局表） */
+  assert.equal(
+    protoActOfScene(protoActScene({
+      assignee: "ws2",
+      statuses: new Map([["sess-explore", { running: true }]])
+    })),
+    1,
+    "锚点 sessionId 指向其他工作区的会话 → 照常推导（跨工作区可达）"
+  );
+
+  /* 畸形关联（associations 引用 proto slug）：proto act 仍按锚点推导，MUST NOT 被行星计数膨胀 */
+  const malformed = protoActScene({
+    statuses: new Map([["sess-explore", { running: false }]]),
+    extraSessions: {
+      ids: ["sess-busy"],
+      byId: { "sess-busy": { displayTitle: "busy", running: true, updatedAt: NOW } }
+    },
+    associations: [
+      { proposal: "embryo-a", sessionId: "sess-busy", origin: "heuristic" },
+      { proposal: "real", sessionId: "sess-busy", origin: "heuristic" }
+    ]
+  });
+  assert.equal(protoActOfScene(malformed), 0, "畸形关联引用 proto slug → 星胚 act 仍按锚点推导（跳过行星计数）");
+  assert.equal(protoActOfScene(malformed, "real"), 1, "正式星 act 聚合逐字不变（确实被忙碌会话点亮）");
+
+  /* 差分：act 翻转 → 属性级 patch（星胚呼吸动画不重建） */
+  assert.equal(sceneDiffLevel(busy, idle), "patch", "星胚 act 1 → 0 → patch（starPropertySignature 已含 act）");
+}
+
 /* ── 星胚归并分组（add-cosmos-embryo-cards 2.2/2.3）：同会话归并 / 旧锚点自组 /
-      组间首 slug 字典序 / slugs 字典序 / at 取最早 ── */
+      组间首 slug 字典序 / slugs 字典序 / at 取最早 / act 取组内最大值 ── */
 {
   const stars = [
     { id: "add-zeta", lifecycle: "proto", sessionId: "sess-A", at: 300 },
@@ -228,19 +351,30 @@ assert.equal(protoWs.stars.find((s) => s.id === "explore-old").sessionId, null, 
   ];
   const grouped = embryoGroupsOf(stars);
   assert.deepEqual(grouped, [
-    { key: "sess-A", sessionId: "sess-A", slugs: ["add-alpha", "add-beta", "add-zeta"], at: 100 },
-    { key: "sess-B", sessionId: "sess-B", slugs: ["add-null-at"], at: null },
-    { key: "add-solo", sessionId: null, slugs: ["add-solo"], at: 200 }
-  ], "同会话归并（slugs 字典序 + at 取最早）/ 缺失 sessionId 自组 / 组间按首 slug 字典序 / at 全缺 → null");
+    { key: "sess-A", sessionId: "sess-A", slugs: ["add-alpha", "add-beta", "add-zeta"], at: 100, act: 0 },
+    { key: "sess-B", sessionId: "sess-B", slugs: ["add-null-at"], at: null, act: 0 },
+    { key: "add-solo", sessionId: null, slugs: ["add-solo"], at: 200, act: 0 }
+  ], "同会话归并（slugs 字典序 + at 取最早）/ 缺失 sessionId 自组 / 组间按首 slug 字典序 / at 全缺 → null / 无 act → 沉睡 0");
   assert.deepEqual(embryoGroupsOf([...stars].reverse()), grouped, "归并分组与输入顺序解耦（确定性）");
   assert.deepEqual(embryoGroupsOf(null), [], "非数组 → 空组");
   assert.deepEqual(embryoGroupsOf([{ id: "", lifecycle: "proto" }]), [], "空 id → 跳过");
   /* 重复 slug 去重（防御：骨架层不会重复） */
   assert.deepEqual(
     embryoGroupsOf([{ id: "dup", lifecycle: "proto", sessionId: "s" }, { id: "dup", lifecycle: "proto", sessionId: "s" }]),
-    [{ key: "s", sessionId: "s", slugs: ["dup"], at: null }],
+    [{ key: "s", sessionId: "s", slugs: ["dup"], at: null, act: 0 }],
     "同组同 slug 去重"
   );
+  /* 组 act 聚合（keep-embryo-active-while-exploring 2.1/3.2）：组内 proto 星 act 最大值——
+     单一 sessionId 归并 → 理论恒单值；max 仅防御未来分组口径漂移。 */
+  const actGroups = embryoGroupsOf([
+    { id: "g-a", lifecycle: "proto", sessionId: "sess-G", act: 1 },
+    { id: "g-b", lifecycle: "proto", sessionId: "sess-G", act: 0 },
+    { id: "g-solo", lifecycle: "proto", act: 3 },
+    { id: "g-idle", lifecycle: "proto", sessionId: "sess-H", act: 0 }
+  ]);
+  assert.equal(actGroups.find((group) => group.key === "sess-G").act, 1, "同组任一锚点活跃 → 组 act=1（取最大值）");
+  assert.equal(actGroups.find((group) => group.key === "sess-H").act, 0, "组内全沉睡 → 组 act=0");
+  assert.equal(actGroups.find((group) => group.key === "g-solo").act, 3, "无 sessionId 的自组按组内最大值透传（值域防御）");
 }
 
 /* 星胚 sessionId 纳入恒星属性签名（design D10）：重分组（锚点集合不变）→ patch，

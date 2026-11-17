@@ -8,14 +8,15 @@
  * 口径（spec）：
  *  - 数据源 = 既有场景骨架（恒星 + 工作区 path），零新增宿主接口；
  *  - 银河态 = 全部在册工作区的活跃提案，按工作区分组（组标题 = 星座名），组内按名称
- *    **字典序**（码点序，确定性，与骨架传入顺序解耦）；**无活跃提案的工作区不生成分组**
- *    （自动隐藏，不占位）；
+ *    **字典序**（码点序，确定性，与骨架传入顺序解耦）；**无活跃提案且无星胚锚点的工作区
+ *    不生成分组**（自动隐藏，不占位）；
  *  - 钻取态 = 仅当前星座（分组标题保留；无提案时仍渲染空态）；
  *  - 待创建星胚（`lifecycle === "proto"`，即 pending 锚点）**以星胚合并卡片进入列表**：
  *    同工作区内按锚点 `sessionId` 归并为一张卡（缺失 `sessionId` 的旧锚点各自成卡），
  *    排于该组全部正式提案之后（组间按首 slug 字典序，MUST NOT 与正式提案字典序混排）；
- *    **星胚不触发分组**——银河态分组条件仍 = 存在活跃提案（仅星胚的工作区不生成分组、
- *    不渲染空壳面板），钻取态照常呈现；星胚卡不携带 `dir`（动作链路按无目标守卫降级）；
+ *    **星胚锚点同样触发分组**（add-cosmos-galaxy-embryo-cards D1：银河态分组条件 =
+ *    活跃提案 ∨ 星胚锚点——仅星胚的工作区照常生成分组、组内仅星胚合并卡片）；星胚卡
+ *    不携带 `dir`（动作链路按无目标守卫降级）；
  *  - 搜索过滤 = 分组跟随命中集合（未命中工作区的分组隐藏；命中域 = 工作区名 ∪ 星胚
  *    slug，见 merge.mjs `matchWorkspaces`）；`allCards` 不受过滤影响（正式提案 + 星胚卡），
  *    供「选中目标仍在骨架」判定与 @路径查表使用（选中分组被过滤隐藏时选中保留）；
@@ -25,9 +26,25 @@
  * 同文件另有**会话列表面板投影**（add-cosmos-session-list-panel）：`projectSessionPanel`
  * 消费同一份 mergeScene 产物（行星 ∪ 彗星 = 活跃会话），提供银河/钻取作用域分组、
  * 四态行数据、待决策计数与卫星徽标数据——同样零 DOM、冒烟直测。
+ *
+ * 进度数字对（p1-add-cosmos-card-progress-bars 1.3 / design D3 派生口径）：
+ *  - 会话行 `progress` = 行 `todos` 徽标字符串的**防御解析**（`"done/total"` →
+ *    `{done, total}`；`"—"`、格式外串、越界值一律 null）。格式由 merge 层
+ *    `todoBadgeOf` 单点构造，本层只兜底（解析失败 = 隐藏进度条，MUST NOT 抛错）；
+ *  - 提案卡 `progress` = 正式提案 `tasks` 数字对**直取**（`tasks[1] > 0` 才给值）；
+ *    星胚合并卡恒 null（星胚无任务进度行纪律，spec cosmos-proposal-panel）；
+ *  - 投影层只产出真实数字对，**上限退化语义不在本层**（呈现层按 `min(total, 12)` 分格、
+ *    `total > 12` 时段间归零退化为连续条）。
+ *
+ * 另含**跨面板悬停关联派生**（p2-add-cosmos-cross-hover-markers 2.1/2.2）：
+ * `crossHoverTargets` 由合流悬停描述 + 单星座 merge 产物派生受体集
+ * （`{sessionIds, proposalIds}`，联星全量 / 星胚并集 / 彗星空集 / 画布源自含语义）；
+ * `rowIsLinkedOf` / `cardIsLinkedOf` 为受体判定（星胚合并卡按任一 slug 命中整卡）；
+ * `hoverSourceAlive` 供场景刷新残留清理守卫（源实体键仍在册判定）——全部零 DOM、
+ * 零网络、冒烟直测。
  */
 
-import { embryoGroupsOf } from "./merge.mjs";
+import { embryoGroupsOf, starPlanetIdsOf } from "./merge.mjs";
 
 /** 可列出的**正式提案**生命周期（proto 星胚走独立合并卡片路径，见 `embryoKeyOf`）。 */
 const LISTABLE_LIFECYCLE = new Set(["created", "reviewed", "executed"]);
@@ -105,8 +122,10 @@ export function projectPanel(scene, options = {}) {
   const groups = [];
   let drillName = "";
   let drillExists = false;
-  /* 计数口径（add-cosmos-embryo-cards 3.1）：`total` = **正式提案数**（面板可见性 /
-     组头计数沿用既定口径，星胚不参与「是否有活跃提案」判定）；`embryoTotal` 纯观察面。 */
+  /* 计数口径（add-cosmos-embryo-cards 3.1 / add-cosmos-galaxy-embryo-cards 1.2）：
+     `total` = **正式提案数**（头部徽标主口径、`hasProposals` 判据——星胚不计入）；
+     `embryoTotal` = 星胚合并卡片总数，并升级为**银河态可见性输入**之一（存在星胚锚点
+     即须渲染面板）。 */
   let total = 0;
   let embryoTotal = 0;
 
@@ -126,6 +145,10 @@ export function projectPanel(scene, options = {}) {
       if (star?.lifecycle === "proto") continue; // 星胚走下方合并卡片路径
       const id = typeof star?.id === "string" && star.id ? star.id : "";
       if (!id) continue;
+      /* tasks 数字对（`.state.json` 的完成/总数）→ 卡片进度数据（1.2）：投影层只给真实
+         数字对，`y = 0`（无 tasks 文件 / 空清单）→ progress null——与 `x/y` 文本徽标的
+         可见性门控（`tasks[1] > 0`）同口径，UI 侧零二次推导。 */
+      const tasks = [Number(star?.tasks?.[0]) || 0, Number(star?.tasks?.[1]) || 0];
       const card = {
         key: proposalKeyOf(wsId, id),
         id,
@@ -136,9 +159,12 @@ export function projectPanel(scene, options = {}) {
         lifecycle: LISTABLE_LIFECYCLE.has(star?.lifecycle) ? star.lifecycle : "created",
         setBy: typeof star?.setBy === "string" && star.setBy ? star.setBy : null,
         at: Number(star?.at) > 0 ? Number(star.at) : null,
-        tasks: [Number(star?.tasks?.[0]) || 0, Number(star?.tasks?.[1]) || 0],
+        tasks,
+        progress: tasks[1] > 0 ? { done: tasks[0], total: tasks[1] } : null,
         /* 沉睡判据（add-cosmos-action-prestate-gate 2.1）：scene 星体已聚合 act
-           （busy ∨ waiting ∨ 委托忙碌计数），投影纯加法透传；星胚无关联会话恒 0。 */
+           （busy ∨ waiting ∨ 委托忙碌计数），投影纯加法透传。星胚的 act 口径不同
+           （keep-embryo-active-while-exploring 2.2：由锚点探索会话状态推导，见下方星胚
+           卡），本条只服务正式提案卡。 */
         act: Number(star?.act) || 0,
         dir: proposalDirOf(wsPath, id)
       };
@@ -170,7 +196,14 @@ export function projectPanel(scene, options = {}) {
         setBy: null,
         at: group.at,
         tasks: [0, 0],
-        act: 0
+        /* 星胚合并卡 progress 恒 null（1.2）：spec 已锁星胚卡 MUST 无任务进度行（含进度条），
+           组件侧按 null 自然跳过——此处显式落值，杜绝「星胚也被分母为 0 的进度条命中」。 */
+        progress: null,
+        /* act 透传（keep-embryo-active-while-exploring 2.2 / design D4）：组内 proto 星
+           act 最大值（= 锚点探索会话是否活跃，值域 {0,1}），缺省 0 保持沉睡语义。
+           动作条门控（`actionButtonVisible`）直接消费本字段：探索会话进行中
+           （busy ∨ waiting ∨ 委托忙碌）→ act=1 → `preState:"proto"` 按钮不渲染。 */
+        act: Number(group.act) || 0
         /* MUST NOT 携带 `dir`：星胚无提案目录，动作链路按「目标目录缺失」守卫
            拒绝执行（add-cosmos-action-prestate-gate 承接正式星胚动作）。 */
       };
@@ -179,11 +212,14 @@ export function projectPanel(scene, options = {}) {
       embryoTotal++;
     }
     if (drillWsId !== null && wsId !== drillWsId) continue;
-    /* 银河态：**无活跃提案的工作区不生成分组**（自动隐藏，避免空标题占位）；星胚
-       MUST NOT 触发分组——仅星胚的工作区在银河态不生成分组、卡片不呈现（探索残留
-       不占空分组位、不渲染零分组空壳面板）；钻取态例外——当前星座无提案时仍渲染该
-       分组（含星胚卡片 / 「该星座暂无提案」空态），两种口径可区分。 */
-    if (drillWsId === null && formalCount === 0) continue;
+    /* 银河态：**无活跃提案且无星胚锚点的工作区不生成分组**（自动隐藏，避免空标题
+       占位）；分组条件 = 活跃提案 ∨ 星胚锚点（add-cosmos-galaxy-embryo-cards D1：仅星胚
+       的工作区照常生成分组、组内仅星胚合并卡片）。星胚计数复用上面**已装配的卡片数**
+       （`cards.length - formalCount`），MUST NOT 二次调用 `embryoGroupsOf`；无 slug 的
+       畸形锚点不产卡 → 与「无锚点」同口径维持隐藏。钻取态例外——当前星座既无提案也无
+       锚点时仍渲染该分组（「该星座暂无提案」空态），两种口径可区分。 */
+    const embryoCount = cards.length - formalCount;
+    if (drillWsId === null && formalCount === 0 && embryoCount === 0) continue;
     const matched = matchedIds === null || matchedIds.has(wsId);
     groups.push({ wsId, wsName, wsPath, cards, matched });
   }
@@ -193,9 +229,10 @@ export function projectPanel(scene, options = {}) {
   /* 搜索过滤：未命中分组隐藏（数据保留，UI 依 matched 显隐；钻取态同理）。 */
   const visibleGroups = matchedIds === null ? groups : groups.filter((group) => group.matched);
 
-  /* 面板可见性：钻取且当前星座仍在册 → 渲染（允许空态）；否则要求存在**活跃提案**
-     （仅存星胚锚点的工作区 → 零布局，星胚不参与可见性判定）。 */
-  const visible = drillWsId !== null ? drillExists : total > 0;
+  /* 面板可见性：钻取且当前星座仍在册 → 渲染（允许空态）；银河态要求存在**活跃提案 ∨
+     星胚锚点**（add-cosmos-galaxy-embryo-cards 1.2：全星胚场景照常渲染，MUST NOT 零布局；
+     两者皆无 → 零布局）。`hasProposals` 保持「存在活跃提案」原语义。 */
+  const visible = drillWsId !== null ? drillExists : total > 0 || embryoTotal > 0;
 
   return {
     allCards,
@@ -312,8 +349,29 @@ export function sessionRowStateOf(state, delegatedBusy) {
 }
 
 /**
+ * todos 徽标字符串 → 进度数字对（`"done/total"` → `{done, total}`；其余 → null）。
+ *
+ * 格式由 merge 层 `todoBadgeOf` 单点构造（`done + "/" + total` 或 `"—"`，无第三形态），
+ * 本函数只做**防御解析**（design D3）：`"—"`、格式外串、越界值（`done > total`、
+ * `total ≤ 0`、超出安全整数）一律 null——呈现层据此隐藏进度条，MUST NOT 抛错。
+ * 上限退化（`total > 12` 时段间归零连续条）属呈现层规则，投影层恒给真实数字对。
+ * @param {unknown} text 行 `todos` 徽标字符串
+ * @returns {{done: number, total: number}|null}
+ */
+function progressOfTodos(text) {
+  if (typeof text !== "string") return null;
+  const match = /^(\d+)\/(\d+)$/.exec(text);
+  if (!match) return null;
+  const done = Number(match[1]);
+  const total = Number(match[2]);
+  if (!Number.isSafeInteger(done) || !Number.isSafeInteger(total)) return null;
+  if (total <= 0 || done > total) return null;
+  return { done, total };
+}
+
+/**
  * 单会话行装配（行星/彗星共用；高亮字段 = 标题/形态/状态/待处理分类/相对时间/todos/
- * 卫星计数——UI 零二次推导）。id 缺失 → null（跳过）。
+ * 进度数字对/卫星计数——UI 零二次推导）。id 缺失 → null（跳过）。
  * @param {string} wsId
  * @param {string} wsName
  * @param {object} body 场景天体（`ws.planets[]` / `ws.comets[]`）
@@ -324,6 +382,9 @@ function sessionRowOf(wsId, wsName, body, kind) {
   const id = typeof body?.id === "string" && body.id ? body.id : "";
   if (!id) return null;
   const state = sessionRowStateOf(body?.state, body?.delegatedBusy);
+  /* todos 徽标字符串（merge 层装配）→ 进度数字对（1.1）：`"—"`/格式外/越界 → null，
+     行内据此不渲染进度条（文本徽标仍按原门控呈现——条是比例增强，非数字替代）。 */
+  const todos = typeof body?.todos === "string" && body.todos ? body.todos : "—";
   return {
     key: sessionKeyOf(wsId, id),
     id,
@@ -336,7 +397,8 @@ function sessionRowOf(wsId, wsName, body, kind) {
     pendingKind: state === "waiting" ? pendingCategoryOf(body?.pendingKind) : null,
     when: typeof body?.when === "string" && body.when ? body.when : "—",
     updatedAt: Number(body?.updatedAt) || 0,
-    todos: typeof body?.todos === "string" && body.todos ? body.todos : "—",
+    todos,
+    progress: progressOfTodos(todos),
     satelliteCount: Math.max(0, Math.round(Number(body?.satelliteCount) || 0)),
     delegatedBusy: body?.delegatedBusy === true,
     proposalCount: Array.isArray(body?.stars) ? body.stars.length : 0
@@ -357,6 +419,8 @@ function compareSessionRows(a, b) {
  *  - `groups`：作用域内分组（`{wsId, wsName, sessions, count}`）；银河态只有非空分组，
  *    钻取态恒有当前星座分组（无会话也保留，空态文案由 UI 给）；
  *  - `allSessions`：**不受钻取影响**的全部活跃行（标题栏徽标计数与跨视图查表来源）；
+ *    行内 `progress` 为 `todos` 徽标字符串的防御解析结果（`{done, total}` 或 null，
+ *    见 `progressOfTodos`）——UI 只用它判「是否渲染进度条」，数字徽标仍取 `todos` 文本；
  *  - `total` = 全量活跃会话数；`scopeTotal` = 当前作用域行数（面板标题计数）；
  *  - `waiting` = 全量待决策计数（**全局**：钻取到无待决策星座时标题栏徽标不应消失）；
  *  - `drillWsId`/`drillName`/`drillMissing`：钻取态镜像（目标注销 → missing + 无分组）；
@@ -424,4 +488,177 @@ export function projectSessionPanel(scene, options = {}) {
     drillMissing: drillWsId !== null && !drillFound,
     visible: true
   };
+}
+
+/* ------------------------------------------------------------------ *
+ * 跨面板悬停关联派生（p2-add-cosmos-cross-hover-markers 2.1/2.2 / design D2/D3）
+ *
+ * 输入 = 合流悬停描述（`{source, wsId, kind, id, slugs?}`）+ 单星座 merge 产物；
+ * 输出 = 受体集（`{sessionIds, proposalIds}`）。口径：
+ *  - 源 `kind = star`（正式卡 / 画布恒星 / 画布星胚）：`sessionIds` 取反向索引
+ *    `starPlanetIdsOf` 全量；`proposalIds` 取 `ws.links`（恒星**索引对**，先经
+ *    `ws.stars[索引].id` 映射）中与该星共享会话的**其他**恒星 id（排除自身）——
+ *    镜像画布 relSet 的星↔星共享段，保证「同实体同亮面」；
+ *  - 源 `kind = planet`：`proposalIds = planet.stars` 全量（联星不截断）；画布源
+ *    （`source = "canvas"`）时 `sessionIds` 含自身会话 id（对应行 `<`），DOM 源不含；
+ *  - 源 `kind = comet`：`proposalIds` 为空；画布源时 `sessionIds` 含自身（彗星无关联
+ *    卡，仅画布对应行 `<`）；
+ *  - 源 = 星胚合并卡（`source = "embryo"`，slug 清单）：`sessionIds` = 各 slug 反查
+ *    会话的并集；不注入引擎、无 `proposalIds`（多 slug 无单一注入目标）；
+ *  - 派生以 `wsId` 为界：悬停源属其他星座 → 空集（跨工作区天然无标记）。
+ *
+ * 纯函数：零 DOM、零网络、不修改入参；非法输入一律空集（MUST NOT 抛错）。
+ * ------------------------------------------------------------------ */
+
+/** 空受体集（每次新对象：调用方可安全持有）。 */
+function emptyTargets() {
+  return { sessionIds: [], proposalIds: [] };
+}
+
+/** 数组去重（保留首次出现序；空值剔除）。 */
+function uniqueIds(list) {
+  const out = [];
+  for (const id of list) {
+    if (typeof id !== "string" || !id) continue;
+    if (!out.includes(id)) out.push(id);
+  }
+  return out;
+}
+
+/**
+ * 跨面板悬停关联受体派生（design D2）。
+ * @param {{source?: string, wsId?: string, kind?: string, id?: string, slugs?: string[]}|null} hover
+ *        合流悬停描述（source ∈ row | card | embryo | canvas）
+ * @param {object|null} ws 单星座 merge 产物（`{id, stars, links, planets, comets}`）
+ * @returns {{sessionIds: string[], proposalIds: string[]}}
+ */
+export function crossHoverTargets(hover, ws) {
+  if (!hover || typeof hover !== "object" || !ws || typeof ws !== "object") return emptyTargets();
+  const wsId = typeof ws.id === "string" ? ws.id : "";
+  if (!wsId || hover.wsId !== wsId) return emptyTargets(); // 跨工作区隔离
+  const source = typeof hover.source === "string" ? hover.source : "";
+  const canvas = source === "canvas";
+  const id = typeof hover.id === "string" ? hover.id : "";
+
+  /* 星胚合并卡源（多 slug；不注入引擎，只参与行标记派生）。 */
+  if (source === "embryo" || hover.kind === "proto") {
+    const slugs = Array.isArray(hover.slugs)
+      ? hover.slugs
+      : (id ? [id] : []);
+    if (slugs.length === 0) return emptyTargets();
+    const starPlanetMap = starPlanetIdsOf(ws);
+    const sessionIds = [];
+    for (const slug of slugs) {
+      if (typeof slug !== "string" || !slug) continue;
+      sessionIds.push(...(starPlanetMap.get(slug) ?? []));
+    }
+    return { sessionIds: uniqueIds(sessionIds), proposalIds: [] };
+  }
+
+  /* 恒星源（正式卡 / 画布恒星）：关联会话行 `<` + 共享会话星卡 `>`（排除自身）。 */
+  if (hover.kind === "star") {
+    if (!id) return emptyTargets();
+    const starPlanetMap = starPlanetIdsOf(ws);
+    const sessionIds = uniqueIds(starPlanetMap.get(id) ?? []);
+    const stars = Array.isArray(ws.stars) ? ws.stars : [];
+    const links = Array.isArray(ws.links) ? ws.links : [];
+    const shared = [];
+    for (const pair of links) {
+      const left = Number(pair?.[0]);
+      const right = Number(pair?.[1]);
+      if (!Number.isInteger(left) || !Number.isInteger(right)) continue;
+      const leftId = typeof stars[left]?.id === "string" ? stars[left].id : "";
+      const rightId = typeof stars[right]?.id === "string" ? stars[right].id : "";
+      if (leftId === id && rightId && rightId !== id) shared.push(rightId);
+      else if (rightId === id && leftId && leftId !== id) shared.push(leftId);
+    }
+    return { sessionIds, proposalIds: uniqueIds(shared) };
+  }
+
+  /* 行星源：星卡 `>` 全量（联星不截断）；画布源时自身对应行 `<`。 */
+  if (hover.kind === "planet") {
+    if (!id) return emptyTargets();
+    const planets = Array.isArray(ws.planets) ? ws.planets : [];
+    const planet = planets.find((entry) => entry && entry.id === id) ?? null;
+    const proposalIds = [];
+    for (const entry of Array.isArray(planet?.stars) ? planet.stars : []) {
+      const proposalId = typeof entry === "string" ? entry : (entry && typeof entry.id === "string" ? entry.id : "");
+      if (proposalId) proposalIds.push(proposalId);
+    }
+    return {
+      sessionIds: canvas ? [id] : [],
+      proposalIds: uniqueIds(proposalIds)
+    };
+  }
+
+  /* 彗星源：无关联提案卡；画布源时自身对应行 `<`。 */
+  if (hover.kind === "comet") {
+    return { sessionIds: canvas && id ? [id] : [], proposalIds: [] };
+  }
+
+  return emptyTargets();
+}
+
+/**
+ * 会话行受体判定（tasks 2.2）：`row.id ∈ sessionIds` 且属同一星座。
+ * 悬停源自身行不标由派生口径保证（DOM 行源 `sessionIds` 为空集）。
+ * @param {{wsId?: string, sessionIds?: string[]}|null} crossHover 合流描述（叠加受体集）
+ * @param {{wsId?: string, id?: string}|null} row 会话行
+ * @returns {boolean}
+ */
+export function rowIsLinkedOf(crossHover, row) {
+  if (!crossHover || !row || typeof row !== "object") return false;
+  if (!crossHover.wsId || row.wsId !== crossHover.wsId) return false;
+  const sessionIds = Array.isArray(crossHover.sessionIds) ? crossHover.sessionIds : [];
+  return typeof row.id === "string" && sessionIds.includes(row.id);
+}
+
+/**
+ * 提案卡受体判定（tasks 2.2）：正式卡 `card.id ∈ proposalIds`；星胚合并卡
+ * 「任一 slug ∈ proposalIds → 整卡」（不逐 slug 拆分）。源卡自身不标由派生口径保证
+ * （恒星源 `proposalIds` 排除自身）。
+ * @param {{wsId?: string, proposalIds?: string[]}|null} crossHover 合流描述（叠加受体集）
+ * @param {{wsId?: string, id?: string, isEmbryo?: boolean, slugs?: string[]}|null} card 提案卡
+ * @returns {boolean}
+ */
+export function cardIsLinkedOf(crossHover, card) {
+  if (!crossHover || !card || typeof card !== "object") return false;
+  if (!crossHover.wsId || card.wsId !== crossHover.wsId) return false;
+  const proposalIds = Array.isArray(crossHover.proposalIds) ? crossHover.proposalIds : [];
+  if (card.isEmbryo === true) {
+    const slugs = Array.isArray(card.slugs) ? card.slugs : [];
+    return slugs.some((slug) => typeof slug === "string" && proposalIds.includes(slug));
+  }
+  return typeof card.id === "string" && proposalIds.includes(card.id);
+}
+
+/**
+ * 悬停源存活判定（design D6 / tasks 3.2）：场景刷新后源实体键（源行键/源卡键）是否仍
+ * 在新清单。归档/摘除 → false（合流层据此清除悬停并注入 null，防悬停残影）。
+ *
+ * 画布源恒按画布口径判定（`source = "canvas"` 时 proto 恒星也在册）；DOM 卡源只认
+ * 正式恒星（proto 走星胚合并卡 `kind = "proto"` 分支）。
+ * @param {{workspaces?: Array<object>}|null} scene mergeScene 产物
+ * @param {{source?: string, wsId?: string, kind?: string, id?: string, slugs?: string[]}|null} hover 悬停描述
+ * @returns {boolean}
+ */
+export function hoverSourceAlive(scene, hover) {
+  if (!hover || typeof hover !== "object") return false;
+  const workspaces = Array.isArray(scene?.workspaces) ? scene.workspaces : [];
+  const ws = workspaces.find((entry) => entry && entry.id === hover.wsId) ?? null;
+  if (!ws) return false;
+  const id = typeof hover.id === "string" ? hover.id : "";
+  const hasBody = (list) => Array.isArray(list) && list.some((entry) => entry && entry.id === id);
+  if (hover.kind === "proto" || hover.source === "embryo") {
+    const slugs = Array.isArray(hover.slugs) ? hover.slugs : (id ? [id] : []);
+    const stars = Array.isArray(ws.stars) ? ws.stars : [];
+    return stars.some((star) => star && star.lifecycle === "proto" && slugs.includes(star.id));
+  }
+  if (hover.kind === "star") {
+    const stars = Array.isArray(ws.stars) ? ws.stars : [];
+    return stars.some((star) => star && star.id === id && (hover.source === "canvas" || star.lifecycle !== "proto"));
+  }
+  if (hover.kind === "planet") return hasBody(ws.planets);
+  if (hover.kind === "comet") return hasBody(ws.comets);
+  return false;
 }

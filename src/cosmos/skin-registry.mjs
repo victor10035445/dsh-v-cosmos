@@ -5,16 +5,22 @@
  *  - `COSMOS_SKINS` 有序清单（12 套，顺序即设置页卡片顺序）+ `COSMOS_SKIN_IDS` 派生枚举；
  *  - `createSkin(id)` 工厂：未知/非法 id **回落默认**（MUST NOT 抛错），实例按 id 缓存
  *    （切换免重建绘制资源；glow sprite 缓存随实例，天然按皮肤隔离——design D6）；
- *  - `applySkinTokens(rootEl, skin)`：HUD 令牌 + `data-cos-mode` 的**唯一写者**（design D3:
- *    引擎 `setSkin` MUST NOT 触碰 DOM，避免双写漂移）。
+ *  - `applySkinTokens(rootEl, skin)`：HUD 令牌 + `data-cos-mode` + `data-cos-progress`
+ *    的**唯一写者**（design D3：引擎 `setSkin` MUST NOT 触碰 DOM，避免双写漂移）。
  *
- * 注册表项形状：`{ id, name, ref, mode, base, hud, create(), instance }`。
+ * 注册表项形状：`{ id, name, ref, mode, base, hud, progressShape, create(), instance }`。
  *  - `name/ref` 为中文权威文案（DICT 另有 zh/en 本地化，键 `cosmos.skin.<id>.name/ref`）；
  *  - `mode` = `"dark" | "light"`（light 走根容器 `[data-cos-mode="light"]` CSS 分支）；
  *  - `hud` 为**完整令牌表**（27 枚，见 `COSMOS_HUD_TOKENS`）：deepspace 逐枚等于
  *    改造前的现值（即全部 `var(--cos-*, fallback)` 的 fallback 基线），其余按 `base`
  *    色板派生（design D4；语义别名 `--cos-lc-*` / `--cos-waiting` / `--cos-done` 一律
- *    取自该皮肤 palette，杜绝手抄漂移）。
+ *    取自该皮肤 palette，杜绝手抄漂移）；
+ *  - `progressShape` 为**可选形状通道**（p1-add-cosmos-card-progress-bars 2.3 / design D4）：
+ *    枚举 `segment | bar | ring`（见 `COSMOS_PROGRESS_SHAPES`），与颜色令牌正交——形状是
+ *    **结构**语义，CSS 无法读取令牌值切换结构，故经 `data-cos-progress` 根属性下发，
+ *    12 套内置皮肤逐肤指派；字段缺席/枚举外一律经 `progressShapeOf` clamp 为 `segment`
+ *    （MUST NOT 抛错）。**零新增 HUD 令牌**：进度条取色复用既有 `--cos-accent` /
+ *    `--cos-line` 系（`--cos-accent-rgb` 合成半透明轨道），金色直接量仅允许作 fallback 位。
  */
 
 import { createSkinDeepspace } from "./skin-d.mjs";
@@ -161,8 +167,38 @@ const DEEPSPACE_HUD = Object.freeze({
 });
 
 /**
+ * 卡片进度形状枚举（p1-add-cosmos-card-progress-bars 2.1 / design D4/D5）：
+ * `segment`（满宽格栅，基线）/ `bar`（满宽连续条）/ `ring`（meta 行内小环）。
+ * 顺序无 UI 语义（设置页不暴露该维度），仅作 clamp 白名单与冒烟枚举完备断言的单一来源。
+ */
+export const COSMOS_PROGRESS_SHAPES = Object.freeze(["segment", "bar", "ring"]);
+
+/** 缺省/兜底形状：属性缺失、字段缺席、枚举外值一律回落 `segment`（fallback 基线）。 */
+export const COSMOS_PROGRESS_SHAPE_DEFAULT = "segment";
+
+/**
+ * 形状值 clamp 纯函数（MUST NOT 抛错）：枚举内原样返回，其余（含 null/undefined/数字/
+ * 外部注入皮肤实例的未知写法）一律回落 `segment`。
+ *
+ * 注册表项是**冻结**对象（`Object.freeze`），运行期无法再清洗；clamp 必须由纯函数接缝
+ * 承担：注册点与 `applySkinTokens` 下发点各调一次，冒烟据此直测（2.1 / 4.3）。
+ * @param {unknown} value 候选形状值
+ * @returns {"segment"|"bar"|"ring"}
+ */
+export function progressShapeOf(value) {
+  return typeof value === "string" && COSMOS_PROGRESS_SHAPES.includes(value)
+    ? value
+    : COSMOS_PROGRESS_SHAPE_DEFAULT;
+}
+
+/**
  * 内置皮肤规格清单（base 只声明派生根：底色 + 主调 + 明暗模式；hud 由 deriveHud 补全）。
  * 顺序 = 设置页卡片顺序（deepspace 首位 = 视觉回归基线）。
+ *
+ * `progressShape` = 逐肤指派表（design D5，常量表微调零成本）：`segment` 5 套
+ * （deepspace / rosepine / fidenza / migration / circuit：基线刻度感、版画齿孔、雁阵离散、
+ * LED 格栅）、`bar` 4 套（linear / obsidian / chamber / reagent：界面、图谱、实验记录的
+ * 连续量语言）、`ring` 3 套（fluoro / lotus / fermata：培养皿、涟漪、倚音弧）。
  */
 const SKIN_SPECS = [
   {
@@ -171,6 +207,7 @@ const SKIN_SPECS = [
     ref: "现风格 D（视觉回归基线）",
     mode: "dark",
     base: { bg: "#070812", accent: "#ffd28a", mode: "dark" },
+    progressShape: "segment",
     create: createSkinDeepspace
   },
   {
@@ -179,6 +216,7 @@ const SKIN_SPECS = [
     ref: "Rosé Pine 官方色板（与现基线血缘最近）",
     mode: "dark",
     base: { bg: "#191724", accent: "#f6c177", mode: "dark" },
+    progressShape: "segment",
     create: createSkinRosepine
   },
   {
@@ -187,6 +225,7 @@ const SKIN_SPECS = [
     ref: "Tyler Hobbs 方法论（纸面透明星空）",
     mode: "light",
     base: { bg: "#f4efe4", accent: "#33322e", mode: "light" },
+    progressShape: "segment",
     create: createSkinFidenza
   },
   {
@@ -195,6 +234,7 @@ const SKIN_SPECS = [
     ref: "Linear.app 设计语言",
     mode: "dark",
     base: { bg: "#070809", accent: "#5e6ad2", mode: "dark" },
+    progressShape: "bar",
     create: createSkinLinear
   },
   {
@@ -203,6 +243,7 @@ const SKIN_SPECS = [
     ref: "Obsidian Graph View",
     mode: "dark",
     base: { bg: "#121217", accent: "#a882ff", mode: "dark" },
+    progressShape: "bar",
     create: createSkinObsidian
   },
   {
@@ -211,6 +252,7 @@ const SKIN_SPECS = [
     ref: "化学实验（培养皿/荧光试剂）",
     mode: "dark",
     base: { bg: "#08090d", accent: "#4ad8c8", mode: "dark" },
+    progressShape: "bar",
     create: createSkinReagent
   },
   {
@@ -219,6 +261,7 @@ const SKIN_SPECS = [
     ref: "粒子物理（衰变径迹）",
     mode: "dark",
     base: { bg: "#0a0d12", accent: "#8fa8c0", mode: "dark" },
+    progressShape: "bar",
     create: createSkinChamber
   },
   {
@@ -227,6 +270,7 @@ const SKIN_SPECS = [
     ref: "荧光显微摄影（细胞/细胞器）",
     mode: "dark",
     base: { bg: "#030304", accent: "#3ec8c8", mode: "dark" },
+    progressShape: "ring",
     create: createSkinFluoro
   },
   {
@@ -235,6 +279,7 @@ const SKIN_SPECS = [
     ref: "水墨池塘（花期/锦鲤）",
     mode: "dark",
     base: { bg: "#0a1418", accent: "#cfe0d8", mode: "dark" },
+    progressShape: "ring",
     create: createSkinLotus
   },
   {
@@ -243,6 +288,7 @@ const SKIN_SPECS = [
     ref: "候鸟迁徙（雁群/鸟浪）",
     mode: "dark",
     base: { bg: "#191333", accent: "#ffb056", mode: "dark" },
+    progressShape: "segment",
     create: createSkinMigration
   },
   {
@@ -251,6 +297,7 @@ const SKIN_SPECS = [
     ref: "PCB（芯片/信号脉冲）",
     mode: "dark",
     base: { bg: "#0d1410", accent: "#ffc24a", mode: "dark" },
+    progressShape: "segment",
     create: createSkinCircuit
   },
   {
@@ -259,6 +306,7 @@ const SKIN_SPECS = [
     ref: "音乐总谱（音符/fermata）",
     mode: "dark",
     base: { bg: "#0b0a09", accent: "#e8c874", mode: "dark" },
+    progressShape: "ring",
     create: createSkinFermata
   }
 ];
@@ -281,6 +329,9 @@ export const COSMOS_SKINS = Object.freeze(SKIN_SPECS.map(function (spec) {
     mode: spec.mode,
     base: Object.freeze({ ...spec.base }),
     hud: spec.id === "deepspace" ? DEEPSPACE_HUD : deriveHud(spec.base, instance.palette),
+    /* 形状通道（2.1）：注册点即 clamp（缺席/枚举外 → segment），注册表项冻结后不可再清洗；
+       取值经纯函数接缝 → 冒烟可直测（4.3/4.4）。 */
+    progressShape: progressShapeOf(spec.progressShape),
     create: spec.create,
     instance
   });
@@ -336,11 +387,12 @@ export function skinCardOf(entry) {
 }
 
 /**
- * HUD 令牌 + `data-cos-mode` 下发（design D3：唯一写者）。
+ * HUD 令牌 + `data-cos-mode` + `data-cos-progress` 下发（design D3：唯一写者）。
  *
  * 作用域 = 整页根容器（引擎 `.cos-root` 与 React 面板层的共同父级）：令牌是 CSS 自定义
  * 属性，沿继承链自动覆盖两侧——`engine.mjs` 的注入 CSS 与 `client.jsx` 的整页 CSS 因此
- * 同时换装，无需逐规则下发。
+ * 同时换装，无需逐规则下发。形状属性同址同写者（2.2）：进度条组件只看根属性切形态，
+ * 与 `data-cos-mode` 一样在一次下发内落值，杜绝「令牌已换、形状滞后」的中间态。
  *
  * @param {HTMLElement|null} rootEl 整页根容器
  * @param {object|string} skin 皮肤实例 / 注册表项 / 皮肤 id（三者皆可）
@@ -364,5 +416,11 @@ export function applySkinTokens(rootEl, skin) {
   const mode = entry.mode === "light" ? "light" : "dark";
   if (rootEl.dataset) rootEl.dataset.cosMode = mode;
   else if (typeof rootEl.setAttribute === "function") rootEl.setAttribute("data-cos-mode", mode);
+  /* 形状通道（2.2）：与 data-cos-mode 同一写者、同一根容器作用域；取值恒经
+     `progressShapeOf` clamp（缺席/枚举外 → segment，MUST NOT 抛错）——旧注册表项、
+     外部注入实例、异常路径都不可能让属性落在枚举外或缺失。 */
+  const progressShape = progressShapeOf(entry.progressShape);
+  if (rootEl.dataset) rootEl.dataset.cosProgress = progressShape;
+  else if (typeof rootEl.setAttribute === "function") rootEl.setAttribute("data-cos-progress", progressShape);
   return true;
 }

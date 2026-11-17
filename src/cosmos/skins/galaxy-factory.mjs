@@ -19,7 +19,7 @@
 import {
   TAU, clamp, lerp, easeOutK, mix, hexA, dimColor, hashSeed, hashRand,
   makeGlowCache, trailStroke, sessColor, mixFade, viewKOf, birthAlphaOf, segAlphaOf,
-  dustBornK, satBornKOf
+  dustBornK, satBornKOf, makeDustSprite, dustBatchDraw
 } from '../skin-kit.mjs';
 
 function resolveBgStars(cfg) {
@@ -35,6 +35,7 @@ function resolveBgStars(cfg) {
  */
 export function createGalaxySkin(cfg) {
   const glow = makeGlowCache();
+  const dustBrush = makeDustSprite(); // 尘埃 sprite 缓存（每皮肤实例独立，防跨皮肤串色）
   const palette = { prop: cfg.prop, sess: cfg.sess };
   const bgStarColor = resolveBgStars(cfg);
   const gold = cfg.gold;
@@ -283,17 +284,14 @@ export function createGalaxySkin(cfg) {
       const t = view.t;
 
       if (it.kind === 'dust') {
-        ctx.save();
-        ctx.globalCompositeOperation = 'lighter';
-        it.pts.forEach(function (p) {
-          const bornK = dustBornK(p, t);
-          ctx.globalAlpha = clamp(p.a * bornK * 0.5 * dustAlpha, 0, 1);
-          ctx.fillStyle = cfg.dust[p.hue < 0.5 ? 0 : 1];
-          ctx.beginPath();
-          ctx.arc(p.x, p.y, Math.max(0.6, p.s * 0.42), 0, TAU);
-          ctx.fill();
+        /* 星云尘埃：共享低开销原语（缓存 dot sprite + 分色分组 + born 坡道 0.8s）。
+           深空系皮肤走 lighter 加色（合成模式显式声明在原语调用上，light 皮肤禁用）。 */
+        dustBatchDraw(dustBrush, ctx, it.pts, cfg.dust, t, {
+          composite: 'lighter',
+          alphaK: 0.5 * dustAlpha,
+          radiusK: 0.42,
+          minR: 0.6
         });
-        ctx.restore();
         return;
       }
 

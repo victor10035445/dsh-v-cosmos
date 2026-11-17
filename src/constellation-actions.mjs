@@ -32,6 +32,14 @@
  *  - 消息落稿在消费相位（hero / native 或浮窗挂载）经 `setDraft` 写入（标记带落稿意图）；
  *  - **废除** `whenDraftExists: 'replace'` 主路径覆盖语义（BREAKING）；该语义只保留在
  *    `sessions.create` 失败后的降级回落链路。
+ *
+ * 独立窗口服务端送达通道（add-cosmos-standalone-jump-feedback D1/D2）：
+ * 构造期可选 `standaloneServerChannel` 开关**只承接 autoSend 分支**——独立窗口内 hero
+ * 相位不可达（标记是每窗口内存 store），开启时该分支跳过「create + hero 标记 +
+ * openSession」，改走注入的 `startSession`（调用方带 `whenDraftExists: 'replace'`）
+ * 服务端落稿；**不自动提交**（提交依赖窗口内会话输入区）、不登记标记、模型切换不执行。
+ * float / native 分支分流逻辑不变（独立窗口的 native 意图由注入方 preflight 强制回
+ * float 并附带反馈）。缺省关闭 = 既有行为逐字不变。
  */
 import { buttonModelOf, createActionGate, createPendingActionStore, draftMatches, isBlankDraft } from "./actions.mjs";
 
@@ -147,6 +155,13 @@ export function floatPresentationOf(input = {}) {
  * @param {object} [options.labels] 文案（degraded——降级注释；缺省内置中文）
  * @param {() => number} [options.now] 私有门时钟（未注入 gate 时生效）
  * @param {number} [options.cooldownMs] 私有门冷却窗（未注入 gate 时生效）
+ * @param {boolean} [options.standaloneServerChannel] 独立窗口**服务端送达通道**
+ *        （add-cosmos-standalone-jump-feedback D1）：只作用于 autoSend 分支——开启时
+ *        跳过「create + hero 标记 + openSession」，改走 `startSession`（调用方注入
+ *        `whenDraftExists: "replace"`）服务端落稿，不自动提交、不登记标记、模型切换
+ *        不执行。float / native 分支分流不变。缺省 false（行为与从前逐字一致）。
+ * @param {(info: {autoSend: boolean}) => void} [options.standaloneNotice]
+ *        服务端通道成功后的呈现通知（注入方 toast；执行器不感知文案）。缺省静默。
  * @returns {{run: (input: {button: object, group: object}) => Promise<object>}}
  */
 export function createConstellationExecutor(options = {}) {
@@ -160,6 +175,8 @@ export function createConstellationExecutor(options = {}) {
   const openSession = typeof options.openSession === "function" ? options.openSession : null;
   const startSession = options.startSession;
   const notify = typeof options.notify === "function" ? options.notify : () => {};
+  const standaloneServerChannel = options.standaloneServerChannel === true;
+  const standaloneNotice = typeof options.standaloneNotice === "function" ? options.standaloneNotice : null;
   const degradedLabel = typeof options.labels?.degraded === "string" && options.labels.degraded
     ? options.labels.degraded
     : "新建会话通道不可用，已降级为复用空白会话";
@@ -191,10 +208,18 @@ export function createConstellationExecutor(options = {}) {
       /* 三分支分流（D1）：勾选 autoSend = hero 接力（点击即发）；未勾选按设置面分支——
          float（缺省）= 浮窗补写、星空保持；native = hero 落稿 + 关页跳转原生会话页。 */
       const submit = button?.autoSend === true;
+      /* 独立窗口服务端通道**只承接 autoSend 分支**（D1）：提交意图在独立窗口不可达
+         （依赖窗口内会话输入区），故只落草稿、不自动提交、不登记 hero 标记——每个窗口的
+         标记 store 是独立内存实例，跨窗口恒悬空。float / native 分流不变。 */
+      const serverAutoSend = standaloneServerChannel && submit;
+      if (serverAutoSend && typeof startSession !== "function") {
+        notify("创建会话不可用（当前宿主未提供）", true);
+        return { ok: false, reason: "unavailable" };
+      }
       const native = !submit && resolvePreflight() === "native";
       const channel = submit ? HERO_CHANNEL : native ? PREFLIGHT_CHANNEL : FLOAT_CHANNEL;
       const store = submit || native ? pending : floats;
-      if (store === null) return { ok: false, reason: "unavailable" };
+      if (!serverAutoSend && store === null) return { ok: false, reason: "unavailable" };
       /** native 分支关整页（主路径与降级路径同用——两路呈现收敛于原生会话页）。 */
       const settlePage = () => {
         if (native) closePage();
@@ -205,6 +230,29 @@ export function createConstellationExecutor(options = {}) {
       const meta = { channel, wsId: group.wsId, wsName: String(group.wsName ?? ""), buttonName: String(button?.name ?? "") };
       let marker = null;
       try {
+        if (serverAutoSend) {
+          /* 独立窗口服务端送达（D1）：只落草稿、不自动提交（标记不登记——跨窗口不可达）。
+             反馈交给注入方（`standaloneNotice`），执行器不感知文案。 */
+          try {
+            await startSession(group.wsId, message, group);
+          } catch (error) {
+            const detail = String(error?.message || error);
+            notify("创建会话失败：" + detail, true);
+            return { ok: false, reason: "start-failed", error: detail, standalone: true };
+          }
+          standaloneNotice?.({ autoSend: true });
+          return {
+            ok: true,
+            message,
+            marker: null,
+            channel: "standalone-server",
+            degraded: false,
+            standalone: true,
+            serverDraft: true,
+            autoSendSkipped: true,
+            modelSkipped: model !== undefined
+          };
+        }
         if (!canCreateNew) {
           notify(degradedLabel + "：当前宿主未提供新建会话通道");
           marker = store.arm({ message, model, submit, meta });

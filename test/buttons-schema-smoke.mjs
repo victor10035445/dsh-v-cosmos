@@ -151,7 +151,12 @@ const throwsWith = (fn, pattern, label) => {
   assert.equal(actionButtonVisible({ name: "a", prompt: "p", preState: "reviewed" }, { lifecycle: "reviewed", act: 1 }), false, "活跃即隐藏（双条件缺一不可）");
   assert.equal(actionButtonVisible({ name: "a", prompt: "p", preState: "reviewed" }, { lifecycle: "reviewed" }), true, "act 缺失按 0 处理");
   assert.equal(actionButtonVisible({ name: "a", prompt: "p", preState: "reviewed" }, null), false, "无目标 → preState 行隐藏");
-  assert.equal(actionButtonVisible({ name: "a", prompt: "p", preState: "proto" }, { lifecycle: "proto", act: 0 }), true, "星胚目标自动满足沉睡");
+  assert.equal(actionButtonVisible({ name: "a", prompt: "p", preState: "proto" }, { lifecycle: "proto", act: 0 }), true, "星胚目标沉睡 → 显示");
+  assert.equal(
+    actionButtonVisible({ name: "a", prompt: "p", preState: "proto" }, { lifecycle: "proto", act: 1 }),
+    false,
+    "星胚目标锚点探索会话活跃（act=1）→ 隐藏（keep-embryo-active-while-exploring）"
+  );
   assert.equal(actionButtonVisible({ name: "a", prompt: "p", preState: "doing" }, { lifecycle: "doing", act: 0 }), false, "漂移 preState 永不命中（读面隐藏）");
   assert.equal(actionButtonVisible(null, open), true, "空按钮按未设处理");
 }

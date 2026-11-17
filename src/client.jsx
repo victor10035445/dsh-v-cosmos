@@ -4,6 +4,10 @@
  * 入口与页面（对齐 dsh-v-hive 轨道；add-cosmos-entry 4.1/5.x）：
  *  - sidebar.footer.action 座位：侧栏底部「Cosmos」按钮（座位序 15——Hive(10) 与
  *    Token统计(20) 之间，对齐两插件入口形态）；
+ *  - conversation.header.leading 座位（add-cosmos-header-entry）：主列会话头部左前的
+ *    icon-only「Cosmos」入口——侧栏收起（含 Windows 桌面 footArea 隐藏态）/ drawer /
+ *    空白与任意会话状态下常驻；与侧栏座位同源（同一 store、同一分流纯函数、同一文案键），
+ *    整页打开期间被 `shell.overlay` 覆盖属预期「开向入口」形态；
  *  - shell.overlay 条目（order 45）：应用内整页帧——left 跟踪侧栏右缘
  *    （usePageLeft 测量 [data-slot="sidebar"] 父列，降级 left:0）、Esc 分层、全屏；
  *  - 页面开合走模块级 cosmosOpenStore（微观察者，hive hiveOpenStore 同款）；
@@ -37,7 +41,11 @@
  *    双窗提示；关页路径（关闭按钮 / Esc 末层）收敛为关窗（被拒 → 保持整页 + 手动关窗
  *    提示，MUST NOT 静默关整页）；会话导航（信息卡按钮 / 空格 / 面板行 / 决策 / 动作
  *    跳转尾巴）在链路入口短路；星座动作 native 分支强制 float；
- *    桌面形态（`file://`）降级为内嵌（忽略 window 配置，配置项禁用 + 说明）。
+ *    动作链路在独立窗口补齐**专属反馈 + 服务端送达**（add-cosmos-standalone-jump-feedback
+ *    D1/D2/D3）：提案 / 星座 autoSend 走 `startSession` 服务端落稿（跳过窗口内标记接力），
+ *    跳转尾巴被抑制时按链路 toast（提案/星座 native 改写/星胚各一口径），窗口恒不关；
+ *    桌面形态（非 http(s) 协议：`dsh-app://` 桌面壳 / `file://`）降级为内嵌（忽略 window
+ *    配置，配置项禁用 + 说明）。
  *  - 全部官方动词经注入服务使用，不修改任何官方包。
  */
 import { Component, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
@@ -66,7 +74,7 @@ import { cosmosStore } from "./store.mjs";
 import { COSMOS_SETTINGS_BOUNDS, COSMOS_SETTINGS_DEFAULTS, cosmosLayoutTokensOf, loadCosmosSettings, saveCosmosSettings, settingsFromStorageEvent } from "./settings.mjs";
 import { actionButtonVisible, buttonsSectionOf } from "./buttons.mjs";
 import { constButtonsSectionOf, normalizeConstButtons } from "./const-buttons.mjs";
-import { findCard, isSelectionSurface, projectPanel, projectSessionPanel, proposalKeyOf, sessionKeyOf } from "./panel.mjs";
+import { findCard, isSelectionSurface, projectPanel, projectSessionPanel, proposalKeyOf, sessionKeyOf, cardIsLinkedOf, crossHoverTargets, hoverSourceAlive, rowIsLinkedOf } from "./panel.mjs";
 import { assembleEmbryoMessage, assembleMessage, consumePendingAction, createActionExecutor, createActionGate, createEmbryoActionExecutor, createPendingActionStore, draftMatches, explorationTargetOf, isBlankDraft, pendingReadinessOf } from "./actions.mjs";
 import { activitySummaryOf, archiveNoticeOf, archiveRequestFailureNotice, isSessionArchiveOutcome } from "./session-archive.mjs";
 import { constellationMessageOf, createConstellationExecutor, createFloatMarkerStore, floatPresentationOf } from "./constellation-actions.mjs";
@@ -120,8 +128,8 @@ function dismissNotice(outcome, tone, text) {
  * 独立窗口态判定（add-cosmos-standalone-window D1/D5）
  *
  * 检测点在插件 client 模块根（一次性判定；URL 查询参数是页面生命周期内不变量）：
- *  - 命中 `?cosmos=window` 且非 `file://` 形态 → standalone；桌面形态（无 HTTP origin）
- *    降级为普通内嵌形态（design D7，页面零副作用）；
+ *  - 命中 `?cosmos=window` 且非桌面形态（页面协议为 http(s)）→ standalone；桌面形态
+ *    （非 http(s) 协议，无同源 HTTP origin）降级为普通内嵌形态（页面零副作用）；
  *  - 判定纯逻辑在 `standalone.mjs`（可冒烟直测），此处只读取浏览器事实。
  * ------------------------------------------------------------------ */
 
@@ -143,7 +151,7 @@ function pageOrigin() {
   }
 }
 
-/** 桌面形态判据（design D7：`location.protocol === "file:"`，取浏览器侧可观察事实）。 */
+/** 桌面形态判据（页面协议非 `http:`/`https:` 即桌面，取浏览器侧可观察事实）。 */
 const DESKTOP_PROTOCOL = isDesktopProtocol(pageProtocol());
 
 /** 独立窗口态标记（模块级常量；各分支消费，MUST NOT 逐次重读 URL）。 */
@@ -428,6 +436,53 @@ function useEngineSelection() {
   );
 }
 
+/* 引擎悬停镜像（p2-add-cosmos-cross-hover-markers 1.1）：引擎在**画布指针 hover 键变**时
+   经 `onHoverChange` 推送 `{kind, wsId, id}` 或 null（幂等通道，键变才回调；外部注入不进入
+   载荷——p1 契约）。React 侧据此把「画布悬停的天体」映射回两侧面板标记；引擎仍是画布悬停
+   态的唯一权威（只读镜像，与 `engineSelectStore` 同款纪律）。 */
+const engineHoverStore = {
+  state: null,
+  listeners: new Set(),
+  getSnapshot() {
+    return this.state;
+  },
+  subscribe(listener) {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  },
+  set(next) {
+    /* 净房：非对象/缺 kind,id → null；字段收敛为字符串（防上游形状漂移污染比较）。 */
+    const value = next && typeof next === "object" && typeof next.kind === "string" && typeof next.id === "string"
+      ? {
+        kind: next.kind,
+        wsId: typeof next.wsId === "string" ? next.wsId : "",
+        id: next.id
+      }
+      : null;
+    const current = this.state;
+    if (value === null && current === null) return;
+    if (value !== null && current !== null
+      && value.kind === current.kind
+      && value.wsId === current.wsId
+      && value.id === current.id) return;
+    this.state = value;
+    for (const listener of [...this.listeners]) {
+      try {
+        listener();
+      } catch {
+        /* 订阅者异常不阻断其余通知 */
+      }
+    }
+  }
+};
+
+function useEngineHover() {
+  return useSyncExternalStore(
+    (listener) => engineHoverStore.subscribe(listener),
+    () => engineHoverStore.getSnapshot()
+  );
+}
+
 function useSceneVersion() {
   return useSyncExternalStore(
     (listener) => sceneVersionStore.subscribe(listener),
@@ -569,12 +624,33 @@ function createCosmosController(ctx, notifyToast, channels) {
   };
 
   /**
-   * 动作链路「跳转 = 关整页」尾巴（add-cosmos-standalone-window D6）：独立窗口态静默
-   * no-op——关页在 standalone 语义上是关窗，MUST NOT 由动作跳转触发（否则用户窗口消失）。
+   * 动作链路「跳转 = 关整页」尾巴（add-cosmos-standalone-window D6 /
+   * add-cosmos-standalone-jump-feedback D2/D3）：
+   *
+   * - 内嵌态：关整页（现状零变化）；
+   * - 独立窗口态：**no-op + 该链路专属反馈 toast**——关页在 standalone 语义上是关窗，
+   *   MUST NOT 由动作跳转触发（否则用户窗口消失），但也 MUST NOT 静默无反馈。反馈措辞
+   *   如实：提案说明「会话草稿已在主窗口准备」；`autoSend` 意图未执行时追加「未自动
+   *   发送，请到主窗口提交」（MUST NOT 承诺已发送）；星胚说明「探索会话需在主窗口操作」
+   *   （该链路无服务端送达通道，消息未送达）。
+   *
+   * @param {"proposal"|"embryo"} [link] 链路口径（决定反馈文案）
+   * @param {{autoSend?: boolean}} [context] 执行器附带的语义（autoSend 是否被抑制）
    */
-  const closePageAfterJump = () => {
-    if (STANDALONE) return;
-    cosmosOpenStore.set(false);
+  const closePageAfterJump = (link = "proposal", context = {}) => {
+    if (!STANDALONE) {
+      cosmosOpenStore.set(false);
+      return;
+    }
+    if (link === "embryo") {
+      notifyToast?.(tr("cosmos.actions.standaloneEmbryoFeedback", "探索会话需在主窗口操作，Cosmos 窗口保持打开"));
+      return;
+    }
+    const autoSend = context?.autoSend === true;
+    const base = tr("cosmos.actions.standaloneJumpFeedback", "会话草稿已在主窗口准备，Cosmos 窗口保持打开");
+    notifyToast?.(autoSend
+      ? base + " · " + tr("cosmos.actions.standaloneAutoSendNote", "未自动发送，请到主窗口提交")
+      : base);
   };
 
   /**
@@ -606,7 +682,7 @@ function createCosmosController(ctx, notifyToast, channels) {
    *  - 跳转（缺省）：`closePage` 关闭 Cosmos 整页（既有呈现，页面切换即反馈）；
    *  - 不跳转：`keepPage` 保持整页 → 引擎 toast 补位。
    * 消息落稿在 hero 相位（`inputActions.setDraft`），用户既有草稿零接触；
-   * `startSession` 只作降级通道（`whenDraftExists` 语义不进入主路径）。
+   * `startSession` 作降级通道 + 独立窗口服务端送达通道（后者见 `standaloneServerChannel`）。
    */
   const actionExecutor = createActionExecutor({
     pending: heroMarkers,
@@ -614,11 +690,16 @@ function createCosmosController(ctx, notifyToast, channels) {
     createSession: (workspaceId, card) => createSessionVia(workspaceId, card),
     openSession: (sessionId) => openSessionVia(sessionId),
     startSession: (workspaceId, message, card) => startSessionVia(workspaceId, message, card),
+    /* 独立窗口送达通道（add-cosmos-standalone-jump-feedback D1）：独立窗口无会话页挂载
+       hero 相位（标记跨窗口不可达）⇒ 改走 startSession 服务端落稿（复用 blank 语义、
+       绑定/模型切换/自动发送不执行）；内嵌态缺省关闭，行为零变化。 */
+    standaloneServerChannel: STANDALONE,
     /* ⑤ 显式关联绑定（fix-cosmos-association-scope 3.2）：新会话 → 目标提案的声明通道。
        执行器保证非阻断、失败静默；端点未升级/不可达只退回启发式（不 toast、不阻断落稿）。 */
     bindSession: (input) => bindSession(input),
-    /* 跳转尾巴关整页（add-cosmos-standalone-window D6）：独立窗口态 no-op（见上）。 */
-    closePage: () => closePageAfterJump(),
+    /* 跳转尾巴关整页（add-cosmos-standalone-window D6 / add-cosmos-standalone-jump-feedback
+       D2）：内嵌态关整页；独立窗口态 no-op + 提案口径反馈 toast（autoSend 被抑制时如实注明）。 */
+    closePage: (context) => closePageAfterJump("proposal", context),
     keepPage: () => notifyToast?.(tr("cosmos.actions.keepOpenNotice", "已在新会话填入消息，Cosmos 保持打开")),
     notify: (text) => notifyToast?.(text),
     labels: { degraded: tr("cosmos.actions.degraded", "新建会话通道不可用，已降级为复用空白会话") }
@@ -661,8 +742,10 @@ function createCosmosController(ctx, notifyToast, channels) {
     gate: actionGate,
     resolveTarget: (card) => explorationStateOf(card),
     openSession: (sessionId) => openSessionVia(sessionId),
-    /* 星胚链路的跳转尾巴同款短路（standalone 静默 no-op）。 */
-    closePage: () => closePageAfterJump(),
+    /* 星胚链路的跳转尾巴同款短路（add-cosmos-standalone-jump-feedback D3）：独立窗口
+       恒不关窗；该链路无服务端送达通道（固定探索会话的落稿只能经窗口内 hero 接力），
+       反馈如实引导「探索会话需在主窗口操作」，送达短路保持不变。 */
+    closePage: () => closePageAfterJump("embryo"),
     keepPage: () => notifyToast?.(tr("cosmos.actions.embryoKeepOpen", "已在探索会话填入消息，Cosmos 保持打开")),
     notify: (text) => notifyToast?.(text),
     labels: {
@@ -691,8 +774,25 @@ function createCosmosController(ctx, notifyToast, channels) {
     gate: actionGate,
     /* preflight 每次 run 现读设置面；**独立窗口态强制 float**（add-cosmos-standalone-window
        D6）：native 分支以「关页跳转会话页」收尾，而独立窗口无会话页 ⇒ 星空保持优先，
-       浮窗补写能力不受影响。 */
-    preflight: () => (STANDALONE ? "float" : loadCosmosSettings().constPreflight),
+       浮窗补写能力不受影响。用户意图为 native（「跳转会话页」）时如实反馈改写结果
+       （add-cosmos-standalone-jump-feedback D3）；float 意图不额外 toast（零噪音）。 */
+    preflight: () => {
+      const intent = loadCosmosSettings().constPreflight;
+      if (!STANDALONE) return intent;
+      if (intent === "native") {
+        notifyToast?.(tr("cosmos.actions.standalonePreflightFeedback", "跳转会话页需在主窗口操作，已改用浮窗补写"));
+      }
+      return "float";
+    },
+    /* 独立窗口送达通道（add-cosmos-standalone-jump-feedback D1）：只承接 autoSend 分支——
+       独立窗口下改走 startSession(replace) 服务端落稿，不自动提交（提交依赖窗口内会话
+       输入区；标记跨窗口不可达）；float / native 分流逻辑不变。 */
+    standaloneServerChannel: STANDALONE,
+    /* 通道分支的呈现反馈（D2/D3）：执行器不感知文案，注入方 toast 如实注明未自动发送。 */
+    standaloneNotice: () => notifyToast?.(
+      tr("cosmos.actions.standaloneConstDraft", "提示词已写入会话草稿，Cosmos 窗口保持打开")
+      + " · " + tr("cosmos.actions.standaloneAutoSendNote", "未自动发送，请到主窗口提交")
+    ),
     /* native 分支关整页 = 整页开合 store（与提案动作同通道）。standalone 态经上面的
        preflight 强制 float 后不可达，故此处保留直写（MUST NOT 在独立窗口关窗）。 */
     closePage: () => cosmosOpenStore.set(false),
@@ -1353,6 +1453,34 @@ function createCosmosController(ctx, notifyToast, channels) {
     focusSession({ wsId, id } = {}) {
       return engine?.focusBody?.(wsId, id) === true;
     },
+    /**
+     * 宿主会话切换（polish-cosmos-session-focus-and-hover-markers 2.1）：复用官方
+     * `uiWorkspace.openSession`（旧宿主回落 `ctx.sessions.open`）——**不关整页**，只把
+     * 目标会话切为主壳当前会话（侧栏选中 / 主视图跟随）。官方 mainView 保留会清除
+     * `completionUnread`，完成未读绿色随查看熄灭（无本地写）。
+     * 独立窗口态无主壳会话页 → `openSessionVia` 返回 false（silent no-op）；通道缺失 /
+     * 异常 → 捕获后返回 false（行选中联动不受影响）。
+     * @param {string} sessionId 目标会话 id
+     * @returns {boolean} 是否发起宿主切换
+     */
+    openSessionInPlace(sessionId) {
+      try {
+        return openSessionVia(sessionId);
+      } catch (error) {
+        console.warn("[dsh-v-cosmos] openSessionInPlace failed:", error);
+        return false;
+      }
+    },
+    /**
+     * 外部悬停注入（p2-add-cosmos-cross-hover-markers 1.3）：面板行/卡 hover → 引擎
+     * tips / 关联关系段（p1 `setExternalHover` 公共面）。引擎未挂载 / 已销毁 / 目标
+     * 未命中 → 静默降级返回 false（面板侧标记呈现不受影响，纯展示层解耦）。
+     * @param {{wsId?: string, kind?: string, id?: string}|null} desc 悬停描述；null = 清除
+     * @returns {boolean} 引擎是否接受注入
+     */
+    setExternalHover(desc) {
+      return engine?.setExternalHover?.(desc) === true;
+    },
     /** 当前合并场景（面板投影输入；版本由 sceneVersionStore 通知）。 */
     getScene() {
       return mergedScene;
@@ -1415,6 +1543,9 @@ function createCosmosController(ctx, notifyToast, channels) {
         /* 引擎选中 → React 面板（add-cosmos-selection-linkage 3.1/D6）：同款幂等镜像通道，
            「视图里选中的恒星」据此映射回对应提案卡片。 */
         onSelectChange: (info) => engineSelectStore.set(info),
+        /* 画布悬停 → React 面板（p2-add-cosmos-cross-hover-markers 1.1）：同款幂等镜像
+           通道；载荷恒为画布指针拾取态（外部注入不回声，p1 契约）。 */
+        onHoverChange: (info) => engineHoverStore.set(info),
         /* 拖拽平移开关写穿（add-cosmos-drag-pan-toggle 4.1/D4）：开关本体（引擎内右下按钮）
            即设置入口——引擎已本地翻转镜像与视觉，这里只负责持久化与热更回读的唯一链路：
            净房写盘 → `setTuning` 回读（值恒等，幂等无回环）。与 saveNav 同构，但不触达
@@ -1438,6 +1569,7 @@ function createCosmosController(ctx, notifyToast, channels) {
       engine = null;
       drillStore.set(null); // 引擎实例销毁 → 钻取镜像归零（面板恢复全量分组）
       engineSelectStore.set(null); // 引擎实例销毁 → 选中镜像归零（避免陈旧聚焦目标）
+      engineHoverStore.set(null); // 引擎实例销毁 → 悬停镜像归零（避免陈旧关联标记）
     },
     setOpen(nextOpen) {
       open = nextOpen;
@@ -1466,6 +1598,7 @@ function createCosmosController(ctx, notifyToast, channels) {
       engine = null;
       drillStore.set(null);
       engineSelectStore.set(null);
+      engineHoverStore.set(null);
     }
   };
 }
@@ -1537,6 +1670,83 @@ function usePageLeft(frameRef, measuredRef) {
 }
 
 /* ------------------------------------------------------------------ *
+ * 卡片任务进度条挂点（p1-add-cosmos-card-progress-bars 3.1/3.2）
+ *
+ * 会话行与正式提案卡共用：数据面只有 `progress = {done, total}`（projection 层产出，
+ * 提案卡直取 tasks、会话行解析 todos 徽标），呈现层两条规则——
+ *  - 双槽同数据：`strip`（满宽底部细条）与 `ring`（meta 行内 12px 小环）恒渲染同一份
+ *    progress，**形状切换零 JS 分支**（skin-registry 下发根属性 `data-cos-progress`，
+ *    CSS 决定显隐：segment/bar 显条、ring 显环）；
+ *  - 上限退化：格数 = `min(total, 12)`，`total > 12` 时不渲染格子、只留单连续 span
+ *    （分段在极限下即连续，语义不断裂——design D2）。
+ * 条恒 `aria-hidden`（比例增强不新增读屏噪音），精确 `x/y` 仍由既有文本徽标承载。
+ * ------------------------------------------------------------------ */
+
+/**
+ * 进度数据 → 轨道口径（纯函数；钳制防御，非法输入 → null 零布局）。
+ * `percent` = 连续条宽度（= done/total，用于 bar 形态与 ring 填充角）；
+ * `segmentCount` = 格数上限 `min(total, 12)`；`degraded` = 超上限退化连续条。
+ */
+function progressTrackOf(progress) {
+  const total = Math.max(0, Math.round(Number(progress?.total) || 0));
+  const done = Math.max(0, Math.min(total, Math.round(Number(progress?.done) || 0)));
+  if (total <= 0) return null;
+  return { done, total, percent: (done / total) * 100, segmentCount: Math.min(total, 12), degraded: total > 12 };
+}
+
+/**
+ * 分段填充态（design D2 整格语义）：前 `done` 格整格主调色；第 `done+1` 格为进行中格
+ * （低透明度 tint，静态无动效——进度条自身不做动效，动效语言只住在 p2 的卡描边层）；其余为空轨。
+ * `done === 0` 时首格即进行中格（「进度为 0 也是信息」）。
+ */
+function progressSegmentFillOf(index, done) {
+  if (index < done) return "done";
+  return index === done ? "active" : "empty";
+}
+
+/** 满宽进度条槽位（会话行 main 按钮末位 / 提案卡末位；`progress` 为空 → 零布局）。 */
+function ProgressStrip({ progress }) {
+  const track = progressTrackOf(progress);
+  if (!track) return null;
+  const segments = [];
+  if (!track.degraded) {
+    for (let index = 0; index < track.segmentCount; index += 1) {
+      segments.push(progressSegmentFillOf(index, track.done));
+    }
+  }
+  return (
+    <span
+      className="dsh-cosmos-progress-strip"
+      data-degraded={track.degraded ? "true" : undefined}
+      aria-hidden="true"
+    >
+      {/* 连续条（bar 形态 / 退化路径）：单 span 宽度百分比。 */}
+      <span className="dsh-cosmos-progress-fill" style={{ width: track.percent + "%" }} />
+      {track.degraded ? null : (
+        <span className="dsh-cosmos-progress-segs">
+          {segments.map((fill, index) => (
+            <span className="dsh-cosmos-progress-seg" data-fill={fill} key={index} />
+          ))}
+        </span>
+      )}
+    </span>
+  );
+}
+
+/** meta 行内环形槽位（ring 形态；其余形态 CSS 隐藏）：填充角经内联数据值传 CSS。 */
+function ProgressRing({ progress }) {
+  const track = progressTrackOf(progress);
+  if (!track) return null;
+  return (
+    <span
+      className="dsh-cosmos-progress-ring"
+      style={{ "--cos-prog-turn": track.percent + "%" }}
+      aria-hidden="true"
+    />
+  );
+}
+
+/* ------------------------------------------------------------------ *
  * 提案列表面板（add-cosmos-proposal-actions 3.x）
  * ------------------------------------------------------------------ */
 
@@ -1548,8 +1758,13 @@ function usePageLeft(frameRef, measuredRef) {
  * 三段结构（add-cosmos-constellation-actions D2）：`head + list + footer`。钻取态
  * （`data-drill`）下 footer 渲染星座动作条——空星座同样可用（列表空态与 footer 挂点解耦），
  * 按钮列表为空时 footer 不渲染（零布局）；银河态无「当前星座」即无动作目标，整条不渲染。
+ *
+ * 活跃度描边（p2-add-cosmos-card-state-chrome 2.1）：正式/星胚共用卡按钮，`data-act` 由
+ * `card.act > 0` 单点门控，星胚卡显式排除——keep-embryo-active-while-exploring 起星胚 `act`
+ * 也可为 1，属**数据面口径**（动作条前置状态门控消费），呈现面豁免保持不变
+ * （p2 spec「星胚卡无活跃描边」：星胚卡的视觉语言仍是虚线「还没出生」）。
  */
-function ProposalPanel({ t, model, selectedKey, onSelect, drill, constButtons, onRunConst, closeKey }) {
+function ProposalPanel({ t, model, selectedKey, onSelect, drill, constButtons, onRunConst, closeKey, crossHover, onHoverCard }) {
   if (!model || !model.visible) return null;
   const drilled = drill !== null && drill !== undefined;
   const showConstActions = drilled && Array.isArray(constButtons) && constButtons.length > 0;
@@ -1563,6 +1778,14 @@ function ProposalPanel({ t, model, selectedKey, onSelect, drill, constButtons, o
       <div className="dsh-cosmos-panel-head">
         <span className="dsh-cosmos-panel-title">{t("cosmos.panel.title", "提案")}</span>
         <span className="dsh-cosmos-panel-count" aria-hidden="true">{model.total}</span>
+        {model.embryoTotal > 0 ? (
+          /* 星胚附注徽标（add-cosmos-galaxy-embryo-cards D3）：主计数口径仍是「正式提案数」，
+             星胚数独立附注（`embryoTotal === 0` 时不渲染）——避免头部「0」与组内星胚卡并置
+             被读作缺陷。词典值是纯字符串（无插值引擎）→ 渲染处对 `{n}` 做**单次**替换。 */
+          <span className="dsh-cosmos-panel-embryo-count" aria-hidden="true">
+            {t("cosmos.panel.embryoCount", "＋{n} 星胚").replace("{n}", String(model.embryoTotal))}
+          </span>
+        ) : null}
       </div>
       <div
         className="dsh-cosmos-panel-list"
@@ -1603,7 +1826,17 @@ function ProposalPanel({ t, model, selectedKey, onSelect, drill, constButtons, o
                   data-cosmos-ws={card.wsId}
                   data-lifecycle={card.lifecycle}
                   data-embryo={card.isEmbryo ? "true" : undefined}
+                  /* 星胚卡不参与活跃度描边（p2 spec「星胚卡无活跃描边」）：星胚 `act`
+                     （锚点探索会话活跃度）只作数据面口径供动作条门控消费，呈现面豁免
+                     保持不变——虚线「还没出生」语义优先。 */
+                  data-act={card.act > 0 && !card.isEmbryo ? "active" : undefined}
                   data-selected={card.key === selectedKey ? "true" : undefined}
+                  /* 跨面板悬停关联标记（p2-add-cosmos-cross-hover-markers 3.1/3.2）：
+                     受体卡（正式卡按 id、星胚合并卡任一 slug 命中即整卡）呈现 `>`；源卡
+                     自身由派生口径排除。装饰走 CSS ::after，零新增 DOM、不改卡片语义。 */
+                  data-linked={cardIsLinkedOf(crossHover, card) ? "true" : undefined}
+                  onMouseEnter={() => onHoverCard?.(card, true)}
+                  onMouseLeave={() => onHoverCard?.(card, false)}
                   aria-pressed={card.key === selectedKey}
                   title={card.isEmbryo ? card.slugs.join("\n") : card.dir || card.name}
                   onClick={() => onSelect(card.key)}
@@ -1632,6 +1865,9 @@ function ProposalPanel({ t, model, selectedKey, onSelect, drill, constButtons, o
                         {card.tasks[1] > 0 ? (
                           <span className="dsh-cosmos-panel-tasks">{card.tasks[0] + "/" + card.tasks[1]}</span>
                         ) : null}
+                        {/* 进度条环形槽位（ring 皮肤；其余形态 CSS 隐藏）——精确数字仍由
+                            左侧 `x/y` 文本徽标承载（条为比例增强，非数字替代）。 */}
+                        <ProgressRing progress={card.progress} />
                         {card.setBy ? (
                           <span className="dsh-cosmos-panel-badge" title={t("cosmos.panel.setBy", "落章来源")}>
                             {card.setBy}
@@ -1639,6 +1875,9 @@ function ProposalPanel({ t, model, selectedKey, onSelect, drill, constButtons, o
                         ) : null}
                         {card.at ? <span className="dsh-cosmos-panel-at">{relativeTime(card.at, Date.now())}</span> : null}
                       </span>
+                      {/* 卡底满宽进度条（正式提案专属）：卡内末位子元素；星胚卡分支零接入
+                          （`progress` 恒 null，组件自然零布局——spec 星胚无任务进度行纪律）。 */}
+                      <ProgressStrip progress={card.progress} />
                     </>
                   )}
                 </button>
@@ -1704,7 +1943,7 @@ function sessionStatusTextOf(tr, row) {
  * 不组装请求、不感知端点）——三个职责分属三个按钮，点击行 MUST NOT 直接关闭整页
  * （spec「选中联动与打开链路」「会话行归档动作呈现」）。
  */
-function SessionRow({ t, row, selected, onSelect, onOpen, onArchive }) {
+function SessionRow({ t, row, selected, onSelect, onOpen, onArchive, linked, onHover }) {
   const pending = row.state === "waiting";
   const title = sessionStatusTextOf(t, row) + " · " + row.when;
   /* 行级防重入门禁（add-cosmos-session-row-archive D2）：每行组件内 in-flight 布尔。
@@ -1736,8 +1975,14 @@ function SessionRow({ t, row, selected, onSelect, onOpen, onArchive }) {
       data-state={row.state}
       data-kind={row.kind}
       data-selected={selected ? "true" : undefined}
+      /* 跨面板悬停关联标记（p2-add-cosmos-cross-hover-markers 3.1）：受体行呈现 `<`；
+         源行自身由派生口径排除（`:hover` 底色已表达）。鼠标事件单点绑在行容器——
+         行内「打开」「归档」按钮 hover 穿透，不重复绑定。 */
+      data-linked={linked ? "true" : undefined}
       data-cosmos-session={row.id}
       data-cosmos-ws={row.wsId}
+      onMouseEnter={() => onHover?.(row, true)}
+      onMouseLeave={() => onHover?.(row, false)}
     >
       <button
         type="button"
@@ -1760,6 +2005,8 @@ function SessionRow({ t, row, selected, onSelect, onOpen, onArchive }) {
           {row.todos !== "—" ? (
             <span className="dsh-cosmos-session-todo" title={t("cosmos.sessions.todos", "任务进度")}>{row.todos}</span>
           ) : null}
+          {/* 进度条环形槽位（ring 皮肤；其余形态 CSS 隐藏）——与行底满宽条同数据双槽。 */}
+          <ProgressRing progress={row.progress} />
           {row.satelliteCount > 0 ? (
             <span className="dsh-cosmos-session-sats" title={t("cosmos.sessions.satellites", "子代理会话")}>
               {"◇" + row.satelliteCount}
@@ -1770,6 +2017,9 @@ function SessionRow({ t, row, selected, onSelect, onOpen, onArchive }) {
             {pending ? sessionPendingTextOf(t, row.pendingKind) : row.when}
           </span>
         </span>
+        {/* 行底满宽进度条：main 按钮内末位可视子元素（flex-column 自然落位，不触碰 meta 行
+            与行内「打开/归档」按钮区）；`progress` 为空（"—"/畸形串）时组件零布局。 */}
+        <ProgressStrip progress={row.progress} />
         {/* 屏幕阅读器状态标签（DSH 行同款：视觉隐藏，语义不丢） */}
         <span className="dsh-cosmos-session-sr">{sessionStatusTextOf(t, row)}</span>
       </button>
@@ -1818,7 +2068,7 @@ function SessionRow({ t, row, selected, onSelect, onOpen, onArchive }) {
  * 三个动作：点行 = `onSelect`（引擎选中联动）、「打开」= `onOpen`（官方导航链路）、
  * 「归档」= `onArchive`（既有归档执行链路，整页保持打开）。
  */
-function SessionPanel({ t, model, open, selectedKey, drill, waiting, onToggle, onSelect, onOpen, onArchive }) {
+function SessionPanel({ t, model, open, selectedKey, drill, waiting, onToggle, onSelect, onOpen, onArchive, crossHover, onHoverRow }) {
   const drillActive = drill !== null && drill !== undefined;
   const emptyText = drillActive
     ? t("cosmos.sessions.emptyConstellation", "该星座暂无会话")
@@ -1882,6 +2132,8 @@ function SessionPanel({ t, model, open, selectedKey, drill, waiting, onToggle, o
                     onSelect={onSelect}
                     onOpen={onOpen}
                     onArchive={onArchive}
+                    linked={rowIsLinkedOf(crossHover, row)}
+                    onHover={onHoverRow}
                   />
                 ))
               )}
@@ -3257,6 +3509,10 @@ function CosmosPage(props) {
   const drill = useDrill();
   /* 引擎选中镜像（add-cosmos-selection-linkage 3.1/3.2）：视图 → 面板的反向通道。 */
   const engineSel = useEngineSelection();
+  /* 跨面板悬停（p2-add-cosmos-cross-hover-markers 1.2）：引擎画布悬停只读镜像 +
+     面板行/卡本地悬停态（DOM 事件生命周期与组件同寿，卸载自清）。 */
+  const engineHover = useEngineHover();
+  const [panelHover, setPanelHover] = useState(null);
   /* 会话列表面板展开态（add-cosmos-session-list-panel 3.3）：settings 持久化偏好的只读
      镜像；写者唯一 = `setSessionPanelOpen`（标题栏开合按钮 / Esc 层同通道）。 */
   const sessionPanelState = useSyncExternalStore(
@@ -3305,6 +3561,28 @@ function CosmosPage(props) {
     return projectSessionPanel(scene, { drillWsId: drill?.wsId ?? null });
   }, [sceneVersion, drill?.wsId]);
 
+  /* ── 跨面板悬停合流（p2-add-cosmos-cross-hover-markers 1.2/2.1/2.2）──
+     三源 → 单一悬停描述 → 受体集：
+      - 引擎源（画布指针拾取）优先级最高（仲裁沿用 p1：画布 hover > 面板注入 > 选中）；
+      - 面板源（行/卡 mouseenter）在引擎源为空时接管；离场即 null。
+     受体集由 `crossHoverTargets` 纯函数按悬停源的 `wsId` 单星座派生；`crossHover` 是
+     下发给两侧面板的**单一**悬停描述（叠加 `sessionIds` / `proposalIds` 受体集）。 */
+  const mergedHover = useMemo(() => {
+    if (engineHover && typeof engineHover.kind === "string") {
+      return { source: "canvas", kind: engineHover.kind, wsId: engineHover.wsId, id: engineHover.id };
+    }
+    return panelHover;
+  }, [engineHover, panelHover]);
+  const crossHover = useMemo(() => {
+    if (!mergedHover) return null;
+    const scene = controllerRef.current?.getScene?.() ?? null;
+    const ws = (Array.isArray(scene?.workspaces) ? scene.workspaces : [])
+      .find((item) => item && item.id === mergedHover.wsId) ?? null;
+    if (!ws) return null;
+    const targets = crossHoverTargets(mergedHover, ws);
+    return { ...mergedHover, sessionIds: targets.sessionIds, proposalIds: targets.proposalIds };
+  }, [mergedHover, sceneVersion]);
+
   /* 行选中镜像（视图 → 面板反向通道同款）：引擎选中的行星/彗星 → 会话行高亮键。
      恒星选中不映射会话行（两套列表面相对独立）。 */
   const selectedSessionKey = engineSel && (engineSel.kind === "planet" || engineSel.kind === "comet") && engineSel.wsId
@@ -3320,7 +3598,12 @@ function CosmosPage(props) {
   };
   const focusSessionRow = (row) => {
     if (!row) return;
+    /* 行选中 = 引擎选中联动 + 宿主会话切换（polish-cosmos-session-focus-and-hover-markers
+       2.2）：先走既有 focusBody（钻取/选中/信息卡），再经 controller 把该会话切为主壳
+       当前会话（不关整页）。宿主切换使目标成为 mainView，官方 completionUnread 清除 →
+       「已完成未读」绿色经既有场景刷新回落 idle；两路互不阻断（任一缺席静默降级）。 */
     controllerRef.current?.focusSession?.({ wsId: row.wsId, id: row.id });
+    controllerRef.current?.openSessionInPlace?.(row.id);
   };
   const openSessionRow = (row) => {
     if (!row) return;
@@ -3330,6 +3613,56 @@ function CosmosPage(props) {
     if (!row) return undefined;
     return controllerRef.current?.actions?.archiveSession?.(row.id);
   };
+
+  /* ── 面板悬停接线（p2-add-cosmos-cross-hover-markers 1.3 / design D5）──
+     单点绑在行容器/卡容器：行内「打开」「归档」按钮的 hover 穿透同一行事件（React
+     mouseenter/leave 不冒泡重复触发）。行/正式卡悬停 → 合流描述 + 引擎注入（画布 tips /
+     关系段）；星胚合并卡只出（参与标记派生），不注入（多 slug 无单一目标）；离场 → 注入
+     null。独立窗口座位锁定态（会话导航不可用）下会话行不注入——MUST NOT 让画布 tips 指向
+     一个无法打开的会话；面板侧标记呈现不受影响。 */
+  const hoverSessionRow = (row, entering) => {
+    if (!row) return;
+    if (entering) {
+      setPanelHover({ source: "row", wsId: row.wsId, kind: row.kind, id: row.id });
+      if (!STANDALONE) {
+        controllerRef.current?.setExternalHover?.({ wsId: row.wsId, kind: row.kind, id: row.id });
+      }
+      return;
+    }
+    setPanelHover(null);
+    controllerRef.current?.setExternalHover?.(null);
+  };
+  const hoverProposalCard = (card, entering) => {
+    if (!card) return;
+    if (!entering) {
+      setPanelHover(null);
+      controllerRef.current?.setExternalHover?.(null);
+      return;
+    }
+    if (card.isEmbryo === true) {
+      setPanelHover({
+        source: "embryo",
+        wsId: card.wsId,
+        kind: "proto",
+        id: card.id,
+        slugs: Array.isArray(card.slugs) ? card.slugs : []
+      });
+      return; // 星胚合并卡不注入引擎（p1 注入契约为单目标）
+    }
+    setPanelHover({ source: "card", wsId: card.wsId, kind: "star", id: card.id });
+    controllerRef.current?.setExternalHover?.({ wsId: card.wsId, kind: "star", id: card.id });
+  };
+
+  /* 场景刷新残留清理（design D6 / tasks 3.2）：源实体键（源行键/源卡键）不在新清单
+     （归档 / 摘除）→ 合流层清除悬停并注入 null；引擎侧目标摘除的自清由 p1 置空通知承接
+     （`engineHoverStore` 随 onHoverChange(null) 归零），两侧收场无残影。 */
+  useEffect(() => {
+    if (!panelHover) return;
+    const scene = controllerRef.current?.getScene?.() ?? null;
+    if (hoverSourceAlive(scene, panelHover)) return;
+    setPanelHover(null);
+    controllerRef.current?.setExternalHover?.(null);
+  }, [sceneVersion, panelHover]);
 
   /* 星座动作目标（add-cosmos-constellation-actions 2.2/3.1）：当前钻取星座的分组
      （projectPanel 钻取态输出，携带权威解析所需的 `wsPath`——drillStore 镜像只有
@@ -3638,7 +3971,14 @@ function CosmosPage(props) {
       }}
       style={{
         position: "absolute",
-        top: 0,
+        /* DSH Desktop 顶部窗口 chrome 安全区（Windows caption 40px / macOS 48px）：该带是
+           窗口拖拽区（`-webkit-app-region: drag`，按几何而非堆叠生效），覆盖其上的整页若把
+           交互控件放进带内，上半部指针事件会被窗口拖拽吞掉（真机：钻取态切换条目只有下半部
+           可点）。整页自安全区之下起排——顶部 caption/menu/窗口控件归宿主，页内全部 chrome
+           （切换条目、搜索框、两侧面板）随之整体下移，触发区完整可点。宿主以
+           `--dsh-frame-top-clearance` 发布（Windows = titlebar 高度、macOS = 48px；浏览器 /
+           独立页无该变量 → 0px，行为不变）。 */
+        top: "var(--dsh-frame-top-clearance, 0px)",
         bottom: 0,
         left: STANDALONE || degraded ? 0 : pageLeft,
         right: 0,
@@ -3697,6 +4037,10 @@ function CosmosPage(props) {
         selectedKey={selectedKey}
         onSelect={selectProposal}
         drill={drill}
+        /* 跨面板悬停标记（p2-add-cosmos-cross-hover-markers 1.2/1.3）：单一合流描述 +
+           卡容器 mouseenter/leave 单点接线。 */
+        crossHover={crossHover}
+        onHoverCard={hoverProposalCard}
         /* 星座动作条（仅钻取态）：目标分组缺失（钻取目标注销）时传空列表 → footer 零布局。 */
         constButtons={drillGroup === null ? [] : constButtons}
         onRunConst={runConstAction}
@@ -3712,6 +4056,8 @@ function CosmosPage(props) {
         selectedKey={selectedSessionKey}
         drill={drill}
         waiting={sessionModel.waiting}
+        crossHover={crossHover}
+        onHoverRow={hoverSessionRow}
         onToggle={toggleSessionPanel}
         onSelect={focusSessionRow}
         onOpen={openSessionRow}
@@ -3807,7 +4153,8 @@ const COSMOS_ICON_SVG =
 
 /**
  * 侧栏底部座位「Cosmos」（add-cosmos-standalone-window 4.1–4.3 分流与占位禁用）：
- *  - 点击时**现读** launchMode（`effectiveLaunchModeOf`：桌面形态恒 embedded，D7）——
+ *  - 点击时**现读** launchMode（`effectiveLaunchModeOf`：桌面形态恒 embedded——判据为
+ *    页面协议非 http(s)，见 fix-cosmos-standalone-desktop-degrade D1）——
  *    embedded 走现状（`cosmosOpenStore` 开合内嵌整页，零变化）；window 走
  *    `window.open(origin + "/?cosmos=window")`，返回空（弹窗被拦截，D3/Risks）→
  *    toast 引导放行弹窗（MUST NOT 静默失败）；
@@ -3881,6 +4228,73 @@ function CosmosSeat({ wide, t }) {
   );
 }
 
+/**
+ * 顶部头部座位「Cosmos」（add-cosmos-header-entry 2.1）：
+ *  - 挂点 `conversation.header.leading`（single / root；宿主会话头部左前，空白会话也渲染）；
+ *  - 与侧栏座位**同一**开关链路与状态源（design D2：模块级单件已共享，不抽 hook）：
+ *    受控镜像三 store（open / presence / launch）订阅驱动重渲染，点击闭包使用本轮渲染读取
+ *    的 `effectiveLaunchModeOf` 结果（桌面形态降级恒 embedded）；`disabled` 与 toggle 内
+ *    `if (locked) return` 是同一快照的同源双保险——跨渲染的极窄竞态窗口与侧栏座位同构，
+ *    本变更不另立机制（升级核对时两座位一起看）；
+ *  - icon-only（28px 基线，对齐宿主 HeaderLeadingControls.iconButton 的 chrome 形态）；
+ *    aria/title 全部复用 `cosmos.seat.*` 文案键（零新 locale 键）；
+ *  - 整页打开期间 `shell.overlay` 覆盖主列（含会话头部），本入口指针不可达属预期——定位为
+ *    「开向入口」，关闭路径维持既有三条不变；`data-active` / `aria-expanded` 照常绑定
+ *    真实开合态（window 模式与程序化观测面可立即验证；window / 锁定态省略 aria-expanded
+ *    的理由见下方渲染注释）。
+ * @param {{t?: (key: string) => string}} props
+ */
+function CosmosHeaderSeat({ t }) {
+  const open = useCosmosOpen();
+  const presenceState = useSyncExternalStore(cosmosPresenceStore.subscribe, cosmosPresenceStore.getSnapshot);
+  const launchState = useSyncExternalStore(cosmosLaunchStore.subscribe, cosmosLaunchStore.getSnapshot);
+  /* 独立窗口形态（`?cosmos=window`）：该页 MUST NOT 呈现任何入口控件（spec「独立窗口形态
+     不呈现」）。宿主主壳树仍会挂载，故显式短路，不产生补位入口。 */
+  if (STANDALONE) return null;
+  const locked = seatLockOf(presenceState?.count);
+  const mode = effectiveLaunchModeOf({ launchMode: launchState?.launchMode, protocol: pageProtocol() });
+  const windowMode = mode === "window";
+  const tr = (key, fallback) => {
+    try {
+      const value = typeof t === "function" ? t(key) : null;
+      return typeof value === "string" && value && value !== key ? value : fallback;
+    } catch {
+      return fallback;
+    }
+  };
+  const lockedText = tr("cosmos.seat.locked", "Cosmos 已在独立窗口打开");
+  const windowText = tr("cosmos.seat.windowAria", "在独立窗口打开 Cosmos");
+  const embeddedText = tr("cosmos.seat.aria", "打开 Cosmos 星系视图");
+  const hint = locked ? lockedText : (windowMode ? windowText : embeddedText);
+  const toggle = () => {
+    /* 占位锁：禁用态之外的兜底（状态帧到达与点击之间的竞态窗口）——静默 no-op。 */
+    if (locked) return;
+    if (windowMode) {
+      openStandaloneWindow(tr("cosmos.seat.popupBlocked", "浏览器拦截了独立窗口，请放行弹窗后重试"));
+      return;
+    }
+    cosmosOpenStore.set(!cosmosOpenStore.getSnapshot());
+  };
+  /* window 模式不是 disclosure 控件、锁定态已禁用——两者省略 aria-expanded（不谎报开合，
+     与侧栏座位同构）；embedded 态的 data-active 始终绑定真实开合，供程序化观测。 */
+  return (
+    <button
+      type="button"
+      className="cos-header-seat"
+      data-plugin-anchor="dsh-v-cosmos:header-seat"
+      data-active={open || undefined}
+      data-locked={locked || undefined}
+      aria-label={hint}
+      aria-expanded={windowMode || locked ? undefined : open}
+      aria-disabled={locked || undefined}
+      disabled={locked}
+      title={hint}
+      onClick={toggle}
+      dangerouslySetInnerHTML={{ __html: COSMOS_ICON_SVG }}
+    />
+  );
+}
+
 /* ------------------------------------------------------------------ *
  * 样式注入 + 插件主体
  * ------------------------------------------------------------------ */
@@ -3897,6 +4311,19 @@ div:has(> [data-slot="sidebar.footer.action"]):has(.cos-seat){flex-wrap:wrap}
 .cos-seat-row .cos-seat-icon,.cos-seat-rail .cos-seat-icon{display:flex;flex:none}
 .cos-seat-row svg,.cos-seat-rail svg{width:16px;height:16px;flex:none}
 .cos-seat-label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* ── 顶部头部入口（add-cosmos-header-entry 2.3）：「conversation.header.leading」座位，
+     对齐宿主 HeaderLeadingControls.iconButton 的 chrome 形态（28×28 / --dsw-radius-sm /
+     --dsw-alias-label-secondary / hover --dsw-alias-interactive-bg-hover）；icon-only，
+     flex:none 不参与标题挤压。令牌优先、风格 D 基线回落（宿主 0.2.x 均定义，
+     回落值 = 插件画布既有暖金 / 冷灰基线，令牌缺席不裸奔）。「-webkit-app-region:no-drag」
+     兜底（design D4：spike 判定当前宿主 Windows 拖拽条不覆盖头部（frame 预留 titlebar
+     高度）；该声明只防 app-region 拖拽带扩展，JS 拖拽消费者不在 CSS 防护范围）。 ── */
+.cos-header-seat{box-sizing:border-box;flex:none;display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;padding:0;cursor:pointer;color:var(--dsw-alias-label-secondary,var(--cos-accent-ink,#ffe3b8));background:0 0;border:none;border-radius:var(--dsw-radius-sm,8px);-webkit-app-region:no-drag}
+@media (hover:hover){.cos-header-seat:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover,rgba(255,210,140,.12))}}
+.cos-header-seat:focus-visible{outline:var(--dsw-focus-ring-width,2px) solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary,#ffd28a));outline-offset:-2px}
+.cos-header-seat[data-active="true"]{color:var(--dsw-alias-state-business-primary,var(--cos-accent-ink,#ffe3b8))}
+.cos-header-seat svg{width:16px;height:16px;flex:none}
+.cos-header-seat:disabled{cursor:not-allowed;opacity:.5}
 ${ENGINE_CSS}
 /* ── 新增工作区按钮（add-cosmos-add-workspace 4.4；polish-cosmos-touch-nav 5.1 方形化）：
       左下角常驻，方形 icon-only（44×44，只留「＋」；触屏点击目标 ≥40px，语义经
@@ -3948,6 +4375,11 @@ ${ENGINE_CSS}
 .dsh-cosmos-panel-head{flex:none;display:flex;align-items:center;gap:8px;padding:8px 10px;border-bottom:1px solid rgb(var(--cos-accent-rgb,255 210 140) / .22)}
 .dsh-cosmos-panel-title{flex:1;font-size:12px;letter-spacing:2px;color:var(--cos-accent-ink,#ffe3b8)}
 .dsh-cosmos-panel-count{font-size:11px;opacity:.6}
+/* 头部星胚附注徽标（add-cosmos-galaxy-embryo-cards D3）：主计数（正式提案数）之外的
+   独立补注——虚线框 + --cos-lc-proto 与星胚卡同源语义色；星胚数为 0 时组件侧不渲染
+   （零布局）。 */
+.dsh-cosmos-panel-embryo-count{flex:none;font-size:10px;letter-spacing:.5px;white-space:nowrap;
+  padding:0 4px;border:1px dashed var(--cos-lc-proto,#8a9bc0);color:var(--cos-lc-proto,#8a9bc0)}
 .dsh-cosmos-panel-list{flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;padding:6px 8px 10px;
   touch-action:pan-y;-webkit-user-select:text;user-select:text;outline:none}
 .dsh-cosmos-panel-list:focus-visible{outline:1px solid rgb(var(--cos-accent-rgb,255 210 140) / .55);outline-offset:-1px}
@@ -3987,6 +4419,48 @@ ${ENGINE_CSS}
 .dsh-cosmos-panel-card[data-embryo] .dsh-cosmos-panel-badge{border-color:var(--cos-lc-proto,#8a9bc0);
   color:var(--cos-lc-proto,#8a9bc0);background:transparent}
 .dsh-cosmos-panel-at{white-space:nowrap}
+/* ── 卡片任务进度条（p1-add-cosmos-card-progress-bars 3.3）：会话行与正式提案卡共用
+      组件族。双挂点同数据——strip（满宽底部细条）+ ring（meta 行内 12px 小环），
+      形状切换**零 JS 分支**：根容器 data-cos-progress 属性（skin-registry 唯一写者）
+      决定显隐，取值三形态——
+        · 属性缺失 / segment（fallback 基线）= 满宽格栅条（3px 高、1px 间隙）；
+        · bar = 满宽连续条（宽度 = done/total，格栅隐藏）；
+        · ring = meta 行内小环（满宽条整条隐藏）。
+      total 超 12 退化 = strip 的 data-degraded 标记（只留单连续 span）。
+      取色全走既有 HUD 令牌族（轨道 = accent 通道半透明变体、填充 = --cos-accent；
+      金色直接量仅作 fallback 位），**零新增令牌**。 ── */
+.dsh-cosmos-progress-strip{display:flex;box-sizing:border-box;width:100%;height:3px;margin:2px 0 0;
+  overflow:hidden;background:rgb(var(--cos-accent-rgb,255 210 140) / .14)}
+.dsh-cosmos-progress-segs{display:flex;gap:1px;width:100%;height:100%}
+.dsh-cosmos-progress-seg{flex:1 1 0;min-width:0;background:rgb(var(--cos-accent-rgb,255 210 140) / .14)}
+/* 整格填充语义（design D2）：done 整格主调 / active = 第 done+1 格低透明度 tint（静态，
+   动效归 p2-add-cosmos-card-state-chrome）/ empty 空轨。 */
+.dsh-cosmos-progress-seg[data-fill=done]{background:var(--cos-accent,#ffd28a)}
+.dsh-cosmos-progress-seg[data-fill=active]{background:rgb(var(--cos-accent-rgb,255 210 140) / .42)}
+/* 连续条填充（bar 形态 / total > 12 退化路径）：单 span 宽度百分比。 */
+.dsh-cosmos-progress-fill{display:none;height:100%;background:var(--cos-accent,#ffd28a)}
+/* 形状分支（属性缺失 = segment 基线，故只需为非 segment 形态写显式覆盖）。 */
+[data-cos-progress=bar] .dsh-cosmos-progress-segs{display:none}
+[data-cos-progress=bar] .dsh-cosmos-progress-fill{display:block}
+.dsh-cosmos-progress-strip[data-degraded=true] .dsh-cosmos-progress-segs{display:none}
+.dsh-cosmos-progress-strip[data-degraded=true] .dsh-cosmos-progress-fill{display:block}
+/* meta 行内小环（ring 形态）：conic-gradient 填充角 = --cos-prog-turn（内联数据值，非形状），
+   环带由 mask 径向挖空；默认隐藏，仅 ring 皮肤显形。 */
+.dsh-cosmos-progress-ring{display:none;flex:none;width:12px;height:12px;border-radius:50%;
+  background:conic-gradient(from -90deg,var(--cos-accent,#ffd28a) 0 var(--cos-prog-turn,0%),
+    rgb(var(--cos-accent-rgb,255 210 140) / .18) var(--cos-prog-turn,0%) 100%)}
+[data-cos-progress=ring] .dsh-cosmos-progress-strip{display:none}
+[data-cos-progress=ring] .dsh-cosmos-progress-ring{display:inline-block}
+@supports (mask: radial-gradient(circle,#000 0 3px,transparent 3px)){
+  .dsh-cosmos-progress-ring{-webkit-mask:radial-gradient(circle,#000 0 3px,transparent 3px);
+    mask:radial-gradient(circle,#000 0 3px,transparent 3px)}
+}
+/* mask 环带不可用 → ring 形态回落 bar 呈现（满宽连续条），MUST NOT 裸奔实心饼。 */
+@supports not (mask: radial-gradient(circle,#000 0 3px,transparent 3px)){
+  [data-cos-progress=ring] .dsh-cosmos-progress-strip{display:flex}
+  [data-cos-progress=ring] .dsh-cosmos-progress-segs{display:none}
+  [data-cos-progress=ring] .dsh-cosmos-progress-fill{display:block}
+}
 .dsh-cosmos-panel-empty{padding:8px 2px;font-size:11px;letter-spacing:1px;color:rgb(var(--cos-ink-rgb,255 233 207) / .45)}
 /* ── 会话列表面板（add-cosmos-session-list-panel 2.1–2.3；swap-cosmos-panel-sides 2.1/2.2
       移至左缘；swap-cosmos-session-toggle-titlebar 2.x/3.x 把手退役）：左缘 overlay
@@ -4088,6 +4562,62 @@ ${ENGINE_CSS}
 .dsh-cosmos-session-archive:focus-visible{outline:1px solid rgb(var(--cos-accent-rgb,255 210 140) / .85);outline-offset:1px}
 .dsh-cosmos-session-archive:disabled{opacity:.45;cursor:not-allowed}
 .dsh-cosmos-session-archive-icon{display:block;line-height:1}
+/* ── 状态描边层（p2-add-cosmos-card-state-chrome 2.3–2.6）：会话行与正式提案卡的整卡
+      描边随状态呈现——叠加于既有行内点/loader 与提案卡左缘生命周期色条之上（MUST NOT
+      替代）：busy（含 delegatedBusy）与 act>0 = accent 流动巡游；done-unread = done 色
+      静态高亮 + glow；waiting = warning 色慢脉冲；idle 与 act=0（沉睡）= 现状静默
+      （沉睡 MUST NOT 用虚线——虚线为星胚「还没出生」专有语义）。环带层 = 容器 ::before
+      （absolute inset:0），流动态以 padding + 双层 mask 挖空中心、只留 1px 边环；静态态
+      直接 1px 描边。环带 pointer-events:none（覆盖整卡，缺省会挡住「打开」钮与卡片
+      命中/悬停）。动画仅由状态选择器触发（无常驻）；选中态优先（animation:none，静态
+      状态色保留，MUST NOT 双动画叠在同一条边）；reduced-motion 下时长归零（同色静态
+      描边，色信息保留）。取色零新令牌：accent 通道 / --cos-done / --cos-waiting 经宿主
+      alias → 皮肤令牌级联；glow 挂环带层（light 覆盖块只清元素级，不触及伪元素）。 ── */
+.dsh-cosmos-session-row,.dsh-cosmos-panel-card{position:relative}
+.dsh-cosmos-session-row::before,.dsh-cosmos-panel-card::before{content:'';position:absolute;inset:0;
+  pointer-events:none;border-radius:inherit}
+.dsh-cosmos-session-row[data-state=busy]::before,
+.dsh-cosmos-panel-card[data-act=active]::before{padding:1px;
+  background:repeating-linear-gradient(115deg,transparent 0 5px,rgb(var(--cos-accent-rgb,255 210 140) / .85) 5px 10px,transparent 10px 15px);
+  -webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);
+  -webkit-mask-composite:xor;
+  mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);
+  mask-composite:exclude;
+  animation:cos-state-chrome-flow 2s linear infinite}
+@keyframes cos-state-chrome-flow{from{background-position:0 0}to{background-position:13.59px 6.34px}}
+.dsh-cosmos-session-row[data-state=done-unread]::before{border:1px solid var(--dsw-alias-state-success-primary,var(--cos-done,#5affc0));
+  box-shadow:0 0 10px var(--dsw-alias-state-success-primary,var(--cos-done,#5affc0))}
+.dsh-cosmos-session-row[data-state=waiting]::before{border:1px solid var(--dsw-alias-state-warn-primary,var(--cos-waiting,#ffaa4a));
+  animation:cos-state-chrome-pulse 2.4s ease-in-out infinite}
+@keyframes cos-state-chrome-pulse{0%,100%{opacity:.55}50%{opacity:1}}
+/* 选中优先（design D3）：状态动画停止、静态状态色保留——与既有 [data-selected=true]
+   高亮同用，无双动画叠在同一条边上。 */
+.dsh-cosmos-session-row[data-selected=true][data-state=busy]::before,
+.dsh-cosmos-panel-card[data-selected=true][data-act=active]::before,
+.dsh-cosmos-session-row[data-selected=true][data-state=waiting]::before{animation:none}
+@media (prefers-reduced-motion:reduce){
+  .dsh-cosmos-session-row[data-state=busy]::before,
+  .dsh-cosmos-panel-card[data-act=active]::before,
+  .dsh-cosmos-session-row[data-state=waiting]::before{animation-duration:0s;animation-iteration-count:1}
+}
+/* ── 跨面板悬停关联标记（polish-cosmos-session-focus-and-hover-markers 1.1）：方向三角
+      （CSS 边框绘制，非字符字形）替代 p2 的字符 glyph。会话行标记在**列表右缘**、指向
+      **左**（「<」方向）；提案卡标记在**左缘**、指向**右**（「>」方向）——方向语义与 p2
+      的「<」/「>」一致，位置按评审把会话行标记移到列表右侧。槽位仍取 ::after
+      （::before 归状态描边层）；绝对定位入面板清单 8px 内边距槽（行 right:-9px = 1px
+      右边框 + 槽；正式卡 left:-11px = 3px 左边框 + 槽；星胚卡 1px 左边框 → 覆盖
+      left:-9px），零布局扰动、不覆盖生命周期色条；content 为空 → 天然不进可访问名；
+      pointer-events:none 不拦截命中；静态无动效，微光经 filter 跟随三角形状。 */
+.dsh-cosmos-session-row[data-linked=true]::after,
+.dsh-cosmos-panel-card[data-linked=true]::after{content:"";position:absolute;top:50%;
+  width:0;height:0;transform:translateY(-50%);pointer-events:none;
+  border-top:7px solid transparent;border-bottom:7px solid transparent;
+  filter:drop-shadow(0 0 5px rgb(var(--cos-accent-rgb,255 210 140) / .55))}
+.dsh-cosmos-session-row[data-linked=true]::after{right:-9px;
+  border-right:8px solid rgb(var(--cos-accent-rgb,255 210 140) / .95)}
+.dsh-cosmos-panel-card[data-linked=true]::after{left:-11px;
+  border-left:8px solid rgb(var(--cos-accent-rgb,255 210 140) / .95)}
+.dsh-cosmos-panel-card[data-embryo][data-linked=true]::after{left:-9px}
 /* ── 星座动作条（add-cosmos-constellation-actions 3.1；swap-cosmos-panel-sides 2.4 角标
       随面板镜像到左下）：面板 footer、钻取态专属。
       等宽按钮（flex-basis 0、按行均分）+ 超出面板宽度自动换行；触屏点击目标 ≥40px；
@@ -4600,7 +5130,21 @@ export function apply(ctx) {
     )
   );
 
-  /* 2. Cosmos 整页（shell.overlay，order 45——Hive(40) 之后）。 */
+  /* 2. 顶部头部座位「Cosmos」（add-cosmos-header-entry 2.2）：`conversation.header.leading`
+     为 single / root（空白会话也渲染 headerLeading，侧栏收起 / drawer 下入口仍可达）；
+     single 座位无 order 语义，与侧栏座位同源（同一 store / 分流纯函数 / 文案键）。 */
+  ctx.slots.inject("conversation.header.leading", () =>
+    ctx.slots.register(
+      {
+        name: "conversation.header.leading",
+        id: "v-cosmos-header-seat",
+        locale: NS
+      },
+      CosmosHeaderSeat
+    )
+  );
+
+  /* 3. Cosmos 整页（shell.overlay，order 45——Hive(40) 之后）。 */
   ctx.slots.inject("shell.overlay", () =>
     ctx.slots.register(
       {
@@ -4622,7 +5166,7 @@ export function apply(ctx) {
     )
   );
 
-  /* 3. 设置页「Cosmos」节 + 「快捷动作」标签页（add-cosmos-proposal-actions 5.x；
+  /* 4. 设置页「Cosmos」节 + 「快捷动作」标签页（add-cosmos-proposal-actions 5.x；
      cosmos 首次拥有设置 UI）。标签目录照官方 settings-plugins 的 sectionInjected 口径：
      slots.entries + slots/locale 复合订阅。 */
   let tabsVersion = -1;
@@ -4677,7 +5221,7 @@ export function apply(ctx) {
   /* 3a. 「通用」标签页（add-cosmos-standalone-window 2.2/2.3）：order -1（置于「快捷动作」(0)
       之前）；注入 launch face——受控镜像 = 模块级 cosmosLaunchStore，写入 = `applyLaunchMode`
       （净房持久化 + 镜像；无引擎热更需求，故不经整页控制器）；`desktop` 为浏览器侧可观察
-      事实（`file://` 降级：控件禁用 + 说明，design D7）。 */
+      事实（桌面形态降级：非 http(s) 协议下控件禁用 + 说明）。 */
   const launchFace = {
     getSnapshot: () => cosmosLaunchStore.getSnapshot(),
     subscribe: (listener) => cosmosLaunchStore.subscribe(listener),
@@ -4851,7 +5395,7 @@ export function apply(ctx) {
     )
   );
 
-  /* 4. hero 接力消费条目（add-cosmos-proposal-actions 4.4/4.5）：`conversation.input.dock`
+  /* 5. hero 接力消费条目（add-cosmos-proposal-actions 4.4/4.5）：`conversation.input.dock`
      的 session 作用域列表条目，渲染 null，仅作新 blank 会话首屏的相位钩子。 */
   ctx.slots.inject("conversation.input.dock", () =>
     ctx.slots.register(
@@ -4871,7 +5415,7 @@ export function apply(ctx) {
     )
   );
 
-  /* 5. 星座浮窗输入器（add-cosmos-constellation-actions 4.1）：同一插槽的第二条目，
+  /* 6. 星座浮窗输入器（add-cosmos-constellation-actions 4.1）：同一插槽的第二条目，
      与 hero 条目共用挂点但**消费各自的标记通道**（双 store 隔离，互不误食）。 */
   ctx.slots.inject("conversation.input.dock", () =>
     ctx.slots.register(
@@ -4893,7 +5437,7 @@ export function apply(ctx) {
     )
   );
 
-  /* 6. 星胚动作消费条目（add-cosmos-action-prestate-gate 3.3）：同一插槽的第三条目，
+  /* 7. 星胚动作消费条目（add-cosmos-action-prestate-gate 3.3）：同一插槽的第三条目，
      只消费**星胚通道**（独立 store）；目标会话非 blank，故门控不含 blank。 */
   ctx.slots.inject("conversation.input.dock", () =>
     ctx.slots.register(
@@ -4916,7 +5460,7 @@ export function apply(ctx) {
 
 /* 冒烟测试观测面（hive exports 先例）：只读镜像 + 纯函数引用，供 bundle 级冒烟
    直测导出面与推导口径；运行时行为不受影响。 */
-export { cosmosOpenStore, cosmosPresenceStore, cosmosLaunchStore, cosmosStandaloneStore, STANDALONE, DESKTOP_PROTOCOL, requestPageClose, applyLaunchMode, openStandaloneWindow, isStandaloneSearch, isStandalonePage, standaloneUrlOf, isDesktopProtocol, effectiveLaunchModeOf, seatLockOf, otherWindowHintOf, closeDecisionOf, CosmosGeneralPanel, sceneVersionStore, filterStore, drillStore, engineSelectStore, cosmosButtonsFace, cosmosConstButtonsFace, cosmosSkinStore, cosmosNavStore, cosmosShortcutsStore, cosmosButtonDraftsStore, cosmosSessionPanelStore, cosmosSelectHealthOf, currentShortcuts, buttonDraftsOf, floatOpenOf, COSMOS_SKINS, COSMOS_SKIN_IDS, COSMOS_DEFAULT_SKIN, createSkin, applySkinTokens, mergeScene, sceneDiffLevel, planetStateOf, relativeTime, matchWorkspaces, filteredPositions, findRegisteredWorkspace, normalizeWorkspacePath, isWindowsPlatform, isEmptyConstellation, projectPanel, projectSessionPanel, sessionKeyOf, findCard, proposalKeyOf, assembleMessage, assembleEmbryoMessage, actionButtonVisible, draftMatches, isBlankDraft, pendingReadinessOf, createActionGate, createPendingActionStore, createActionExecutor, createEmbryoActionExecutor, consumePendingAction, explorationTargetOf, createModelBridge, ProposalPanel, SessionPanel, ActionBar, ConstActionBar, ActionHeroDock, ConstellationFloatDock, EmbryoActionDock, CosmosSettingsSection, CosmosActionsPanel, CosmosSkinPanel, CosmosNavPanel, CosmosShortcutsPanel, SKIN_D_PALETTE, createSkinD, createCosmosEngine, isUiChromeTarget, fetchScene, subscribeCosmosEvents, bindSession, loadCosmosSettings, saveCosmosSettings, COSMOS_SETTINGS_DEFAULTS, COSMOS_SETTINGS_BOUNDS, PENDING_DIVE_WAIT_MS, normalizeConstButtons, constButtonsSectionOf, constellationMessageOf, createFloatMarkerStore, createConstellationExecutor, floatPresentationOf, createButtonSettingsController, constButtonDraftOf, constButtonIssue, CONSTELLATION_PROFILE, isSessionArchiveOutcome, activitySummaryOf, archiveNoticeOf, archiveRequestFailureNotice, SHORTCUT_DEFAULTS, SHORTCUT_FIELDS, SHORTCUT_UI_ORDER, SHORTCUT_GLOBAL_KEYS, SHORTCUT_BUTTON_KEYS, shortcutLabelOf, shortcutMatches, shortcutsOf, shortcutConflictOf, shortcutsIssue };
+export { cosmosOpenStore, cosmosPresenceStore, cosmosLaunchStore, cosmosStandaloneStore, STANDALONE, DESKTOP_PROTOCOL, requestPageClose, applyLaunchMode, openStandaloneWindow, isStandaloneSearch, isStandalonePage, standaloneUrlOf, isDesktopProtocol, effectiveLaunchModeOf, seatLockOf, otherWindowHintOf, closeDecisionOf, CosmosGeneralPanel, sceneVersionStore, filterStore, drillStore, engineSelectStore, engineHoverStore, cosmosButtonsFace, cosmosConstButtonsFace, cosmosSkinStore, cosmosNavStore, cosmosShortcutsStore, cosmosButtonDraftsStore, cosmosSessionPanelStore, cosmosSelectHealthOf, currentShortcuts, buttonDraftsOf, floatOpenOf, COSMOS_SKINS, COSMOS_SKIN_IDS, COSMOS_DEFAULT_SKIN, createSkin, applySkinTokens, mergeScene, sceneDiffLevel, planetStateOf, relativeTime, matchWorkspaces, filteredPositions, findRegisteredWorkspace, normalizeWorkspacePath, isWindowsPlatform, isEmptyConstellation, projectPanel, projectSessionPanel, sessionKeyOf, findCard, proposalKeyOf, assembleMessage, assembleEmbryoMessage, actionButtonVisible, draftMatches, isBlankDraft, pendingReadinessOf, createActionGate, createPendingActionStore, createActionExecutor, createEmbryoActionExecutor, consumePendingAction, explorationTargetOf, createModelBridge, ProposalPanel, SessionPanel, ActionBar, ConstActionBar, ActionHeroDock, ConstellationFloatDock, EmbryoActionDock, CosmosSettingsSection, CosmosActionsPanel, CosmosSkinPanel, CosmosNavPanel, CosmosShortcutsPanel, SKIN_D_PALETTE, createSkinD, createCosmosEngine, isUiChromeTarget, fetchScene, subscribeCosmosEvents, bindSession, loadCosmosSettings, saveCosmosSettings, COSMOS_SETTINGS_DEFAULTS, COSMOS_SETTINGS_BOUNDS, PENDING_DIVE_WAIT_MS, normalizeConstButtons, constButtonsSectionOf, constellationMessageOf, createFloatMarkerStore, createConstellationExecutor, floatPresentationOf, createButtonSettingsController, constButtonDraftOf, constButtonIssue, CONSTELLATION_PROFILE, isSessionArchiveOutcome, activitySummaryOf, archiveNoticeOf, archiveRequestFailureNotice, SHORTCUT_DEFAULTS, SHORTCUT_FIELDS, SHORTCUT_UI_ORDER, SHORTCUT_GLOBAL_KEYS, SHORTCUT_BUTTON_KEYS, shortcutLabelOf, shortcutMatches, shortcutsOf, shortcutConflictOf, shortcutsIssue };
 
 /* 文案（zh/en 成对；引擎内嵌中文提示为 demo 语言的既定呈现）。 */
 const DICT = {
@@ -4940,6 +5484,7 @@ const DICT = {
     "cosmos.panel.emptyConstellation": "该星座暂无提案",
     "cosmos.panel.setBy": "落章来源",
     "cosmos.panel.embryo": "星胚",
+    "cosmos.panel.embryoCount": "＋{n} 星胚",
     "cosmos.sessions.title": "会话",
     "cosmos.sessions.aria": "会话列表",
     "cosmos.sessions.handleAria": "展开会话列表",
@@ -5001,6 +5546,14 @@ const DICT = {
     "cosmos.actions.embryoDraftNotEmpty": "探索会话已有未发送输入，未改写",
     "cosmos.actions.embryoKeepOpen": "已在探索会话填入消息，Cosmos 保持打开",
     "cosmos.actions.embryoSendFailed": "发送到探索会话失败：",
+    /* 独立窗口动作反馈（add-cosmos-standalone-jump-feedback D2/D3）：跳转尾巴被抑制时的
+       专属 toast（提案 / 星胚 / 星座 native 改写 / autoSend 未执行说明）。措辞 MUST NOT
+       承诺未发生的事——「未自动发送」如实注明。 */
+    "cosmos.actions.standaloneJumpFeedback": "会话草稿已在主窗口准备，Cosmos 窗口保持打开",
+    "cosmos.actions.standaloneAutoSendNote": "未自动发送，请到主窗口提交",
+    "cosmos.actions.standaloneEmbryoFeedback": "探索会话需在主窗口操作，Cosmos 窗口保持打开",
+    "cosmos.actions.standalonePreflightFeedback": "跳转会话页需在主窗口操作，已改用浮窗补写",
+    "cosmos.actions.standaloneConstDraft": "提示词已写入会话草稿，Cosmos 窗口保持打开",
     "cosmos.constActions.aria": "星座动作",
     "cosmos.constFloat.title": "星座动作",
     "cosmos.constFloat.inputAria": "消息内容",
@@ -5034,7 +5587,7 @@ const DICT = {
     "cosmos.settings.launchModeEmbeddedHint": "在 DSH 主窗口内以整页覆盖层打开（与变更前一致）。",
     "cosmos.settings.launchModeWindow": "独立窗口",
     "cosmos.settings.launchModeWindowHint": "浏览器新开同源窗口，只显示 Cosmos；主壳入口在此期间禁用，分屏时数据实时同态。",
-    "cosmos.settings.launchModeDesktop": "桌面形态（file://）无 HTTP origin，独立窗口不可用：入口固定为内嵌整页（历史配置保留，桌面形态忽略）。",
+    "cosmos.settings.launchModeDesktop": "独立窗口仅 web（浏览器）形态可用：当前为桌面形态，入口固定为内嵌整页（历史配置保留，切回 web 端仍生效）。",
     "cosmos.settings.launchModeInstant": "改动立即生效并保存",
     "cosmos.settings.tabActions": "快捷动作",
     "cosmos.settings.tabConstActions": "星座动作",
@@ -5214,6 +5767,7 @@ const DICT = {
     "cosmos.panel.emptyConstellation": "No proposals in this constellation",
     "cosmos.panel.setBy": "Stamped by",
     "cosmos.panel.embryo": "Embryo",
+    "cosmos.panel.embryoCount": "+{n} embryos",
     "cosmos.sessions.title": "Sessions",
     "cosmos.sessions.aria": "Session list",
     "cosmos.sessions.handleAria": "Open session list",
@@ -5270,6 +5824,11 @@ const DICT = {
     "cosmos.actions.embryoDraftNotEmpty": "Exploration session already has unsent input; left untouched",
     "cosmos.actions.embryoKeepOpen": "Message pre-filled in the exploration session; Cosmos stays open",
     "cosmos.actions.embryoSendFailed": "Failed to send to the exploration session: ",
+    "cosmos.actions.standaloneJumpFeedback": "Session draft is ready in the main window; this Cosmos window stays open",
+    "cosmos.actions.standaloneAutoSendNote": "not auto-sent — submit it from the main window",
+    "cosmos.actions.standaloneEmbryoFeedback": "The exploration session must be used from the main window; this Cosmos window stays open",
+    "cosmos.actions.standalonePreflightFeedback": "Jumping to the session page needs the main window; switched to the floating composer",
+    "cosmos.actions.standaloneConstDraft": "The prompt was written into a session draft; this Cosmos window stays open",
     "cosmos.constActions.aria": "Constellation actions",
     "cosmos.constFloat.title": "Constellation action",
     "cosmos.constFloat.inputAria": "Message",
@@ -5301,7 +5860,7 @@ const DICT = {
     "cosmos.settings.launchModeEmbeddedHint": "Open as a full-page overlay inside the DSH window (unchanged).",
     "cosmos.settings.launchModeWindow": "Standalone window",
     "cosmos.settings.launchModeWindowHint": "The browser opens a same-origin window showing only Cosmos; the main entry is disabled meanwhile, and data stays in sync across screens.",
-    "cosmos.settings.launchModeDesktop": "Desktop form (file://) has no HTTP origin, so the standalone window is unavailable: the entry stays inline (the stored preference is kept but ignored on desktop).",
+    "cosmos.settings.launchModeDesktop": "The standalone window is available only in the web (browser) form: on desktop the entry always opens inline (the stored preference is kept and applies again on the web).",
     "cosmos.settings.launchModeInstant": "Changes apply and persist immediately",
     "cosmos.settings.tabActions": "Quick actions",
     "cosmos.settings.tabConstActions": "Constellation actions",

@@ -29,7 +29,8 @@
 import {
   TAU, clamp, lerp, easeOutK, mix, hexA, hashSeed, hashRand,
   makeGlowCache, trailStroke, sessColor, mixFade, viewKOf, birthAlphaOf, segAlphaOf,
-  dustBornK, satBornKOf, createVesselGuard, vesselAnchor
+  dustBornK, satBornKOf, createVesselGuard, vesselAnchor,
+  makeDustSprite, dustBatchDraw
 } from '../skin-kit.mjs';
 
 /* created 取 demo `draft` 的冷蓝支（#6a8ab8）：另一支 in-progress #e8f4ff 近白，
@@ -59,6 +60,7 @@ const DUST = Object.freeze(['#2a3a52', '#4a6a8a']); // 电离雾滴双色（demo
 /** 创建云室皮肤实例（每次调用独立 glow 缓存 + 独立器皿守卫）。 */
 export function createSkinChamber() {
   const glow = makeGlowCache();
+  const dustBrush = makeDustSprite(); // 尘埃 sprite 缓存（每皮肤实例独立，防跨皮肤串色）
   const palette = { prop: PROP, sess: SESS };
   const vesselOnce = createVesselGuard();
 
@@ -209,18 +211,9 @@ export function createSkinChamber() {
       if (it.ws && vesselOnce(it.ws, t)) chamberVessel(ctx, it.ws);
 
       if (it.kind === 'dust') {
-        /* 电离雾滴（星云）：双色按 hue 分档；born 粒子沿 0.8s α 坡道凝结。
-           空星云直接早退（不碰 ctx 状态——器皿帧内去重判定按调用原语数比） */
-        if (!it.pts.length) return;
-        it.pts.forEach(function (p) {
-          const bornK = dustBornK(p, t);
-          ctx.globalAlpha = clamp(p.a * bornK * 0.42, 0, 1);
-          ctx.fillStyle = DUST[p.hue < 0.5 ? 0 : 1];
-          ctx.beginPath();
-          ctx.arc(p.x, p.y, Math.max(0.6, p.s * 0.4), 0, TAU);
-          ctx.fill();
-        });
-        ctx.globalAlpha = 1;
+        /* 电离雾滴（星云）：共享低开销原语（缓存 dot sprite + 分色分组 + born 0.8s
+           坡道）。空星云由原语首行早退（零 ctx 调用——器皿帧内去重判定按调用原语数比）。 */
+        dustBatchDraw(dustBrush, ctx, it.pts, DUST, t, { alphaK: 0.42, radiusK: 0.4, minR: 0.6 });
         return;
       }
 

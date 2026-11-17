@@ -29,6 +29,9 @@
 
 const TAU = Math.PI * 2;
 
+/* 共享低开销尘埃原语（add-cosmos-render-budget D2）：缓存 sprite + 分色分组。 */
+import { makeDustSprite, dustBatchDraw } from './skin-kit.mjs';
+
 function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
 function lerp(a, b, t) { return a + (b - a) * t; }
 function easeOutK(k) { k = clamp(k, 0, 1); return 1 - Math.pow(1 - k, 3); }
@@ -129,6 +132,7 @@ const GOLD = '#ffd28a';
  */
 export function createSkinDeepspace() {
   const spriteCache = {};
+  const dustBrush = makeDustSprite(); // 尘埃 sprite 缓存（每皮肤实例独立，防跨皮肤串色）
   function glow(hex) {
     if (!spriteCache[hex]) spriteCache[hex] = glowSprite(hexA(hex, 0.95), hexA(hex, 0.22));
     return spriteCache[hex];
@@ -248,18 +252,14 @@ export function createSkinDeepspace() {
       const self = this;
 
       if (it.kind === 'dust') {
-        ctx.save();
-        ctx.globalCompositeOperation = 'lighter';
-        it.pts.forEach(function (p) {
-          /* 星云增量渐入（1.2/D8）：born 粒子 α 坡道 0.8s，存量粒子 born 空 → 恒定。 */
-          const bornK = p.born != null ? clamp((t - p.born) / DUST_BORN_FADE, 0, 1) : 1;
-          ctx.globalAlpha = clamp(p.a * bornK * 0.5, 0, 1);
-          ctx.fillStyle = self.dustColors[p.hue < 0.5 ? 0 : 1];
-          ctx.beginPath();
-          ctx.arc(p.x, p.y, Math.max(0.6, p.s * 0.42), 0, TAU);
-          ctx.fill();
+        /* 星云尘埃：共享低开销原语（缓存 dot sprite + 分色分组；born 坡道 0.8s 沿用）。
+           风格 D 为深空系 → lighter 加色（合成模式声明在原语调用）。 */
+        dustBatchDraw(dustBrush, ctx, it.pts, self.dustColors, t, {
+          composite: 'lighter',
+          alphaK: 0.5,
+          radiusK: 0.42,
+          minR: 0.6
         });
-        ctx.restore();
         return;
       }
       if (it.kind === 'constline') {

@@ -48,7 +48,7 @@
  *  - launchMode：Cosmos 入口打开方式（add-cosmos-standalone-window 1.1/D4）——
  *    枚举 `COSMOS_LAUNCH_MODES`：`embedded`（缺省，现状：shell.overlay 内嵌整页）/
  *    `window`（同源独立窗口，语义见 src/standalone.mjs）。净房 = 枚举校验回落缺省；
- *    v8 及更早载荷读出补缺省（零迁移，渲染零变化）。桌面形态（`file://`）的降级判定
+ *    v8 及更早载荷读出补缺省（零迁移，渲染零变化）。桌面形态（非 http(s) 协议）的降级判定
  *    不落在设置面（持久值照存，读取侧按协议分流，见 standalone.mjs）。
  * 后续设置 UI 直接调 `saveCosmosSettings`（写侧净房内置），引擎经 `engine.setTuning` /
  * `engine.setShortcuts` / `engine.setSkin` 热更新（无需重开整页）。

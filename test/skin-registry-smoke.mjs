@@ -10,6 +10,8 @@
  *    ignite/stamp/view/degraded/bornK）；
  *  - 器皿帧内去重（同帧同星座只绘制一次；换帧重开）；
  *  - HUD 令牌表完备 + deepspace 基线现值逐枚相等 + 令牌下发与 `data-cos-mode`；
+ *  - 卡片进度形状通道（p1-add-cosmos-card-progress-bars 4.3/4.4）：12 套 `progressShape`
+ *    枚举完备且与指派表一致、`progressShapeOf` clamp、`data-cos-progress` 下发；
  *  - 未知 id 回落默认 + 实例按 id 缓存隔离。
  *
  * 运行：node test/skin-registry-smoke.mjs
@@ -34,10 +36,13 @@ globalThis.document = {
 const {
   COSMOS_DEFAULT_SKIN,
   COSMOS_HUD_TOKENS,
+  COSMOS_PROGRESS_SHAPE_DEFAULT,
+  COSMOS_PROGRESS_SHAPES,
   COSMOS_SKIN_IDS,
   COSMOS_SKINS,
   applySkinTokens,
   createSkin,
+  progressShapeOf,
   resolvedSkinEntry,
   skinCardOf,
   skinEntryOf,
@@ -97,6 +102,44 @@ const EXPECTED_IDS = [
     assert.equal(typeof entry.create, "function", entry.id + ": create 工厂");
     assert.ok(entry.instance && entry.instance.skin === entry.id, entry.id + ": 缓存实例");
     assert.ok(entry.base && entry.base.bg && entry.base.accent, entry.id + ": base 色板");
+  }
+}
+
+/* ── 1b. 卡片进度形状通道（p1-add-cosmos-card-progress-bars 2.1/4.4 / design D4/D5） ── */
+{
+  assert.deepEqual([...COSMOS_PROGRESS_SHAPES], ["segment", "bar", "ring"], "形状枚举三值（segment 在首 = 基线）");
+  assert.equal(COSMOS_PROGRESS_SHAPE_DEFAULT, "segment", "缺省兜底 = segment");
+  /* 逐肤指派表（spec dsh-cosmos「逐肤映射完备」）：常量表在这里**独立重抄**，注册表改动
+     必须同步本表——防止「注册表与规格漂移」被自引用断言掩盖。 */
+  const ASSIGNED = {
+    deepspace: "segment",
+    rosepine: "segment",
+    fidenza: "segment",
+    migration: "segment",
+    circuit: "segment",
+    linear: "bar",
+    obsidian: "bar",
+    chamber: "bar",
+    reagent: "bar",
+    fluoro: "ring",
+    lotus: "ring",
+    fermata: "ring"
+  };
+  assert.deepEqual([...COSMOS_SKIN_IDS].sort(), Object.keys(ASSIGNED).sort(), "指派表覆盖全部 12 套内置皮肤（无一缺席/多余）");
+  for (const entry of COSMOS_SKINS) {
+    assert.equal(typeof entry.progressShape, "string", entry.id + ": progressShape 字段在册（可选字段已落值）");
+    assert.ok(COSMOS_PROGRESS_SHAPES.includes(entry.progressShape), entry.id + ": progressShape 落在枚举内");
+    assert.equal(entry.progressShape, ASSIGNED[entry.id], entry.id + ": progressShape 与指派表一致");
+  }
+  const byShape = (shape) => COSMOS_SKINS.filter((entry) => entry.progressShape === shape).map((entry) => entry.id);
+  assert.equal(byShape("segment").length, 5, "segment 5 套");
+  assert.equal(byShape("bar").length, 4, "bar 4 套");
+  assert.equal(byShape("ring").length, 3, "ring 3 套");
+  assert.deepEqual(byShape("ring"), ["fluoro", "lotus", "fermata"], "ring 指派（培养皿/涟漪/倚音弧）");
+  /* clamp 纯函数（MUST NOT 抛错）：枚举内原样，其余一律 segment。 */
+  for (const shape of COSMOS_PROGRESS_SHAPES) assert.equal(progressShapeOf(shape), shape, "枚举内原样：" + shape);
+  for (const bad of [undefined, null, "", "nope", 42, {}, [], ["ring"], "Segment", " bar", "bar ", "segment\n"]) {
+    assert.equal(progressShapeOf(bad), "segment", "枚举外 clamp 为 segment：" + JSON.stringify(bad));
   }
 }
 
@@ -253,7 +296,7 @@ for (const entry of COSMOS_SKINS) {
   assert.equal(skinHudOf("nope"), skinHudOf(COSMOS_DEFAULT_SKIN), "未知 id → 默认皮肤令牌表");
 }
 
-/* ── 6. 令牌下发（唯一写者）+ data-cos-mode ── */
+/* ── 6. 令牌下发（唯一写者）+ data-cos-mode + data-cos-progress ── */
 {
   const makeEl = () => {
     const props = new Map();
@@ -268,14 +311,39 @@ for (const entry of COSMOS_SKINS) {
   assert.equal(dark.props.size, COSMOS_HUD_TOKENS.length, "逐枚 setProperty");
   assert.equal(dark.props.get("--cos-bg"), "#070812");
   assert.equal(dark.dataset.cosMode, "dark", "data-cos-mode=dark");
+  assert.equal(dark.dataset.cosProgress, "segment", "data-cos-progress=segment（deepspace 指派）");
   const light = makeEl();
   assert.equal(applySkinTokens(light, createSkin("fidenza")), true, "按皮肤实例下发（接口签名）");
   assert.equal(light.dataset.cosMode, "light", "fidenza → data-cos-mode=light");
+  assert.equal(light.dataset.cosProgress, "segment", "fidenza → data-cos-progress=segment（按实例 id 解析注册表项）");
   assert.equal(light.props.get("--cos-scan"), "transparent", "纸面皮肤扫描线令牌关闭");
   assert.notEqual(light.props.get("--cos-shadow"), "none", "纸面皮肤柔和投影");
+
+  /* 形状通道逐肤抽查（4.3）：三种形态各取一套，值必须与注册表指派一致。 */
+  for (const [id, shape] of [["rosepine", "segment"], ["linear", "bar"], ["obsidian", "bar"], ["fermata", "ring"], ["lotus", "ring"]]) {
+    const el = makeEl();
+    assert.equal(applySkinTokens(el, id), true, "下发 " + id);
+    assert.equal(el.dataset.cosProgress, shape, id + " → data-cos-progress=" + shape);
+    assert.equal(el.dataset.cosProgress, skinEntryOf(id).progressShape, id + "：下发值 = 注册表项取值");
+  }
+  /* 下发点恒经 clamp 纯函数（2.2）：逐肤下发值 = progressShapeOf(注册表项取值)，
+     任何路径都不可能把枚举外值写进根属性。 */
+  for (const entry of COSMOS_SKINS) {
+    const el = makeEl();
+    assert.equal(applySkinTokens(el, entry.id), true, "下发 " + entry.id);
+    assert.equal(el.dataset.cosProgress, progressShapeOf(entry.progressShape), entry.id + "：下发值经 progressShapeOf clamp");
+    assert.ok(COSMOS_PROGRESS_SHAPES.includes(el.dataset.cosProgress), entry.id + "：下发值恒在枚举内");
+  }
+  /* 外部注入实例（只按 id 解析注册表项）落值同源——注入的未知形状字段不参与下发。 */
+  for (const badShape of [undefined, null, "nope", 42, "ring"]) {
+    const el = makeEl();
+    assert.equal(applySkinTokens(el, { hud: skinHudOf("rosepine"), id: "rosepine", mode: "dark", progressShape: badShape }), true, "外部注入实例下发（形状字段 " + JSON.stringify(badShape) + "）");
+    assert.equal(el.dataset.cosProgress, "segment", "外部注入形状字段不参与下发（注册表项为准，恒枚举内）");
+  }
   const missing = makeEl();
   assert.equal(applySkinTokens(missing, "nope"), false, "未知皮肤 → false 不抛错");
   assert.equal(missing.props.size, 0, "未知皮肤不写任何令牌");
+  assert.equal(missing.dataset.cosProgress, undefined, "未知皮肤不写形状属性（零副作用）");
   assert.equal(applySkinTokens(null, "deepspace"), false, "根容器缺失 → false");
   assert.equal(applySkinTokens(makeEl(), null), false, "皮肤缺失 → false");
 }
