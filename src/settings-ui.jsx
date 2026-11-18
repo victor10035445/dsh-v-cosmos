@@ -24,6 +24,9 @@
  * （回到银河 / 移动开关 / 语音开关 / 关闭页面）+ 激活条件说明列 + 默认徽标 + 冲突即时
  * 校验 + 失败「未生效」提示 + Ctrl+Q 风险注记与 Alt+Q 替代；两个动作页签行内新增
  * 「快捷键」下拉（无 / 0–9 / F2/F4/F8/F9），漂移值回显「不可用」、跨域冲突行内错误。
+ * step2-cosmos-openspec-path-setting 3.1–3.3：「通用」页签新增「路径」区（CosmosPathsSection，
+ * 独立 face：openspecPath / cosmosSpecDir 输入 + CAS 保存 + 非阻断存在性警示 +
+ * 端点不可达仅本区禁用降级）。
  *
  * 由 client.jsx 注册为 `settings.section`（id `v-cosmos`，order 6——「技能管理」之后）+
  * 六条标签页「通用」（order -1，add-cosmos-standalone-window 2.2）/「快捷动作」（order 0）/
@@ -320,6 +323,19 @@ export const COSMOS_SETTINGS_CSS = `
 .cs-launch[data-desktop=true] .cs-launchRow input{cursor:not-allowed}
 .cs-launchText{display:flex;flex-direction:column;gap:2px;min-width:0}
 .cs-launchHint{font-size:12px;line-height:16px;color:var(--dsw-alias-label-tertiary)}
+/* ── 「通用」页签·路径区（step2-cosmos-openspec-path-setting 3.1–3.3）：openspecPath /
+      cosmosSpecDir 两个文本输入 + 保存（CAS 草稿-保存模式）；端点不可达整组禁用 +
+      提示（不影响页面其余设置）；存在性警示为非阻断提示。触控目标 ≥44px。 ── */
+.cs-paths{display:flex;flex-direction:column;gap:6px;margin:2px 0 0;padding:8px 10px;border:1px solid var(--dsw-alias-border-l2);border-radius:10px}
+.cs-paths[data-unavailable=true]{opacity:.75}
+.cs-pathsLegend{padding:0 4px;font-size:12px;line-height:16px;color:var(--dsw-alias-label-secondary)}
+.cs-pathsField{display:flex;flex-direction:column;gap:2px}
+.cs-pathsLabel{font-size:13px;line-height:18px;color:var(--dsw-alias-label-primary)}
+.cs-pathsInput{box-sizing:border-box;min-height:44px;padding:6px 8px;border:1px solid var(--dsw-alias-border-l2);border-radius:6px;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);font:var(--dsw-font-markdown-code-block-small,12px ui-monospace,SFMono-Regular,Menlo,monospace);outline:none}
+.cs-pathsInput:focus{border-color:var(--dsw-alias-border-inverted)}
+.cs-pathsInput:disabled{opacity:.55;cursor:not-allowed}
+.cs-pathsHint{font-size:12px;line-height:16px;color:var(--dsw-alias-label-tertiary)}
+.cs-pathsWarn{font-size:12px;line-height:16px;color:var(--dsw-alias-state-warning-primary)}
 `;
 
 /**
@@ -382,7 +398,110 @@ const LAUNCH_MODE_FIELDS = Object.freeze([
 ]);
 
 /**
- * 「通用」标签页（add-cosmos-standalone-window 2.2 / spec「launchMode 配置项」）：
+ * 「通用」页签·路径区（step2-cosmos-openspec-path-setting 3.1–3.3 / spec
+ * cosmos-path-setting「设置页路径区」）：
+ *  - `openspecPath` 与 `cosmosSpecDir` 两个文本输入 + 保存（CAS 草稿-保存模式）；
+ *    页面加载时以 `GET /config` 快照回显当前值（face 快照的 effective 值）；
+ *  - 保存：face.save() → 整节 CAS 写入；409/失败 → 「保存未生效，请重试」（草稿保留）；
+ *  - 目录存在性警示（非阻断）：face.warnings 逐条呈现「目录不存在（仍已保存）」+
+ *    `path.resolve` 归一后的实际形态（检查器由注入提供，web 侧缺席 = 无警示）；
+ *  - 端点不可达降级（3.3）：writable false / loading → 输入禁用 + 提示，
+ *    MUST NOT 影响页面其余设置（launch 单选不受 paths face 牵连）；
+ *  - face 缺失（旧宿主未注入）→ 降级占位（与其它页签同纪律，不渲染可输入却永不生效的控件）。
+ * @param {{t: Function, paths?: object|null}} props
+ */
+export function CosmosPathsSection(props) {
+  const t = props.t;
+  const face = props.paths ?? null;
+  const state = useSyncExternalStore(face ? face.subscribe : noopSubscribe, face ? face.getSnapshot : noopSnapshot);
+  if (face === null) {
+    return (
+      <div data-plugin-anchor="dsh-v-cosmos:settings-general-paths">
+        <div className="cs-hint" data-state="face-missing">{tr(t, "cosmos.settings.pathsUnavailable", "路径设置暂不可用：插件页面未就绪（刷新页面后重试）。")}</div>
+      </div>
+    );
+  }
+  const loading = state?.status === "loading";
+  const writable = state?.writable === true;
+  const disabled = loading || !writable || state?.saving === true;
+  const dirty = state?.dirty === true;
+  const failed = state?.failed === true;
+  const warnings = Array.isArray(state?.warnings) ? state.warnings : [];
+  return (
+    <fieldset
+      className="cs-paths"
+      data-plugin-anchor="dsh-v-cosmos:settings-general-paths"
+      data-unavailable={!writable && !loading ? "true" : undefined}
+      disabled={disabled}
+    >
+      <legend className="cs-pathsLegend">{tr(t, "cosmos.settings.pathsLabel", "路径")}</legend>
+      <div className="cs-hint">{tr(t, "cosmos.settings.pathsHint", "openspec 路径令牌 OPENSPEC_PATH 的解析值与 cosmos-spec 技能目录：保存后写入本机共享配置并即时生效（无需重启插件或会话）。未配置留空。")}</div>
+      {loading ? <div className="cs-loading">{tr(t, "cosmos.settings.pathsLoading", "正在加载路径设置…")}</div> : null}
+      <div className="cs-pathsField">
+        <label className="cs-pathsLabel" htmlFor="cosmos-paths-openspec">{tr(t, "cosmos.settings.pathsOpenspecLabel", "openspecPath（openspec 技能仓库根）")}</label>
+        <input
+          id="cosmos-paths-openspec"
+          className="cs-pathsInput"
+          type="text"
+          value={state?.openspecPath ?? ""}
+          placeholder={tr(t, "cosmos.settings.pathsOpenspecPh", "如 C:\\openspec 或 ~/openspec（留空 = 未配置）")}
+          spellCheck={false}
+          disabled={disabled}
+          onChange={(event) => face.edit("openspecPath", event.target.value)}
+        />
+        <div className="cs-pathsHint">{tr(t, "cosmos.settings.pathsOpenspecHint", "路径令牌 OPENSPEC_PATH 的解析值：渲染技能引用时以该目录为 openspec 根。")}</div>
+      </div>
+      <div className="cs-pathsField">
+        <label className="cs-pathsLabel" htmlFor="cosmos-paths-cosmos-spec">{tr(t, "cosmos.settings.pathsCosmosSpecLabel", "cosmosSpecDir（cosmos-spec 目录）")}</label>
+        <input
+          id="cosmos-paths-cosmos-spec"
+          className="cs-pathsInput"
+          type="text"
+          value={state?.cosmosSpecDir ?? ""}
+          placeholder={tr(t, "cosmos.settings.pathsCosmosSpecPh", "如 C:\\cosmos-spec（留空 = 未配置）")}
+          spellCheck={false}
+          disabled={disabled}
+          onChange={(event) => face.edit("cosmosSpecDir", event.target.value)}
+        />
+        <div className="cs-pathsHint">{tr(t, "cosmos.settings.pathsCosmosSpecHint", "cosmos-spec canonical 目录：技能渲染的扫描根（技能提供方消费）。")}</div>
+      </div>
+      {warnings.map((warning, index) => (
+        <div className="cs-pathsWarn" key={warning.key + ":" + index} data-path-warning={warning.key} role="status">
+          {tr(t, "cosmos.settings.pathsDirMissing", "目录不存在（仍已保存，可先配后建）：") + warning.resolved}
+        </div>
+      ))}
+      {!writable && !loading ? (
+        <div className="cs-error" data-paths-unavailable="true" role="status">
+          {tr(t, "cosmos.settings.pathsNotWritable", "路径设置在此连接不可用（插件宿主半区未就绪或未升级）：页面其余设置不受影响。")}
+        </div>
+      ) : null}
+      {failed ? <div className="cs-error">{tr(t, "cosmos.settings.pathsSaveFailed", "保存未生效（可能已被他端修改），请重试")}</div> : null}
+      <div className="cs-actions">
+        <button className="cs-btn" type="button" disabled={!dirty || state?.saving === true} onClick={() => face.discard()}>
+          {tr(t, "cosmos.settings.pathsDiscard", "放弃修改")}
+        </button>
+        <button
+          className="cs-btn cs-btnPrimary"
+          type="button"
+          disabled={!dirty || disabled}
+          onClick={() => {
+            try {
+              void face.save();
+            } catch (error) {
+              console.error("[dsh-v-cosmos] paths setting failed:", error);
+            }
+          }}
+        >
+          {state?.saving === true ? tr(t, "cosmos.settings.pathsSaving", "保存中…") : tr(t, "cosmos.settings.pathsSave", "保存")}
+        </button>
+      </div>
+    </fieldset>
+  );
+}
+
+/**
+ * 「通用」标签页（add-cosmos-standalone-window 2.2 / spec「launchMode 配置项」；
+ * step2-cosmos-openspec-path-setting 3.1 追加「路径」区）：
  *  - 「打开方式」单选：内嵌整页（缺省）/ 独立窗口——**即时保存**（无草稿-保存模式），
  *    改动经 face.set → `applyLaunchMode`（净房持久化 + 受控镜像）；跨窗口即时生效由
  *    同源 localStorage + `storage` 事件桥承接（座位按钮点击时现读配置）。
@@ -390,7 +509,7 @@ const LAUNCH_MODE_FIELDS = Object.freeze([
  *    整组禁用 + 说明文案——独立窗口无处落地；注入 `desktop` 为浏览器侧可观察事实
  *    （MUST NOT 依赖宿主探测）。
  *  - face 缺失（旧宿主未注入）→ 降级占位（不渲染可点却永不生效的控件，与其它页签同纪律）。
- * @param {{t: Function, launch?: object, desktop?: boolean}} props
+ * @param {{t: Function, launch?: object, desktop?: boolean, paths?: object|null}} props
  */
 export function CosmosGeneralPanel(props) {
   const t = props.t;
@@ -445,6 +564,9 @@ export function CosmosGeneralPanel(props) {
         </div>
       ) : null}
       <div className="cs-meta">{tr(t, "cosmos.settings.launchModeInstant", "改动立即生效并保存")}</div>
+      {/* 路径区（step2-cosmos-openspec-path-setting 3.1）：独立 face，端点不可达时
+          仅本区禁用降级，MUST NOT 牵连 launch 单选（launchMode 走 localStorage 面）。 */}
+      <CosmosPathsSection t={t} paths={props.paths ?? null} />
     </div>
   );
 }

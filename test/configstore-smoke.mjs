@@ -117,6 +117,35 @@ const CONST_NORMALIZED = [{ name: "探索", prompt: "请使用 /cosmos-explore �
   );
   const constDropped = sanitizeStoreDocument({ revision: 2, buttons: BUTTONS, constellationButtons: [{ name: "a", prompt: "p", prepend: true }] });
   assert.deepEqual(constDropped, { revision: 2, buttons: NORMALIZED }, "星座节非法只丢该节（buttons 节保留）");
+
+  /* paths 对象节视图语义（step2-cosmos-openspec-path-setting 1.2）：净房恒两键显式、
+     节级整体替换、对象节 = 显式覆盖。 */
+  assert.deepEqual(normalizeView({}).paths, { openspecPath: null, cosmosSpecDir: null }, "paths 缺省 → 未配置形状");
+  assert.deepEqual(
+    normalizeView({ paths: { openspecPath: " C:/openspec ", cosmosSpecDir: 1 } }).paths,
+    { openspecPath: "C:/openspec", cosmosSpecDir: null },
+    "组合层 paths 净房（trim 非空保留字面量 / 非字符串→null）"
+  );
+  assert.deepEqual(
+    mergeView({ paths: { openspecPath: "base" } }, { paths: { openspecPath: "user", cosmosSpecDir: "u" } }).paths,
+    { openspecPath: "user", cosmosSpecDir: "u" },
+    "paths 节级整体替换（user 存在即整体遮蔽 base，与按钮两节同构）"
+  );
+  assert.deepEqual(
+    mergeView({}, { paths: { openspecPath: "user", cosmosSpecDir: null } }).paths,
+    { openspecPath: "user", cosmosSpecDir: null },
+    "存储 paths 节覆盖缺省 base"
+  );
+  assert.deepEqual(
+    storeSectionsOf({ revision: 1, paths: { openspecPath: "x", cosmosSpecDir: null } }),
+    { paths: { openspecPath: "x", cosmosSpecDir: null } },
+    "对象节 = 显式覆盖（含单键配置）"
+  );
+  assert.deepEqual(
+    sanitizeStoreDocument({ revision: 2, paths: { openspecPath: 42, cosmosSpecDir: "  " } }).paths,
+    { openspecPath: null, cosmosSpecDir: null },
+    "paths 装载归一（垃圾键值 → 未配置形状，不判损）"
+  );
 }
 
 /* ── 3. 播种 + 快照语义 + CAS + 备份轮转 + 损坏恢复 ── */
@@ -191,6 +220,47 @@ try {
     assert.deepEqual(store.sections(), { buttons: NORMALIZED }, "只清星座节（buttons 节保留）");
     const constAgain = await store.writeSections({ baseRevision: 6, sections: { constellationButtons: CONST_BUTTONS } });
     assert.equal(constAgain.revision, 7);
+
+    /* paths 节（step2-cosmos-openspec-path-setting 1.1/1.3）：对象节 CAS 写入、净房、
+       键级 unset、节级 unset 与 conflict——与按钮两节同链路、互不读写。 */
+    const pathsWrite = await store.writeSections({
+      baseRevision: 7,
+      sections: { paths: { openspecPath: "  C:/openspec  ", cosmosSpecDir: 42 } }
+    });
+    assert.equal(pathsWrite.revision, 8, "对象节写入递增 revision");
+    assert.deepEqual(
+      store.sections().paths,
+      { openspecPath: "C:/openspec", cosmosSpecDir: null },
+      "paths 落归一化输出（trim 非空保留字面量 / 非字符串→null）"
+    );
+    assert.deepEqual(store.snapshot({}).value.paths, { openspecPath: "C:/openspec", cosmosSpecDir: null }, "快照 value.paths 回显配置值");
+
+    /* 键级 unset = 写整节、单键置 null；同节其余键保持（trim 后反斜杠字面量原样）。 */
+    const keyUnset = await store.writeSections({ baseRevision: 8, sections: { paths: { openspecPath: null, cosmosSpecDir: " D:\\cosmos-spec " } } });
+    assert.equal(keyUnset.revision, 9);
+    assert.deepEqual(store.sections().paths, { openspecPath: null, cosmosSpecDir: "D:\\cosmos-spec" }, "键级 unset（null→未配置），余键保留字面量");
+
+    /* 节补丁缺席键按 null：净房输出恒两键显式（快照回显形状稳定）。 */
+    const partial = await store.writeSections({ baseRevision: 9, sections: { paths: { openspecPath: "   " } } });
+    assert.equal(partial.revision, 10);
+    assert.deepEqual(store.sections().paths, { openspecPath: null, cosmosSpecDir: null }, "空白/缺席键净房为 null（恒两键显式）");
+
+    /* 节级 unset（null）移除节：按钮两节逐字保留。 */
+    const pathsUnset = await store.writeSections({ baseRevision: 10, sections: { paths: null } });
+    assert.equal(pathsUnset.revision, 11);
+    assert.deepEqual(store.sections(), { buttons: NORMALIZED, constellationButtons: CONST_NORMALIZED }, "paths 节级 unset 移除节（既有节保留）");
+    assert.deepEqual(store.snapshot({}).value.paths, { openspecPath: null, cosmosSpecDir: null }, "unset 后快照回显未配置形状");
+
+    /* paths CAS 冲突（过期 revision → conflict 携带服务端 revision，存储保持不变）。 */
+    let pathsConflict = null;
+    try {
+      await store.writeSections({ baseRevision: 10, sections: { paths: { openspecPath: "x" } } });
+    } catch (error) {
+      pathsConflict = error;
+    }
+    assert.ok(pathsConflict instanceof ConfigStoreError && pathsConflict.code === "conflict", "过期 revision 写 paths → conflict");
+    assert.equal(pathsConflict.revision, 11, "conflict 携带服务端当前 revision");
+    assert.equal(store.sections().paths, undefined, "conflict 不改变存储（paths 未被写入）");
   }
 
   /* 非法请求：400 语义（invalid） */
@@ -203,7 +273,10 @@ try {
       { baseRevision: 0, sections: { buttons: "x" } },
       { baseRevision: 0, sections: { buttons: [{ name: "a", prompt: "p", newSession: false }] } },
       { baseRevision: 0, sections: { buttons: [{ name: "a", prompt: "p", preState: "doing" }] } },
-      { baseRevision: 7, sections: { constellationButtons: [{ name: "a", prompt: "p", prepend: true }] } }
+      { baseRevision: 7, sections: { constellationButtons: [{ name: "a", prompt: "p", prepend: true }] } },
+      { baseRevision: 0, sections: { paths: "x" } },
+      { baseRevision: 0, sections: { paths: [] } },
+      { baseRevision: 0, sections: { buttons: { openspecPath: "x" } } }
     ]) {
       let error = null;
       try {
@@ -218,16 +291,16 @@ try {
   /* 复制式备份轮转 + 损坏恢复链 */
   {
     const before = readFileSync(filePath, "utf8");
-    await store.writeSections({ baseRevision: 7, sections: { buttons: [{ name: "r5", prompt: "p" }] } }); // → r8, bak.1 = r7
-    await store.writeSections({ baseRevision: 8, sections: { buttons: [{ name: "r6", prompt: "p" }] } }); // → r9, bak.1 = r8, bak.2 = r7
+    await store.writeSections({ baseRevision: 11, sections: { buttons: [{ name: "r5", prompt: "p" }] } }); // → r12, bak.1 = r11
+    await store.writeSections({ baseRevision: 12, sections: { buttons: [{ name: "r6", prompt: "p" }] } }); // → r13, bak.1 = r12, bak.2 = r11
     assert.ok(existsSync(`${filePath}.bak.1`) && existsSync(`${filePath}.bak.2`), "备份轮转生成 .bak.1/.bak.2");
     assert.notEqual(readFileSync(`${filePath}.bak.1`, "utf8"), before, ".bak.1 = 上一次写入前内容");
 
-    /* 损坏正式文件 → 从 .bak.1 恢复（最近完好版本 = r8） */
+    /* 损坏正式文件 → 从 .bak.1 恢复（最近完好版本 = r12） */
     writeFileSync(filePath, "{ corrupt", "utf8");
     const recovered = store.refresh();
     assert.ok(recovered, "损坏 → 恢复链读回");
-    assert.equal(recovered.revision, 8, "恢复最近完好版本（.bak.1 = r8）");
+    assert.equal(recovered.revision, 12, "恢复最近完好版本（.bak.1 = r12）");
 
     /* 三份备份也损坏 → 按存储缺席回落（revision 0、value = base） */
     for (const suffix of [".bak.1", ".bak.2", ".bak.3"]) {
@@ -240,6 +313,47 @@ try {
   }
 } finally {
   rmSync(dir, { recursive: true, force: true });
+}
+
+/* ── 3b. paths 节旧文件兼容与装载归一（step2-cosmos-openspec-path-setting 1.3） ── */
+{
+  const legacyDir = mkdtempSync(join(tmpdir(), "dsh-cosmos-paths-legacy-"));
+  try {
+    const legacyPath = join(legacyDir, "legacy.config.json");
+    const store = createConfigStore({ filePath: legacyPath, logger: { warn() {} } });
+
+    /* 旧文件（无 paths 节）读出按未配置：user 不含 paths、生效值未配置形状。 */
+    writeFileSync(legacyPath, JSON.stringify({ revision: 3, buttons: NORMALIZED }), "utf8");
+    store.refresh();
+    assert.deepEqual(store.sections(), { buttons: NORMALIZED }, "旧文件无 paths 节 → user 只有既有节");
+    assert.deepEqual(store.snapshot({}).value.paths, { openspecPath: null, cosmosSpecDir: null }, "无 paths 节 → 生效值未配置形状");
+    assert.equal(store.revision(), 3, "旧文件 revision 照常装载");
+
+    /* 装载归一：垃圾键值（数字/空白串）→ 净房为未配置形状（不判损、不抛错）。 */
+    writeFileSync(legacyPath, JSON.stringify({ revision: 4, paths: { openspecPath: 42, cosmosSpecDir: "   " } }), "utf8");
+    store.refresh();
+    assert.deepEqual(store.sections().paths, { openspecPath: null, cosmosSpecDir: null }, "垃圾键值装载归一为 null（节保留）");
+    assert.equal(store.revision(), 4, "归一不丢 revision");
+
+    /* 数组形状（对象节的非法形态）→ 净房为未配置形状（不判损）。 */
+    writeFileSync(legacyPath, JSON.stringify({ revision: 5, paths: ["C:/openspec"] }), "utf8");
+    store.refresh();
+    assert.deepEqual(store.sections().paths, { openspecPath: null, cosmosSpecDir: null }, "数组形状装载归一为未配置（不判损）");
+    assert.equal(store.revision(), 5, "归一不丢 revision");
+
+    /* 播种/升级非空判定：全 null paths 视图不播种节（spec「全 null = 未配置」）。 */
+    const freshPath = join(legacyDir, "fresh.config.json");
+    const fresh = createConfigStore({ filePath: freshPath, logger: { warn() {} } });
+    const outcome = fresh.seed({ paths: { openspecPath: null, cosmosSpecDir: null } }, { source: "test" });
+    assert.equal(outcome.seeded, true, "全 null paths 播种成功");
+    const freshDoc = JSON.parse(readFileSync(freshPath, "utf8"));
+    assert.ok(!("paths" in freshDoc), "全 null paths 不写节（无内容）");
+    const upgraded = await fresh.ensureSeeded({ paths: { openspecPath: "C:/openspec", cosmosSpecDir: null } }, { source: "test" });
+    assert.equal(upgraded.action, "upgraded", "已配置 paths → 一次性升级写入");
+    assert.deepEqual(JSON.parse(readFileSync(freshPath, "utf8")).paths, { openspecPath: "C:/openspec", cosmosSpecDir: null }, "升级写入已配置 paths 节");
+  } finally {
+    rmSync(legacyDir, { recursive: true, force: true });
+  }
 }
 
 /* ── 4. 锁语义：busy 超时 / 陈旧锁接管 ── */

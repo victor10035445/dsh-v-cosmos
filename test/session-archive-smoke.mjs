@@ -280,7 +280,7 @@ function makeElement(tag) {
     remove() {},
     querySelector(sel) {
       if (!el._by[sel]) {
-        const child = makeElement(sel === ".cos-canvas" ? "canvas" : "div");
+        const child = makeElement(sel === ".cos-canvas" || sel === ".cos-tiplines" ? "canvas" : "div");
         if (child.tag === "canvas") child.getContext = () => stubCtx2d();
         el._by[sel] = child;
       }
@@ -517,6 +517,117 @@ function buttonTarget(action, sessionId) {
   engine.dispose();
 }
 
+/* ── 5c. 归档活跃门禁：卡侧 disabled + 按态 title、两门叠加与卡切实体
+   （add-cosmos-session-archive-busy-gate 3.1/3.3/D4） ──
+   以外部注入悬停（setExternalHover）驱动 updateOverlay 差分管线（不依赖指针拾取坐标）：
+   markup 门禁（活跃 disabled + 按态 title）随 sig 翻转经既有差分守卫承接重渲染；
+   在途门恢复（setArchiveButtonDisabled(false)）按卡内当前实体活跃口径重推导——
+   实体仍活跃保持禁用、卡已切实体按新实体口径（无盲清回归）。 */
+{
+  /** 场景夹具：1 行星 p1（状态/委托忙碌可调）+ 1 彗星 c1（busy，卡切实体分支用）。 */
+  const gateScene = (planetState, planetDb = false) => ({
+    workspaces: [{
+      id: "ws1", name: "ws-one", pos: [0, 0, 0], links: [],
+      stars: [{ id: "st", name: "st", lifecycle: "executed", setBy: null, at: null, tasks: [1, 1], age: "刚刚", act: 0, off: [10, 0, 0] }],
+      planets: [{ id: "p1", title: "planet", state: planetState, pendingKind: planetState === "waiting" ? "approval" : null, stars: ["st"], todos: "—", when: "刚刚", satellites: [], satelliteCount: 0, delegatedBusy: planetDb }],
+      comets: [{ id: "c1", title: "comet", state: "busy", pendingKind: null, when: "刚刚", satellites: [], satelliteCount: 0, delegatedBusy: false }],
+      archives: 0,
+      satelliteCount: 0
+    }]
+  });
+
+  const rafQueue = [];
+  globalThis.requestAnimationFrame = (cb) => { rafQueue.push(cb); return rafQueue.length; };
+  globalThis.cancelAnimationFrame = () => {};
+
+  const container = makeElement("div");
+  const pending = [];
+  const engine = createCosmosEngine({
+    container,
+    style: createSkinD(),
+    onArchiveSession: () => new Promise((resolve) => pending.push(resolve))
+  });
+  const rootEl = container.children[0];
+  const cardEl = rootEl._by[".cos-card"];
+  const html = () => String(cardEl.innerHTML);
+  const archiveBtn = () => cardEl._by['.cd-btn[data-action="archive"]'];
+  const fireCardClick = (action, sessionId) => {
+    for (const fn of cardEl.listeners.click ?? []) {
+      fn({
+        target: {
+          classList: { contains: (cls) => cls === "cd-btn" },
+          getAttribute: (key) => (key === "data-action" ? action : key === "data-session" ? sessionId : null)
+        }
+      });
+    }
+  };
+  const flush = async () => {
+    await Promise.resolve();
+    await Promise.resolve();
+  };
+  engine.setScene(gateScene("busy"), "rebuild");
+  rafQueue.length = 0;
+  engine.start();
+  let clock = 180000;
+  const step = (n = 1) => {
+    for (let i = 0; i < n; i += 1) {
+      clock += 50;
+      const cb = rafQueue.shift();
+      assert.ok(cb, "帧回调在队");
+      cb(clock);
+    }
+  };
+  step(27); // 过冷启动序曲（1.2s）
+
+  /* busy 行星卡：活跃门 markup disabled + title「执行中，暂不可归档」（3.1） */
+  assert.equal(engine.setExternalHover({ wsId: "ws1", kind: "planet", id: "p1" }), true, "注入悬停（外部悬停面驱动信息卡）");
+  step(2);
+  assert.equal(cardEl.dataset.sig, "planet:p1|busy||db:0", "sig 沿既有管线（state 分量 + db 分量）");
+  assert.ok(html().includes('data-action="archive" data-session="p1" title="执行中，暂不可归档" disabled'), "busy 实体 → 归档按钮 markup disabled + title「执行中，暂不可归档」");
+
+  /* 两门叠加（3.3/D4）：在途门结束（无论 outcome）且实体仍 busy → 活跃禁用保持 */
+  fireCardClick("archive", "p1");
+  assert.equal(archiveBtn().disabled, true, "归档在途 → 直接 DOM 禁用（权威门并行生效）");
+  pending[0]();
+  await flush();
+  assert.equal(archiveBtn().disabled, true, "在途门结束且实体仍 busy → 恢复保持禁用（活跃门未被盲清）");
+
+  /* hover 中 busy ↔ idle 翻转：sig 翻转 → 差分重渲染恢复可点 + title「归档会话」（D4） */
+  engine.setScene(gateScene("idle"), "patch");
+  step(2);
+  assert.equal(cardEl.dataset.sig, "planet:p1|idle||db:0", "state 翻转 → sig 翻转");
+  assert.ok(html().includes('data-action="archive" data-session="p1" title="归档会话">归档会话</button>'), "idle 实体 → 恢复可点 + title「归档会话」");
+  assert.ok(!html().includes("暂不可归档"), "非活跃说明文案不残存");
+
+  /* 委托忙碌翻转：db 分量翻转 → 重渲染 disabled + busy 文案族（3.2 承接） */
+  engine.setScene(gateScene("idle", true), "patch");
+  step(2);
+  assert.equal(cardEl.dataset.sig, "planet:p1|idle||db:1", "delegatedBusy 翻转（state 恒 idle）→ sig 翻转");
+  assert.ok(html().includes('data-action="archive" data-session="p1" title="执行中，暂不可归档" disabled'), "委托忙碌 → 禁用 + 「执行中，暂不可归档」（busy 文案族）");
+
+  /* waiting：title「待决策中，暂不可归档」（waiting 优先级恒最高） */
+  engine.setScene(gateScene("waiting"), "patch");
+  step(2);
+  assert.equal(cardEl.dataset.sig, "planet:p1|waiting|approval|db:0", "waiting → sig（pendingKind 随行）");
+  assert.ok(html().includes('data-action="archive" data-session="p1" title="待决策中，暂不可归档" disabled'), "waiting 实体 → 禁用 + title「待决策中，暂不可归档」");
+
+  /* 卡切实体（3.3/D4）：在途门跨实体恢复——按卡内当前实体（busy 彗星）口径重推导 */
+  engine.setScene(gateScene("idle"), "patch");
+  step(2);
+  fireCardClick("archive", "p1");
+  assert.equal(archiveBtn().disabled, true, "行星 idle 归档在途 → 直接 DOM 禁用");
+  assert.equal(engine.setExternalHover({ wsId: "ws1", kind: "comet", id: "c1" }), true, "悬停切到 busy 彗星");
+  step(2);
+  assert.ok(html().includes('data-action="archive" data-session="c1" title="执行中，暂不可归档" disabled'), "彗星 busy 卡 markup disabled + busy title");
+  pending[1]();
+  await flush();
+  assert.equal(archiveBtn().disabled, true, "在途恢复按卡内当前实体（busy 彗星）口径 → 保持禁用（非盲清）");
+
+  engine.setExternalHover(null);
+  engine.stop();
+  engine.dispose();
+}
+
 /* ── 6. CSS 钩子：双按钮排布 + 触屏目标（2.1 / spec 呈现要求） ── */
 {
   const btnRule = ENGINE_CSS.match(/\.cd-btn \{[^}]*\}/);
@@ -549,7 +660,7 @@ function buttonTarget(action, sessionId) {
 
   /* 行星卡与彗星卡共用双按钮组（一张卡一份 markup，两次挂载） */
   const actionsBody = engineSource.slice(
-    engineSource.indexOf("function cardActionsHtml(sessionId, lead)"),
+    engineSource.indexOf("function cardActionsHtml(sessionId, lead, ent)"),
     engineSource.indexOf("function cardHtml(e)")
   );
   assert.ok(actionsBody.length > 0, "cardActionsHtml 切片");
@@ -563,9 +674,21 @@ function buttonTarget(action, sessionId) {
   assert.ok(actionsBody.includes(">打开会话<"), "按钮文案「打开会话」");
   assert.ok(actionsBody.includes(">归档会话<"), "按钮文案「归档会话」");
   assert.equal((engineSource.match(/\+\s*cardActionsHtml\(/g) ?? []).length, 2, "行星卡与彗星卡都挂双按钮组");
-  /* 归档在途禁用态只走直接 DOM 切换；markup 内的唯一 disabled = 导航不可用分支
-     （页面生命周期常量，不进 sig 瞬态）。 */
-  assert.equal((actionsBody.match(/disabled/g) ?? []).length, 1, "markup 仅导航不可用分支渲染 disabled（归档在途仍走直接 DOM）");
+  /* 归档活跃门禁（add-cosmos-session-archive-busy-gate 3.1/D1）：实体经调用点传入，
+     活跃谓词与恒星活力「活跃」同源；disabled 态 title 按态切换（waiting 优先，
+     busy/委托忙碌归 busy 文案）。归档在途禁用态仍只走直接 DOM 切换；markup 内的
+     disabled = 导航不可用 + 实体活跃两个分支（均为持续状态态，非 sig 瞬态豁免）。 */
+  assert.equal((engineSource.match(/cardActionsHtml\((?:p\.id, decideButtonHtml\('planet', p\), p|c\.id, '', c)\)/g) ?? []).length, 2, "两调用点把实体传入（活跃口径取卡内实体）");
+  assert.ok(actionsBody.includes("ent.state === 'busy' || ent.state === 'waiting' || ent.delegatedBusy === true"), "卡侧活跃谓词（busy ∨ waiting ∨ delegatedBusy）");
+  assert.ok(actionsBody.includes("E.labels.card.archiveBusy") && actionsBody.includes("E.labels.card.archiveWaiting"), "活跃门按态 title 走注入文案");
+  assert.equal((actionsBody.match(/disabled/g) ?? []).length, 2, "markup 恰导航不可用 + 实体活跃两分支渲染 disabled（归档在途仍走直接 DOM）");
+  /* 两门叠加恢复路径（3.3/D4）：在途门结束 ≠ 恒可点——恢复按卡内当前实体活跃口径重推导 */
+  const restoreFn = engineSource.slice(
+    engineSource.indexOf("function setArchiveButtonDisabled"),
+    engineSource.indexOf("/* ── 星胚移除的内联两击确认")
+  );
+  assert.ok(restoreFn.includes("hoverSourceOf()") && restoreFn.includes("button.disabled = active;"), "恢复路径按卡内当前实体活跃口径重推导（非盲清）");
+  assert.ok(engineSource.includes("if (ent.kind === 'planet' || ent.kind === 'comet') sig += '|db:' + (ent.data?.delegatedBusy === true ? 1 : 0);"), "sig 纳入 delegatedBusy（委托忙碌翻转经差分守卫承接，3.2）");
 
   /* click 分流 + 权威门 + 直接 DOM 切换 */
   const clickBody = engineSource.slice(

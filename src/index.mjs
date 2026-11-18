@@ -57,6 +57,15 @@
  *                                 `{outcome, reason?}`（deleted / already-missing /
  *                                 guard-dir-exists / missing-workspace / failed）。
  *                                 `.state.json` 与 `changes/<name>/` 恒不触碰。
+ *  - cosmos-spec 技能 provider（step3-cosmos-skill-provider-render）：条件注入
+ *    `ctx.inject(['skills'])` 注册 SkillProvider（skills 缺席仅该分支不激活）——扫描
+ *    canonical 目录（paths.cosmosSpecDir → <packageDir>/cosmos-spec → 空）产出目录表，
+ *    同名 rank 50 压过本地接线（100–600）；`get()` 每次读盘并按契约渲染
+ *    `OPENSPEC_PATH` 令牌（未配置 → 原样 + 头部警示行）；canonical 根 fs.watch
+ *    （recursive + ≥2s 防抖）→ 注册期 invalidate()（目录表自持失效，design D5）。
+ *  - 路径令牌读取兜底（tools/post-execute）：路径类入参工具 isError 且入参以
+ *    OPENSPEC_PATH 开头 → block 纠正反馈（已配置给解析路径 / 未配置给设置指引，原
+ *    错误文本内嵌）；其余恒 next() 透传（纯逻辑见 skill-provider.mjs，design D4）。
  *  - 关联存储：$DSH_HOME/storages/dsh-v-cosmos.json（storage-json 同款语义：内存态即
  *    全量、temp 写 + rename 原子替换）。**MUST NOT 落盘到 openspec 工件**——
  *    工作区目录恒只读（零侵入纪律，任务 3.6 冒烟断言）；唯一例外 = `/dismiss-embryo`
@@ -87,6 +96,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, openSync, readFileSync, readdirSync, closeSync, writeSync, fdatasyncSync, renameSync, unlinkSync, watch, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { buildSkeleton } from "./scan.mjs";
 import { normalizeView, createConfigStore, resolveConfigStorePath } from "./configstore.mjs";
 import {
@@ -112,6 +122,15 @@ import {
 /* 独立窗口占位注册表（add-cosmos-standalone-window design D2）：纯逻辑模块，`/events` 的
    `role=cosmos-window` 连接在此登记；计数帧经既有 SSE 通道广播（不另起通道）。 */
 import { createPresenceRegistry, isCosmosWindowRole, presenceFrameOf } from "./presence.mjs";
+/* cosmos-spec 技能 provider 纯逻辑（step3-cosmos-skill-provider-render 1.1/1.2）：
+   扫描 / 令牌渲染 / 兜底反馈组合全部在纯逻辑模块，本文件只做宿主接线。 */
+import {
+  PATH_TOKEN,
+  composeTokenFeedback,
+  createCosmosSpecProvider,
+  isTokenOccurrenceAt,
+  resolveTokenPath
+} from "./skill-provider.mjs";
 
 export const name = "dsh-v-cosmos";
 
@@ -121,8 +140,14 @@ export const name = "dsh-v-cosmos";
  * 入 inject——它是可选插件服务，声明而未挂载会让 fiber 等待激活，未装
  * dsh-session-title 的部署中整个插件停摆（scene/events/config 全灭，design D9）；
  * 改经请求期 `ctx.get("sessionTitle")` 惰性可选查找，缺失 → rename 端点 503 降级。
+ *
+ * `tools`（step3-cosmos-skill-provider-render）：与 agents / sessions 同级核心服务
+ * （恒在），供路径令牌读取兜底的 `tools/post-execute` 监听注册（design D5）。
+ * `skills` **MUST NOT** 入顶层 inject——可选服务声明而未挂载会让整个插件在无 skills
+ * 环境失活；provider 分支改走条件注入 `ctx.inject(['skills'], …)`：skills 缺席时仅
+ * provider 不激活，其余插件能力照常（design D5 / spec「skills 服务缺席」场景）。
  */
-export const inject = ["webServer", "agents", "workspaceRegistry", "sessions"];
+export const inject = ["webServer", "agents", "workspaceRegistry", "sessions", "tools"];
 
 const API_PREFIX = "/api/dsh-v-cosmos";
 /** 旧插件名（品牌更名前的存储文件名，读取回落迁移用；写入恒走新名）。 */
@@ -134,6 +159,35 @@ const SCAN_DEBOUNCE_MS = 2000;
 const CONTEXT_EVENT_WINDOW = 200;
 /** 单工作区活跃会话参与启发式的数量上限（异常大会话面兜底）。 */
 const HEURISTIC_SESSION_CAP = 64;
+
+/**
+ * 路径类入参键表（step3 design D4 / spec「路径令牌读取兜底」）：read / write / edit =
+ * `file_path`；str_replace_editor / glob / grep = `path`。兜底监听只观察此表内工具。
+ */
+const TOKEN_PATH_ARG_KEYS = new Map([
+  ["read", "file_path"],
+  ["write", "file_path"],
+  ["edit", "file_path"],
+  ["str_replace_editor", "path"],
+  ["glob", "path"],
+  ["grep", "path"]
+]);
+
+/**
+ * 插件包目录（canonical 回退根 `<packageDir>/cosmos-spec` 的基准）：自模块文件向上
+ * 找最近的 package.json（lib/ 与 src/ 两种布局均命中包根），找不到即回落模块目录。
+ */
+const PACKAGE_DIR = (() => {
+  const moduleDir = dirname(fileURLToPath(import.meta.url));
+  let dir = moduleDir;
+  for (let depth = 0; depth < 8; depth += 1) {
+    if (existsSync(join(dir, "package.json"))) return dir;
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return moduleDir;
+})();
 
 /**
  * 星胚移除的 slug 白名单（CONTRACT §6.3 / spec「星胚移除服务端端点」）：
@@ -338,16 +392,30 @@ export function lastActivityMsOf(agent, now) {
 /**
  * @param {object} ctx 宿主 cordis 上下文
  * @param {object} [config] 补丁层 entry config（动作按钮配置的组合层 base：
- *        `buttons` 提案动作 + `constellationButtons` 星座动作，两节互不读写；
- *        共享存储的同名节分别覆盖各自 base。缺省 = 无自定义按钮）
+ *        `buttons` 提案动作 + `constellationButtons` 星座动作 + `paths` 路径节，三节
+ *        互不读写；共享存储的同名节分别覆盖各自 base。缺省 = 无自定义按钮/未配置路径）
+ * @param {object} [options] 测试注入面
+ * @param {object} [options.providerDeps] provider 纯逻辑依赖覆盖
+ *        （packageDir / io / watch / debounceMs，见 skill-provider.mjs）
  */
-export function apply(ctx, config) {
+export function apply(ctx, config, options = {}) {
   /** 关联条目（内存态即全量；持久化 = temp 写 + rename）。 */
   let entries = [];
   /** 组合层视图（entry config；宿主半区不注册 settings 命名空间——design D7）。 */
   const baseView = normalizeView(config);
   /** 动作按钮配置共享存储（`$DSH_HOME/dsh-v-cosmos.config.json`）。 */
   const configStore = createConfigStore({ logger: ctx.logger ?? null });
+  /* 测试注入面（provider 纯逻辑依赖覆盖：packageDir / io / watch / 防抖）。 */
+  const providerDeps = options?.providerDeps ?? null;
+  /** cosmosSpecDir 根切换钩子（provider 条件注入分支登记；config watch 防抖后执行）。 */
+  const configChangeHooks = new Set();
+  /** paths 节读取面（内存态即最新：configStore watch + 写路径同拍更新 state，step2「配置热生效」）。 */
+  const readPaths = () => {
+    const view = configStore.snapshot(baseView);
+    return view?.value?.paths ?? { openspecPath: null, cosmosSpecDir: null };
+  };
+  /* 尽早装载（provider list/get 与兜底监听先于主 effect 使用时也有值；幂等）。 */
+  configStore.refresh();
   /** 星空骨架缓存（per-workspace 指纹增量比对）。 */
   let skeleton = { version: DOC_VERSION, generatedAt: 0, workspaces: [] };
   /** 已执行过至少一次全量扫描（懒启动门）。 */
@@ -709,6 +777,46 @@ export function apply(ctx, config) {
     scanTimer.unref?.(); // 硬要求：SHALL NOT 拖着事件循环（含测试进程）
   };
 
+  /* ── cosmos-spec 技能 provider（step3-cosmos-skill-provider-render 2.1/2.2，条件注入） ──
+     `ctx.inject(['skills'], …)`：skills 服务缺席 → 回调不执行 → 仅 provider 分支不激活，
+     其余插件能力照常（design D5）。回调体（fork 上下文）注册 provider——fork 卸载
+     （skills 消失 / 插件卸载）即注销 provider 并摘除 canonical 根监听。get() 每次读盘
+     + 渲染（registry 不缓存定义 → 配置热生效即改）；目录表新鲜度 = provider 自持失效：
+     canonical 根 fs.watch（recursive + ≥2s 防抖）→ 注册期 invalidate()（沿 skills/change
+     广播）；cosmosSpecDir 配置切换经 configChangeHooks 先摘旧监听再挂新监听。
+     ctx.inject 本身缺席（旧宿主 / 最小桩环境）视同 skills 缺席——同分支静默不激活。 */
+  if (typeof ctx.inject === "function") {
+    ctx.inject(["skills"], (skillsCtx) => {
+      let providerHandle = null;
+      let canonicalHook = null;
+      const disposeRegistrationEffect = skillsCtx.effect(() => {
+        const disposeRegistration = skillsCtx.skills.registerProvider((control) => {
+          providerHandle = createCosmosSpecProvider({
+            readPaths,
+            packageDir: providerDeps?.packageDir ?? PACKAGE_DIR,
+            logger: ctx.logger ?? null,
+            invalidate: () => control.invalidate(),
+            deps: providerDeps
+          });
+          providerHandle.reconcileWatch(); // 注册期即挂载首监听（自持失效的载体）
+          canonicalHook = () => providerHandle.reconcileWatch({ invalidateIfChanged: true });
+          configChangeHooks.add(canonicalHook);
+          return providerHandle;
+        });
+        return () => {
+          if (canonicalHook) {
+            configChangeHooks.delete(canonicalHook);
+            canonicalHook = null;
+          }
+          disposeRegistration();
+          providerHandle?.dispose(); // 摘除 canonical fs.watch 句柄与防抖定时器
+          providerHandle = null;
+        };
+      }, "dsh-v-cosmos: cosmos-spec skills provider");
+      return disposeRegistrationEffect;
+    });
+  }
+
   /* ── 插件主体（ctx.effect 生命周期） ── */
 
   ctx.effect(() => {
@@ -739,7 +847,46 @@ export function apply(ctx, config) {
       } catch (error) {
         ctx.logger?.warn?.("[dsh-v-cosmos] 配置存储热重载失败: %s", String(error?.message || error));
       }
+      /* paths 节变更的下游对账（step3：canonical 解析根切换 → 摘旧挂新 + 立即失效；
+         openspecPath 变更不影响目录表，由 reconcileWatch 的变更判定天然跳过）。 */
+      for (const hook of configChangeHooks) {
+        try {
+          hook();
+        } catch {
+          /* 单个下游钩子失败不阻断其余对账 */
+        }
+      }
     });
+
+    /* ── 路径令牌读取兜底（step3-cosmos-skill-provider-render 3.1，tools/post-execute） ──
+       路径类入参工具（read/write/edit = file_path；str_replace_editor/glob/grep = path）
+       的结果为 isError 且入参以未解析令牌 OPENSPEC_PATH 开头（契约出现判定）→ block
+       纠正反馈（已配置：解析后绝对路径 + 重试指引；未配置：设置指引；原错误文本内嵌）。
+       其余调用恒 next() 透传（practices.md「不拥有决策必须 next()」纪律）。同步字符串
+       判断（无异步 IO），观察 exec.signal；监听是提示词级纠偏——MUST NOT 静默改写调用
+       或重试。全局层对所有 agent 生效：未命中路径零产出（design 风险表权衡）。 */
+    /* ctx.on 缺席（旧宿主 / 最小桩环境）→ 兜底监听不注册（等价 tools 缺席分支）。 */
+    const disposeTokenFallback = typeof ctx.on === "function"
+      ? ctx.on("tools/post-execute", (exec, result, next) => {
+        try {
+          if (!result?.isError) return next();
+          if (exec?.signal?.aborted) return next(); // 观察 exec.signal：已中止交还瀑布
+          const argKey = TOKEN_PATH_ARG_KEYS.get(exec?.name);
+          if (!argKey) return next();
+          const rawPath = exec?.arguments?.[argKey];
+          if (typeof rawPath !== "string" || !isTokenOccurrenceAt(rawPath, 0)) return next();
+          const resolved = resolveTokenPath(rawPath, readPaths().openspecPath);
+          const feedback = composeTokenFeedback({
+            rawPath,
+            resolved,
+            originalError: result?.error?.message ?? ""
+          });
+          return { kind: "block", feedback: [{ type: "text", text: feedback }] };
+        } catch {
+          return next(); // 兜底自身异常不放大为调用失败
+        }
+      })
+      : null;
 
     const readJsonBody = async (req) => {
       const chunks = [];
@@ -1024,6 +1171,7 @@ export function apply(ctx, config) {
     return () => {
       dispose();
       stopConfigWatch();
+      disposeTokenFallback?.(); // 摘除路径令牌读取兜底监听
       for (const workspaceId of [...watchers.keys()]) dropWatcher(workspaceId);
       if (scanTimer) {
         clearTimeout(scanTimer);

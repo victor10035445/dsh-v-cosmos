@@ -82,7 +82,7 @@ function makeElement(tag) {
       el._byClass = el._byClass || {};
       const cls = String(sel).replace(".", "");
       if (!el._byClass[cls]) {
-        el._byClass[cls] = sel === ".cos-canvas" ? makeCanvasEl() : makeElement("div");
+        el._byClass[cls] = sel === ".cos-canvas" || sel === ".cos-tiplines" ? makeCanvasEl() : makeElement("div");
         el._byClass[cls].getBoundingClientRect = () => ({ left: 0, top: 0, right: 800, bottom: 600, width: 800, height: 600 });
       }
       return el._byClass[cls];
@@ -389,11 +389,20 @@ const engineSource = readFileSync(new URL("../src/cosmos/engine.mjs", import.met
    组件树不可挂载（同 4b），故行内按钮呈现 / 点击分流 / 行级门禁 / 转发链路走源码锚点，
    outcome 呈现与安全语义由 `session-archive-smoke` 纯逻辑直测覆盖（两条共用 requirement）。 */
 {
-  /* 呈现：常显图标钮、程序化钩子、aria 文案、恒居「打开」之后（行内动作区末位） */
+  /* 呈现：常显图标钮、程序化钩子、aria/title 随活跃态切换（活跃门）、恒居「打开」之后 */
   assert.ok(clientSource.includes('className="dsh-cosmos-session-archive"'), "行内归档按钮类名");
   assert.ok(clientSource.includes('data-action="archive"'), "归档按钮程序化分流钩子 data-action");
-  assert.ok(clientSource.includes('aria-label={t("cosmos.sessions.archiveAria", "归档会话")}'), "aria-label = 归档会话");
-  assert.ok(clientSource.includes('title={t("cosmos.sessions.archiveAria", "归档会话")}'), "title = 归档会话");
+  /* 活跃门禁（add-cosmos-session-archive-busy-gate 2.1/D1/D4）：busy ∨ waiting 与在途门
+     声明式叠加；delegatedBusy 行同禁由投影折入承载（sessionRowStateOf("idle", true) ===
+     "busy" 已在下方 14 节直测），行门禁零二次推导、一个 busy 条件同覆盖两种口径。 */
+  assert.ok(clientSource.includes('const archiveDisabled = archiving || row.state === "busy" || row.state === "waiting";'),
+    "活跃门禁与在途门声明式叠加（busy ∨ waiting ∨ 在途）");
+  const gateLine = clientSource.split("\n").find((line) => line.includes("const archiveDisabled ="));
+  assert.ok(gateLine && !gateLine.includes("done-unread") && !gateLine.includes('"idle"'), "done-unread/idle 不入活跃门（归档主要清扫对象，恒可点）");
+  assert.ok(clientSource.includes('t("cosmos.sessions.archiveBusy", "执行中，暂不可归档")'), "busy 态 title/aria 切「执行中，暂不可归档」");
+  assert.ok(clientSource.includes('t("cosmos.sessions.archiveWaiting", "待决策中，暂不可归档")'), "waiting 态 title/aria 切「待决策中，暂不可归档」");
+  assert.ok(clientSource.includes(': t("cosmos.sessions.archiveAria", "归档会话");'), "非活跃恢复「归档会话」");
+  assert.ok(clientSource.includes('aria-label={archiveTitle}') && clientSource.includes('title={archiveTitle}'), "aria-label 与 title 随活跃态切换");
   assert.ok(!clientSource.includes('data-session={row.id}'), "行内不引入信息卡专有 data-session（定位走行容器 data-cosmos-session）");
   const archiveAt = clientSource.indexOf('className="dsh-cosmos-session-archive"');
   const openAt = clientSource.indexOf('className="dsh-cosmos-session-open"');
@@ -423,8 +432,9 @@ const engineSource = readFileSync(new URL("../src/cosmos/engine.mjs", import.met
   assert.ok(rowBody.includes("setArchiving(true);"), "受理即置在途");
   assert.ok(rowBody.includes("const settle = () => setArchiving(false);"), "复位句柄");
   assert.ok(rowBody.includes("Promise.resolve(issued).then(settle, settle);"), "结束（无论 outcome/拒绝）复位：Promise.resolve 归一 + 双 settle");
-  assert.ok(clientSource.includes("aria-busy={archiving || undefined}"), "在途 aria-busy");
-  assert.ok(clientSource.includes("disabled={archiving}"), "在途禁用态");
+  assert.ok(clientSource.includes("aria-busy={archiving || undefined}"), "在途 aria-busy（仍仅随在途，活跃门不加）");
+  assert.ok(!clientSource.includes("aria-busy={archiveDisabled"), "活跃门禁 MUST NOT 携带 aria-busy（瞬态请求态语义独占）");
+  assert.ok(clientSource.includes("disabled={archiveDisabled}"), "在途门 + 活跃门声明式禁用（随 props 重算，无 DOM 覆写面）");
   /* 门禁不拦「打开」与行选中：open/main 两按钮不带归档在途态 */
   const openButtonStart = clientSource.indexOf('className="dsh-cosmos-session-open"');
   const openButtonEnd = clientSource.indexOf("</button>", openButtonStart);
@@ -459,8 +469,12 @@ const engineSource = readFileSync(new URL("../src/cosmos/engine.mjs", import.met
   /* i18n：中英成对（与 open/openAria 同款配对） */
   assert.equal((clientSource.match(/"cosmos\.sessions\.archive": "归档"/g) ?? []).length, 1, "DICT zh：归档短标签");
   assert.equal((clientSource.match(/"cosmos\.sessions\.archiveAria": "归档会话"/g) ?? []).length, 1, "DICT zh：归档会话（aria/title）");
+  assert.equal((clientSource.match(/"cosmos\.sessions\.archiveBusy": "执行中，暂不可归档"/g) ?? []).length, 1, "DICT zh：活跃门 busy 说明");
+  assert.equal((clientSource.match(/"cosmos\.sessions\.archiveWaiting": "待决策中，暂不可归档"/g) ?? []).length, 1, "DICT zh：活跃门 waiting 说明");
   assert.equal((clientSource.match(/"cosmos\.sessions\.archive": "Archive"/g) ?? []).length, 1, "DICT en：归档短标签成对");
   assert.equal((clientSource.match(/"cosmos\.sessions\.archiveAria": "Archive session"/g) ?? []).length, 1, "DICT en：归档会话成对");
+  assert.equal((clientSource.match(/"cosmos\.sessions\.archiveBusy": "Running — archiving unavailable"/g) ?? []).length, 1, "DICT en：busy 说明成对");
+  assert.equal((clientSource.match(/"cosmos\.sessions\.archiveWaiting": "Awaiting decision — archiving unavailable"/g) ?? []).length, 1, "DICT en：waiting 说明成对");
 }
 
 
@@ -1103,11 +1117,11 @@ function goldLiteralsOutsideVarFallback(source) {
   /* role="status" 计数 = 三处「未生效」提示条 + 两处跨域冲突提示（快捷键页签 + 两动作页签共用
      一处渲染：动作面板一份、快捷键面板两份——冲突块与未生效块各一）。 */
   assert.ok((settingsSource.match(/role="status"/g) ?? []).length >= 3, "提示条以 status 语义播报");
-  /* add-cosmos-standalone-window 2.2：新增「通用」页签（launch face）——占位/早退分支持同款
-     纪律，故 face-missing 钩子与早退分支各 4 处；`notApplied` 仍为三处（通用页签无引擎
-     写入依赖，不进 health 通道）。 */
-  assert.equal((settingsSource.match(/data-state="face-missing"/g) ?? []).length, 4, "face 缺失占位稳定钩子（四页签）");
-  assert.equal((settingsSource.match(/if \(face === null\) \{/g) ?? []).length, 4, "face 缺失早退占位（不渲染永不生效的控件）");
+  /* add-cosmos-standalone-window 2.2 + step2-cosmos-openspec-path-setting 3.1：face 缺失
+     占位/早退分支持同款纪律——四页签 + 「通用」页签路径区共 5 处；`notApplied` 仍为三处
+     （通用页签无引擎写入依赖，不进 health 通道）。 */
+  assert.equal((settingsSource.match(/data-state="face-missing"/g) ?? []).length, 5, "face 缺失占位稳定钩子（四页签 + 路径区）");
+  assert.equal((settingsSource.match(/if \(face === null\) \{/g) ?? []).length, 5, "face 缺失早退占位（不渲染永不生效的控件）");
   assert.ok(settingsSource.includes('tr(t, "cosmos.settings.skinUnavailable"'), "皮肤占位文案键");
   assert.ok(settingsSource.includes('tr(t, "cosmos.settings.navUnavailable"'), "导航占位文案键");
   assert.ok(settingsSource.includes('errorText("shortcutsUnavailable"'), "快捷键占位文案键");
@@ -1143,6 +1157,45 @@ function goldLiteralsOutsideVarFallback(source) {
   );
 }
 
+/* ── 13c. 「通用」页签·路径区（step2-cosmos-openspec-path-setting 3.1–3.4）：
+    CosmosPathsSection 渲染锚点 / 回显与保存链 / 端点不可达降级 / face 缺失占位 /
+    存在性警示钩子 + client 接线（控制器、注入、生命周期、导出）与词典成对。
+    行为面直测在 test/settings-panel-smoke.mjs。 */
+{
+  assert.ok(settingsSource.includes("export function CosmosPathsSection"), "路径区组件");
+  assert.equal(
+    (settingsSource.match(/data-plugin-anchor="dsh-v-cosmos:settings-general-paths"/g) ?? []).length,
+    2,
+    "路径区稳定锚点（降级占位 + 正文两分支）"
+  );
+  assert.ok(settingsSource.includes('id="cosmos-paths-openspec"') && settingsSource.includes('id="cosmos-paths-cosmos-spec"'), "两个路径输入的稳定 id（label[htmlFor] 原生可达）");
+  assert.ok(settingsSource.includes('face.edit("openspecPath", event.target.value)'), "openspecPath 键入入草稿");
+  assert.ok(settingsSource.includes('face.edit("cosmosSpecDir", event.target.value)'), "cosmosSpecDir 键入入草稿");
+  assert.ok(settingsSource.includes("void face.save()"), "保存链路 = face.save（整节 CAS 写）");
+  assert.ok(settingsSource.includes("face.discard()"), "放弃修改走控制器");
+  assert.ok(settingsSource.includes("data-path-warning="), "目录存在性警示稳定钩子（非阻断提示）");
+  assert.ok(settingsSource.includes('data-paths-unavailable="true"'), "端点不可达整组禁用稳定钩子");
+  assert.ok(settingsSource.includes('data-state="face-missing"') && settingsSource.includes("cosmos.settings.pathsUnavailable"), "face 缺失降级占位文案键");
+  assert.ok(settingsSource.includes("<CosmosPathsSection t={t} paths={props.paths ?? null} />"), "路径区挂进「通用」页签（独立 face，不牵连 launch 单选）");
+  /* client 接线：共享作用域控制器 + 注入 + fiber 清理 + 导出面 */
+  assert.ok(clientSource.includes("createPathsSettingsController(activeScope)"), "路径控制器接 activeScope（与按钮两节同源作用域）");
+  assert.ok(clientSource.includes("paths: pathsSettings"), "「通用」页签注入 paths face");
+  assert.ok(clientSource.includes("pathsSettings.dispose();"), "控制器随插件 fiber 生命周期清理");
+  assert.ok(/export \{[\s\S]*\bCosmosPathsSection\b[\s\S]*\}/.test(clientSource) && /export \{[\s\S]*\bcreatePathsSettingsController\b[\s\S]*\}/.test(clientSource), "路径区组件/控制器并入 bundle 导出面");
+  /* 词典 zh/en 成对（各 2 次：zh + en） */
+  for (const key of [
+    "pathsLabel", "pathsHint", "pathsLoading", "pathsOpenspecLabel", "pathsOpenspecHint", "pathsOpenspecPh",
+    "pathsCosmosSpecLabel", "pathsCosmosSpecHint", "pathsCosmosSpecPh", "pathsUnavailable", "pathsNotWritable",
+    "pathsSave", "pathsSaving", "pathsSaveFailed", "pathsDiscard", "pathsDirMissing"
+  ]) {
+    assert.equal(
+      (clientSource.match(new RegExp('"cosmos\\.settings\\.' + key + '"', "g")) ?? []).length,
+      2,
+      "词典 zh/en 成对：cosmos.settings." + key
+    );
+  }
+}
+
 /* ── 14. 源码锚点：会话卡「归档会话」动作（add-cosmos-session-archive-action 2.1/2.2/3.1–3.3） ──
    信息卡双按钮 data-action 分流、onArchiveSession 注入、单元素请求组装、防重入
    （per-session 集合 + 直接 DOM 切换，MUST NOT 出现经 cardHtml 重渲染的禁用路径）、
@@ -1150,7 +1203,7 @@ function goldLiteralsOutsideVarFallback(source) {
 {
   /* 双按钮与分流（引擎） */
   const cardActions = engineSource.slice(
-    engineSource.indexOf("function cardActionsHtml(sessionId, lead)"),
+    engineSource.indexOf("function cardActionsHtml(sessionId, lead, ent)"),
     engineSource.indexOf("function cardHtml(e)")
   );
   assert.ok(cardActions.length > 0, "cardActionsHtml 切片可定位");
@@ -1159,11 +1212,17 @@ function goldLiteralsOutsideVarFallback(source) {
   assert.ok(cardActions.includes(">打开会话<") && cardActions.includes(">归档会话<"), "双按钮文案并列");
   assert.ok(cardActions.includes('data-action="archive" data-session="'), "归档按钮与既有 data-session 并存");
   assert.equal((engineSource.match(/\+\s*cardActionsHtml\(/g) ?? []).length, 2, "行星卡与彗星卡各挂一次双按钮组");
-  /* 禁用态语义分档（add-cosmos-standalone-window D6 细化）：**归档在途**禁用是瞬态，
-     MUST NOT 经 cardHtml 重渲染（直接 DOM 切换，见下方 click 断言）；**导航不可用**
-     （独立窗口态）是页面生命周期常量，允许进 markup（`disabled` + title 提示）。 */
+  assert.ok(engineSource.includes("cardActionsHtml(p.id, decideButtonHtml('planet', p), p)") && engineSource.includes("cardActionsHtml(c.id, '', c)"), "两调用点把实体传入（活跃口径取卡内实体，3.1）");
+  /* 禁用态语义分档（add-cosmos-standalone-window D6 细化；活跃门 add-cosmos-session-archive-busy-gate
+     3.1/D1）：归档**在途**禁用是瞬态，MUST NOT 经 cardHtml 重渲染（直接 DOM 切换，见下方
+     click 断言）；**导航不可用**（独立窗口态）与**实体活跃**（busy ∨ waiting ∨ delegatedBusy）
+     都是持续状态态、随 sig 翻转经差分守卫重渲染，允许进 markup（disabled + 按态 title）。 */
   assert.ok(cardActions.includes("E.sessionNavAvailable"), "导航可用性分流（独立窗口态禁用）");
-  assert.equal((cardActions.match(/disabled/g) ?? []).length, 1, "仅导航不可用分支渲染 disabled（归档在途仍走直接 DOM）");
+  assert.equal((cardActions.match(/disabled/g) ?? []).length, 2, "markup 恰导航不可用 + 实体活跃两分支渲染 disabled（归档在途仍走直接 DOM）");
+  assert.ok(cardActions.includes("ent.state === 'busy' || ent.state === 'waiting' || ent.delegatedBusy === true"), "卡侧活跃谓词与恒星活力「活跃」同源（busy ∨ waiting ∨ delegatedBusy）");
+  assert.ok(cardActions.includes("E.labels.card.archiveBusy") && cardActions.includes("E.labels.card.archiveWaiting"), "活跃门按态 title 走注入文案（locale 同源）");
+  assert.ok(cardActions.includes("escapeHtml(archiveTitle)"), "归档按钮说明 title 经 escapeHtml");
+  assert.ok(engineSource.includes("if (ent.kind === 'planet' || ent.kind === 'comet') sig += '|db:' + (ent.data?.delegatedBusy === true ? 1 : 0);"), "sig 纳入 delegatedBusy（委托忙碌翻转经差分守卫承接，3.2）");
   assert.ok(cardActions.includes("escapeHtml(E.labels.card.openDisabled)"), "禁用态 title 走注入文案（locale 同源）");
   const cardClick = engineSource.slice(
     engineSource.indexOf("E.el.card.addEventListener('click'"),
@@ -1176,6 +1235,16 @@ function goldLiteralsOutsideVarFallback(source) {
   assert.ok(cardClick.includes("querySelector('.cd-btn[data-action=\"archive\"]')"), "禁用态经直接 DOM 定位切换");
   assert.ok(/\.disabled = /.test(cardClick), "直接切换 disabled 属性");
   assert.ok(!/innerHTML|cardHtml\(/.test(cardClick), "MUST NOT 经 cardHtml 重渲染呈现禁用态");
+  /* 两门叠加恢复路径（add-cosmos-session-archive-busy-gate 3.3/D4）：在途门结束 ≠ 恒可点
+     ——`setArchiveButtonDisabled(false)` 按卡内当前实体活跃口径重推导（实体仍活跃保持
+     禁用；卡已切实体按该实体口径），行为面直测在 session-archive-smoke。 */
+  const restoreFn = engineSource.slice(
+    engineSource.indexOf("function setArchiveButtonDisabled"),
+    engineSource.indexOf("/* ── 星胚移除的内联两击确认")
+  );
+  assert.ok(restoreFn.includes("hoverSourceOf()"), "恢复路径读取卡内当前实体（非盲清）");
+  assert.ok(restoreFn.includes("ent.data?.state === 'busy' || ent.data?.state === 'waiting' || ent.data?.delegatedBusy === true"), "恢复重推导谓词与 markup 活跃口径一致");
+  assert.ok(restoreFn.includes("button.disabled = active;"), "实体仍活跃 → 在途恢复不清除活跃禁用");
 
   /* 触屏目标：共享类 .cd-btn ≥40px（档位对齐 .cos-home-btn 44px） */
   const cdBtnRule = engineSource.match(/\.cd-btn \{[^}]*\}/)?.[0] ?? "";
@@ -1523,8 +1592,8 @@ function goldLiteralsOutsideVarFallback(source) {
   );
   assert.ok(engineSource.includes('data-action="decide" data-session="'), "决策按钮 data-action 与 data-session 稳定钩子并存");
   assert.ok(
-    engineSource.includes("cardActionsHtml(p.id, decideButtonHtml('planet', p))"),
-    "行星卡在「打开会话」与「归档会话」之间注入决策按钮"
+    engineSource.includes("cardActionsHtml(p.id, decideButtonHtml('planet', p), p)"),
+    "行星卡在「打开会话」与「归档会话」之间注入决策按钮（实体一并传入活跃门）"
   );
   assert.equal((engineSource.match(/decideButtonHtml\('planet', p\)/g) ?? []).length, 1, "仅行星卡一处注入（彗星卡不注入）");
   assert.ok(/\(lead \|\| ''\) \+/.test(engineSource), "按钮行按 打开 → 决策（lead）→ 归档 顺序拼装");
@@ -1578,7 +1647,12 @@ function goldLiteralsOutsideVarFallback(source) {
   assert.ok(engineSource.includes("advanceRelFocus(t)") && !engineSource.includes("relSetCache"), "MUST NOT 维护聚焦集缓存（纯派生，无失效路径）");
   assert.ok(engineSource.includes("relSet = relSetOf(ws, relFocuses, cam, W, H)"), "按星座现场派生关联集（star/planet 两分支）");
   assert.ok(engineSource.includes("orbitItem.rel = true"), "orbit 条目 rel 标记（皮肤缺省忽略不破图）");
-  assert.ok(engineSource.includes("seg.rel = true"), "constline 段 rel 标记");
+  /* 星↔星提案连线解除（two-use-cosmos-template-star-layout）：rel 段标记收敛到 relSetOf
+     的星↔行星段（提案 links 段不再有 seg.rel 点亮分支）；图样连线通道落位。 */
+  assert.ok(engineSource.includes("rel: true, relAlpha: alpha"), "constline 段 rel 标记（星↔行星关系段，relSetOf 单点）");
+  assert.ok(!engineSource.includes("links: E.relLast.links"), "星↔星提案 links 观测面解除（relLast 快照无 links 映射）");
+  assert.ok(engineSource.includes("ws.patternLines"), "图样连线通道落位（patternLines 消费）");
+  assert.ok(engineSource.includes("PAT_LINE_DIM"), "图样连线弱化因子落位（seg.alpha 自缩）");
   assert.ok(engineSource.includes("pushSatEnvelope(items, cam, p, W, H, ws, t, planetAlpha, relSet"), "挂卫星子轨道环同源增亮");
   assert.ok(engineSource.includes("starPlanetIdsOf"), "恒星→行星反向映射经 merge 层纯函数消费");
 
@@ -2026,10 +2100,13 @@ function goldLiteralsOutsideVarFallback(source) {
   /* 四态语法：busy/delegatedBusy 流动、done-unread 静态高亮 + glow、waiting 慢脉冲、idle 静默。 */
   assert.ok(chromeCss.includes(".dsh-cosmos-session-row[data-state=busy]::before,"), "busy 流动规则（delegatedBusy 经 data-state=busy 同规则）");
   assert.ok(chromeCss.includes(".dsh-cosmos-panel-card[data-act=active]::before{padding:1px;"), "提案卡活跃流动规则（共用 busy 语言）");
-  assert.ok(chromeCss.includes("background:repeating-linear-gradient(115deg,transparent 0 5px,rgb(var(--cos-accent-rgb,255 210 140) / .85) 5px 10px,transparent 10px 15px)"), "流动巡游 = accent 斜向条纹（令牌取色）");
+  assert.ok(chromeCss.includes("conic-gradient(from var(--cos-chrome-flow,0deg),transparent 0deg,transparent 250deg,rgb(var(--cos-accent-rgb,255 210 140) / .95) 360deg)"), "流动巡游 = conic 单亮带（彗星：亮头顺时针最前、尾迹拖后；var fallback 为 @property 降级前提，缺之整条 background IACVT 回落透明）");
+  assert.ok(chromeCss.includes("linear-gradient(rgb(var(--cos-accent-rgb,255 210 140) / .28),rgb(var(--cos-accent-rgb,255 210 140) / .28))"), "常亮基线 = accent 低α 均匀底层（描边任意时刻连续可见、无空窗）");
+  assert.ok(chromeCss.includes("@property --cos-chrome-flow{syntax:'<angle>';inherits:false;initial-value:0deg}"), "@property 注册角度自定义属性（keyframes 可插值前提）");
+  assert.ok(!chromeCss.includes("repeating-linear-gradient") && !chromeCss.includes("background-position:13.59px"), "斜纹平移形态已移除（禁断续/斜纹平移等无环绕方向形态）");
   assert.ok(chromeCss.includes("mask-composite:exclude") && chromeCss.includes("-webkit-mask-composite:xor"), "双层 mask 挖空 1px 边环（含 -webkit 前缀）");
-  assert.ok(chromeCss.includes("animation:cos-state-chrome-flow 2s linear infinite"), "流动周期约 2s");
-  assert.ok(chromeCss.includes("@keyframes cos-state-chrome-flow"), "流动关键帧存在");
+  assert.ok(chromeCss.includes("animation:cos-state-chrome-flow 2.4s linear infinite"), "流动周期 2.4s linear（光带走完整圈可被视线跟随）");
+  assert.ok(chromeCss.includes("@keyframes cos-state-chrome-flow{to{--cos-chrome-flow:360deg}}"), "流动关键帧 = 角度属性 0→360deg 插值（绕环顺时针一周）");
   assert.ok(chromeCss.includes(".dsh-cosmos-session-row[data-state=done-unread]::before{border:1px solid var(--dsw-alias-state-success-primary,var(--cos-done,#5affc0));"), "done-unread 静态高亮（宿主 alias → 皮肤 done 令牌级联）");
   assert.ok(chromeCss.includes("box-shadow:0 0 10px var(--dsw-alias-state-success-primary,var(--cos-done,#5affc0))"), "done-unread glow 挂环带层（light 覆盖块不触及伪元素）");
   assert.ok(chromeCss.includes(".dsh-cosmos-session-row[data-state=waiting]::before{border:1px solid var(--dsw-alias-state-warn-primary,var(--cos-waiting,#ffaa4a));"), "waiting 脉冲静态基底 = 可见 warning 色");
@@ -2049,18 +2126,20 @@ function goldLiteralsOutsideVarFallback(source) {
   assert.ok(reducedRuleAt > selectedRuleAt, "降级块位于选中规则之后");
   const selectedCss = chromeCss.slice(selectedRuleAt, reducedRuleAt);
   assert.ok(selectedCss.includes("animation:none"), "选中期间状态动画停止（静态状态色保留）");
+  assert.ok(selectedCss.includes("background:rgb(var(--cos-accent-rgb,255 210 140) / .5)"), "选中态 busy/active 降级 = accent 均匀静态色环（MUST NOT 冻结动画中间帧的不对称亮块）");
   assert.ok(chromeCss.includes(".dsh-cosmos-panel-card[data-selected=true][data-act=active]::before"), "提案卡选中同规则（无双动画叠加）");
 
-  /* reduced-motion：时长归零 → 同色静态描边（色信息保留）；沿 loader 降级块先例。 */
+  /* reduced-motion：时长归零 + background 覆盖为均匀静态色环（色信息保留、非冻结帧）。 */
   const reducedCss = chromeCss.slice(reducedRuleAt);
-  assert.ok(reducedCss.includes(".dsh-cosmos-session-row[data-state=busy]::before,") && reducedCss.includes(".dsh-cosmos-panel-card[data-act=active]::before,"), "降级覆盖流动命中元素");
+  assert.ok(reducedCss.includes(".dsh-cosmos-session-row[data-state=busy]::before,\n  .dsh-cosmos-panel-card[data-act=active]::before{animation-duration:0s;animation-iteration-count:1;\n    background:rgb(var(--cos-accent-rgb,255 210 140) / .5)}"), "降级覆盖流动命中元素（时长归零 + 均匀静态色环）");
   assert.ok(reducedCss.includes(".dsh-cosmos-session-row[data-state=waiting]::before"), "降级覆盖 waiting 脉冲");
   assert.ok(reducedCss.includes("animation-duration:0s;animation-iteration-count:1"), "时长归零（静态同色描边，区别于 loader 慢转）");
 
-  /* 色令牌与可区分性纪律：零新令牌、零裸色值背景、左缘生命周期色条不被覆盖、无虚线。 */
+  /* 色令牌与可区分性纪律：零新 HUD 令牌、零裸色值背景、左缘生命周期色条不被覆盖、无虚线。
+     --cos-chrome-flow 为 @property 注册的动画驱动属性（本提案白名单），非 HUD 令牌。 */
   assert.ok(chromeCss.includes("var(--cos-done,#5affc0)") && chromeCss.includes("var(--cos-waiting,#ffaa4a)"), "语义色经皮肤令牌兜底（直接量仅 fallback 位）");
   assert.ok(!/background:#[0-9a-f]{6}/i.test(chromeCss), "背景无裸色值");
-  assert.ok(!/--cos-[a-z0-9-]+\s*:/.test(chromeCss), "零新增 HUD 令牌（仅消费既有变量）");
+  assert.deepEqual([...new Set(chromeCss.match(/--cos-[a-z0-9-]+\s*:/g) ?? [])], ["--cos-chrome-flow:"], "零新增 HUD 令牌（仅消费既有变量；--cos-chrome-flow: 仅现于 @property 驱动的 keyframes 目标）");
   assert.ok(!chromeCss.includes("data-lifecycle") && !chromeCss.includes("border-left-color"), "左缘生命周期色条规则未被覆盖（两通道并存）");
   assert.ok(!chromeCss.includes("dashed"), "状态描边无虚线（虚线语义为星胚专有）");
 }

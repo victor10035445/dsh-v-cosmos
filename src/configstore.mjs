@@ -1,18 +1,22 @@
 /**
  * 插件自营共享配置存储（add-cosmos-proposal-actions 2.1 / spec cosmos-button-settings
- * 「按钮配置共享存储」）。
+ * 「按钮配置共享存储」；step2-cosmos-openspec-path-setting 1.1/1.2 增 `paths` 对象节）。
  *
- * 移植自 dsh-v-skill-links 的共享配置存储（同作者、同实测口径），节集合为两条
- * **互不读写**的列表节：
+ * 移植自 dsh-v-skill-links 的共享配置存储（同作者、同实测口径），节集合为**互不读写**的
+ * 数组节 ×2 与对象节 ×1：
  *  - `buttons`：提案动作按钮（add-cosmos-proposal-actions，`normalizeButtons`）；
  *  - `constellationButtons`：星座动作按钮（add-cosmos-constellation-actions，
- *    `normalizeConstButtons`）。
- * 两节同文件、各自独立覆盖/重置，任一节缺失即回落该节的组合层 base。
+ *    `normalizeConstButtons`）；
+ *  - `paths`：openspec 路径配置 `{ openspecPath, cosmosSpecDir }`（spec
+ *    cosmos-path-setting「路径配置节（paths）」，`normalizePaths`——对象节，键级
+ *    trim/净房，输出恒两键显式）。
+ * 三节同文件、各自独立覆盖/重置，任一节缺失即回落该节的组合层 base。
  *  - 文件：`<DSH_HOME>/dsh-v-cosmos.config.json`（`$DSH_HOME` 解析与宿主一致：
  *    env 去空白非空优先，`~` 展开，否则 `~/.dsh`）；
  *  - 文件形状：`{ revision: <从 1 起单调递增>, buttons?: [...],
- *    constellationButtons?: [...], migratedFrom? }`；
- *    节**缺席** = 未自定义（回落组合层 base），节**存在**（含空数组）= 显式覆盖；
+ *    constellationButtons?: [...], paths?: {…}, migratedFrom? }`；
+ *    节**缺席** = 未自定义（回落组合层 base），数组节**存在**（含空数组）/ 对象节**存在**
+ *    （含全 null 形状）= 显式覆盖；
  *  - 写路径 = 跨进程锁内 CAS + 复制式备份轮转（`.bak.1~3`）+ 临时文件原子替换；
  *    锁等待约 1s 超时 `busy`（HTTP 503）；
  *  - 读路径 = 正式文件 → `.bak.1/2/3` 依次恢复 → 按「存储缺席」回落组合层；
@@ -29,11 +33,52 @@ import { homedir } from "node:os";
 import { basename, dirname, join, resolve as pathResolve } from "node:path";
 import { normalizeButtons } from "./buttons.mjs";
 import { normalizeConstButtons } from "./const-buttons.mjs";
+import { normalizePaths, PATHS_UNSET, pathsConfigured } from "./paths.mjs";
 
 /** 共享存储文件名（`<DSH_HOME>/` 之下）。 */
 export const CONFIG_STORE_BASENAME = "dsh-v-cosmos.config.json";
-/** 共享存储的节名（顺序即快照字段顺序；两节互不读写）。 */
-export const CONFIG_STORE_SECTIONS = ["buttons", "constellationButtons"];
+/** 共享存储的节名（顺序即快照字段顺序；三节互不读写）。 */
+export const CONFIG_STORE_SECTIONS = ["buttons", "constellationButtons", "paths"];
+/** 节值形状表（step2-cosmos-openspec-path-setting 1.1）：数组节 / 对象节。
+ *  写路径门（writeSections）与存储读取门（isSectionValue）共用——数组节保持
+ *  「仅数组」既有门（对象值按 invalid 拒绝，行为不变），对象节仅认普通对象。 */
+const SECTION_VALUE_SHAPES = {
+  buttons: "array",
+  constellationButtons: "array",
+  paths: "object"
+};
+
+/** @param {string} key 节值形状（未注册节按数组节兜底，行为与既往一致）。 */
+function shapeOf(key) {
+  return SECTION_VALUE_SHAPES[key] ?? "array";
+}
+
+/**
+ * 节值形状门：storeSectionsOf / mergeView / writeSections CAS 回写共用。
+ * 数组节认数组；对象节认普通对象（排除 null 与数组）。
+ * @param {string} key
+ * @param {unknown} value
+ * @returns {boolean}
+ */
+function isSectionValue(key, value) {
+  if (shapeOf(key) === "array") return Array.isArray(value);
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+/**
+ * 节内容非空判定（seed / upgrade / ensureSeeded 共用）：数组节非空列表；对象节
+ * 至少一键已配置（全 null 形状不播种——spec「全 null = 未配置」）。
+ * @param {string} key
+ * @param {unknown} value
+ * @returns {boolean}
+ */
+function sectionHasContent(key, value) {
+  if (Array.isArray(value)) return value.length > 0;
+  if (shapeOf(key) === "object" && value !== null && typeof value === "object" && !Array.isArray(value)) {
+    return pathsConfigured(value);
+  }
+  return false;
+}
 /** 保留的备份份数（`.bak.1` = 上一次写入前内容）。 */
 const STORE_BACKUP_COUNT = 3;
 /** 锁文件判陈旧阈值：超过即接管重建（进程中途被杀的残留锁自愈）。 */
@@ -88,10 +133,11 @@ export class ConfigStoreError extends Error {
   }
 }
 
-/** 节归一化器表（两节：提案动作 buttons / 星座动作 constellationButtons；各自独立口径）。 */
+/** 节归一化器表（提案动作 buttons / 星座动作 constellationButtons / 路径 paths；各自独立口径）。 */
 const SECTION_NORMALIZERS = {
   buttons: (raw) => normalizeButtons(raw),
-  constellationButtons: (raw) => normalizeConstButtons(raw)
+  constellationButtons: (raw) => normalizeConstButtons(raw),
+  paths: (raw) => normalizePaths(raw)
 };
 
 /**
@@ -102,7 +148,9 @@ const SECTION_NORMALIZERS = {
  */
 const SECTION_READ_NORMALIZERS = {
   buttons: (raw) => normalizeButtons(raw, { tolerateUnknownPreState: true, tolerateUnknownShortcut: true }),
-  constellationButtons: (raw) => normalizeConstButtons(raw, { tolerateUnknownShortcut: true })
+  constellationButtons: (raw) => normalizeConstButtons(raw, { tolerateUnknownShortcut: true }),
+  /* paths：读路径净房与写路径同口径（纯形态校验恒成功，垃圾形状归一为未配置形状）。 */
+  paths: (raw) => normalizePaths(raw)
 };
 
 /** 归一化失败的兜底（组合层来源非法时不让插件激活失败）。 */
@@ -115,36 +163,41 @@ function safeNormalize(fn, fallback) {
 }
 
 /**
- * 把一节任意来源的输入归一化为**完整组合层视图**（两节齐备）。
- * 缺节 → 空数组；节级非法 → 按空处理（写入校验另有拦截）。
+ * 把一节任意来源的输入归一化为**完整组合层视图**（三节齐备）。
+ * 缺节 → 空数组 / 未配置形状；节级非法 → 按空处理（写入校验另有拦截）。
  * @param {unknown} raw 补丁层 entry config 或 settingsScope 解析值
  * @param {{tolerateUnknownPreState?: boolean}} [options] 读面容错（快照专用：
  *        `preState` / `shortcut` 漂移值原样保留，供设置页回显；seed/upgrade 等写路径恒严格）
- * @returns {{buttons: Array<object>, constellationButtons: Array<object>}}
+ * @returns {{buttons: Array<object>, constellationButtons: Array<object>,
+ *            paths: {openspecPath: string|null, cosmosSpecDir: string|null}}}
  */
 export function normalizeView(raw, options = {}) {
   const source = raw !== null && typeof raw === "object" ? raw : {};
   const table = options?.tolerateUnknownPreState === true ? SECTION_READ_NORMALIZERS : SECTION_NORMALIZERS;
   return {
     buttons: safeNormalize(() => table.buttons(source.buttons), []),
-    constellationButtons: safeNormalize(() => table.constellationButtons(source.constellationButtons), [])
+    constellationButtons: safeNormalize(() => table.constellationButtons(source.constellationButtons), []),
+    paths: safeNormalize(() => table.paths(source.paths), { ...PATHS_UNSET })
   };
 }
 
 /**
  * 生效值 = 组合层 base ← 存储节逐节覆盖（节缺席回落 base）。
- * @param {{buttons: Array<object>, constellationButtons: Array<object>}} base 已归一化视图
+ * @param {{buttons: Array<object>, constellationButtons: Array<object>, paths?: object}} base 已归一化视图
  * @param {object|null} sections 存储节（storeSectionsOf 的输出）
- * @returns {{buttons: Array<object>, constellationButtons: Array<object>}}
+ * @returns {{buttons: Array<object>, constellationButtons: Array<object>,
+ *            paths: {openspecPath: string|null, cosmosSpecDir: string|null}}}
  */
 export function mergeView(base, sections) {
   const out = {
     buttons: Array.isArray(base?.buttons) ? base.buttons : [],
-    constellationButtons: Array.isArray(base?.constellationButtons) ? base.constellationButtons : []
+    constellationButtons: Array.isArray(base?.constellationButtons) ? base.constellationButtons : [],
+    /* paths base 经净房兜底（base 来源非法 → 未配置形状；净房恒成功恒新对象）。 */
+    paths: normalizePaths(base?.paths)
   };
   if (sections !== null && typeof sections === "object") {
     for (const key of CONFIG_STORE_SECTIONS) {
-      if (Array.isArray(sections[key])) out[key] = sections[key];
+      if (isSectionValue(key, sections[key])) out[key] = sections[key];
     }
   }
   return out;
@@ -152,6 +205,7 @@ export function mergeView(base, sections) {
 
 /**
  * 提取存储文件里的「用户层节」：无任何节 → null（快照 `user: null`，UI 不显示覆盖标记）。
+ * 数组节认数组、对象节认普通对象（节值类型门放宽，step2-cosmos-openspec-path-setting 1.2）。
  * @param {object|null} doc
  * @returns {object|null}
  */
@@ -160,7 +214,7 @@ export function storeSectionsOf(doc) {
   const out = {};
   let any = false;
   for (const key of CONFIG_STORE_SECTIONS) {
-    if (Array.isArray(doc[key])) {
+    if (isSectionValue(key, doc[key])) {
       out[key] = doc[key];
       any = true;
     }
@@ -171,9 +225,10 @@ export function storeSectionsOf(doc) {
 /**
  * 装载期校验：结构非法（非对象 / revision 非正整数）→ null（按损坏处理，走恢复链）；
  * 节级非法 → 丢弃该节（回落 base，不整体判损）。`preState` 漂移值按读面容错原样保留
- * （设置页回显「不可用」；保存时严格校验拒绝）。
+ * （设置页回显「不可用」；保存时严格校验拒绝）。paths 对象节**装载归一**（读净房恒
+ * 成功：垃圾键值/数组形状归一为未配置形状，spec「非法值净房」场景）。
  * @param {unknown} raw
- * @returns {{revision: number, buttons?: Array, constellationButtons?: Array, migratedFrom?: string}|null}
+ * @returns {{revision: number, buttons?: Array, constellationButtons?: Array, paths?: object, migratedFrom?: string}|null}
  */
 export function sanitizeStoreDocument(raw) {
   if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return null;
@@ -442,7 +497,7 @@ export function createConfigStore(options = {}) {
     const view = normalizeView(baseView);
     const doc = { revision: 1 };
     for (const key of CONFIG_STORE_SECTIONS) {
-      if (Array.isArray(view[key]) && view[key].length > 0) doc[key] = view[key];
+      if (sectionHasContent(key, view[key])) doc[key] = view[key];
     }
     doc.migratedFrom = source;
     try {
@@ -471,7 +526,7 @@ export function createConfigStore(options = {}) {
     const view = normalizeView(baseView);
     const sections = {};
     for (const key of CONFIG_STORE_SECTIONS) {
-      if (Array.isArray(view[key]) && view[key].length > 0) sections[key] = view[key];
+      if (sectionHasContent(key, view[key])) sections[key] = view[key];
     }
     if (Object.keys(sections).length === 0) return { upgraded: false, reason: "empty-view" };
     return withLock(async () => {
@@ -503,16 +558,18 @@ export function createConfigStore(options = {}) {
     const forced = seedOptions.forceUpgrade === true;
     if (currentSections() !== null && !forced) return { action: "kept" };
     const view = normalizeView(baseView);
-    const nonEmpty = CONFIG_STORE_SECTIONS.some((key) => Array.isArray(view[key]) && view[key].length > 0);
+    const nonEmpty = CONFIG_STORE_SECTIONS.some((key) => sectionHasContent(key, view[key]));
     if (!nonEmpty) return { action: "kept" };
     const result = await upgrade(baseView, seedOptions);
     return { action: result.upgraded ? "upgraded" : "kept" };
   }
 
   /**
-   * CAS 写入：校验（按节复用 normalizeButtons / normalizeConstButtons 语义，落盘归一化输出）
-   * → 锁内 CAS 判定 → 复制式备份轮转 → 原子替换。
-   * @param {{baseRevision: number, sections: Record<string, Array|null>}} request `null` = unset 该节
+   * CAS 写入：校验（按节复用 normalizeButtons / normalizeConstButtons / normalizePaths
+   * 语义，落盘归一化输出）→ 锁内 CAS 判定 → 复制式备份轮转 → 原子替换。
+   * 节值类型门按形状表放宽（step2-cosmos-openspec-path-setting 1.1）：数组节保持
+   * 「仅数组」既有门（行为不变），对象节认普通对象；`null` = unset 该节。
+   * @param {{baseRevision: number, sections: Record<string, Array|object|null>}} request
    * @returns {Promise<{revision: number}>}
    * @throws {ConfigStoreError} invalid | conflict | busy | io
    */
@@ -535,7 +592,13 @@ export function createConfigStore(options = {}) {
         normalized[key] = null;
         continue;
       }
-      if (!Array.isArray(value)) throw new ConfigStoreError("invalid", `section ${key} must be an array or null`);
+      const shape = shapeOf(key);
+      const shapeOk = shape === "array"
+        ? Array.isArray(value)
+        : value !== null && typeof value === "object" && !Array.isArray(value);
+      if (!shapeOk) {
+        throw new ConfigStoreError("invalid", `section ${key} must be an ${shape} or null`);
+      }
       try {
         normalized[key] = SECTION_NORMALIZERS[key](value);
       } catch (error) {
@@ -550,7 +613,7 @@ export function createConfigStore(options = {}) {
       }
       const doc = { revision: revision + 1 };
       for (const key of CONFIG_STORE_SECTIONS) {
-        if (current !== null && Array.isArray(current[key])) doc[key] = current[key];
+        if (current !== null && isSectionValue(key, current[key])) doc[key] = current[key];
       }
       for (const key of keys) {
         if (normalized[key] === null) delete doc[key];

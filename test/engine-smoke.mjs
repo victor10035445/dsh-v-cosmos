@@ -564,7 +564,8 @@ function stubEl(tag) {
     remove() {},
     querySelector(sel) {
       if (!el._by[sel]) {
-        const child = stubEl(sel === ".cos-canvas" ? "canvas" : "div");
+        /* .cos-canvas 与 .cos-tiplines 同为 canvas 载体（引线层，polish-cosmos-tip-topmost-layer 2.1） */
+        const child = stubEl(sel === ".cos-canvas" || sel === ".cos-tiplines" ? "canvas" : "div");
         if (child.tag === "canvas") child.getContext = () => ctxFactory();
         el._by[sel] = child;
       }
@@ -580,15 +581,17 @@ function stubEl(tag) {
   el.classList = classListOf(el);
   return el;
 }
-/* 记录型 ctx（引线描线断言）：在桩 ctx 之上记录 stroke() 时生效的 strokeStyle，
-   其余方法与桩同形（缺省即惰性 no-op）。 */
+/* 记录型 ctx（引线描线断言）：在桩 ctx 之上记录 stroke() 时生效的 strokeStyle 与
+   clearRect() 整屏清屏（引线层每帧清空契约，polish-cosmos-tip-topmost-layer 2.4），
+   `ops` 保序记录两类调用（清屏先于描线的次序断言），其余方法与桩同形（缺省即惰性 no-op）。 */
 function recordingCtx() {
-  const rec = { strokes: [] };
+  const rec = { strokes: [], clears: [], ops: [] };
   return new Proxy({ __rec: rec }, {
     get(target, prop) {
       if (prop === "createLinearGradient" || prop === "createRadialGradient") return () => ({ addColorStop() {} });
       if (prop === "__rec") return rec;
-      if (prop === "stroke") return () => rec.strokes.push(target.strokeStyle ?? null);
+      if (prop === "stroke") return () => { rec.strokes.push(target.strokeStyle ?? null); rec.ops.push("stroke"); };
+      if (prop === "clearRect") return (x, y, w, h) => { rec.clears.push([x, y, w, h]); rec.ops.push("clear"); };
       if (!(prop in target)) target[prop] = () => undefined;
       return target[prop];
     },
@@ -4089,7 +4092,7 @@ function goldLiteralsOutsideVarFallback(source) {
 
   /* ⑧ 呈现层标注（2.1）/ 拾取面白名单（卫星不可选中）/ 既有键位零侵入（3.3） */
   const engineSource = readFileSync(new URL("../src/cosmos/engine.mjs", import.meta.url), "utf8");
-  const actionsAt = engineSource.indexOf("function cardActionsHtml(sessionId, lead)");
+  const actionsAt = engineSource.indexOf("function cardActionsHtml(sessionId, lead, ent)");
   const actionsEnd = engineSource.indexOf("function cardHtml(e)");
   assert.ok(actionsAt > 0 && actionsEnd > actionsAt, "cardActionsHtml 切片可定位");
   const actionsBody = engineSource.slice(actionsAt, actionsEnd);
@@ -4189,7 +4192,10 @@ function goldLiteralsOutsideVarFallback(source) {
   assert.deepEqual(rel.last.orbits.map((o) => o.planetId), ["rbin"], "关联行星轨道环进入 rel 集");
   assert.equal(rel.last.segs.length, 1, "一条恒星→行星关系段");
   assert.deepEqual([rel.last.segs[0].starId, rel.last.segs[0].planetId], ["ra", "rbin"], "关系段端点=聚焦恒星与关联行星");
-  assert.deepEqual(rel.last.links.map((l) => [l.aId, l.bId]), [["ra", "rb"]], "该星端点的共享会话虚线点亮");
+  /* 星↔星提案连线解除（two-use-cosmos-template-star-layout）：relLast 无 links 面，
+     提案 links 段（ra↔rb）不再绘制、不再聚焦点亮——直线通道让位图样连线。 */
+  assert.equal(rel.last.links, undefined, "星↔星提案虚线点亮解除（relLast 无 links 面）");
+  assert.deepEqual(eng.inspectPatternLines(), [], "提案 links 不进图样线通道（fixture 无 patternLines）");
   let entry = rel.mix.find((m) => m.key === "rel1|star:ra");
   assert.ok(entry && entry.dir === "in", "新聚焦键 in 坡道");
   assert.ok(entry.alpha > 0 && entry.alpha < 1, "0.2s 窗口内处于淡入中（MUST NOT 瞬间跳变）");
@@ -4214,7 +4220,7 @@ function goldLiteralsOutsideVarFallback(source) {
   step1(3); // 旧集渐熄播完（0.2s）
   rel = eng.inspectRelation();
   assert.equal(rel.last.segs.length, 2, "联星行星 → 连到全部关联星的两条关系段");
-  assert.equal(rel.last.links.length, 0, "行星聚焦不点亮共享会话段（spec 只要求恒星端点）");
+  assert.equal(rel.last.links, undefined, "行星聚焦亦无星↔星面（通道整体解除，two）");
 
   /* ④ 决策按钮：waiting 行星注入 → 文案/顺序/钩子；点击分流 onDecideSession */
   const htmlBin = String(cardEl.innerHTML);
@@ -4687,6 +4693,103 @@ function goldLiteralsOutsideVarFallback(source) {
   } finally {
     eng.stop();
     eng.dispose();
+    ctxFactory = stubCtx2d;
+  }
+}
+
+/* ── 浮签呈现层级与引线层（polish-cosmos-tip-topmost-layer 2.4 / 3.2 静态面）：
+      overlay 抬层 46（压过交互 HUD ≤45、压不过 toast 47/浮窗/提示行 58）、详情卡
+      overlay 内 z:25 恒压过 chip/slab、引擎 toast 47 恒压过浮签；引线层 = overlay
+      首子 canvas、与主画布恒等尺寸、pointer-events:none；摘除帧清屏先于空帧早退
+      （无残影）。 ── */
+{
+  /* ① CSS 契约（静态规则抽取）：选择器+花括号字面量只在真实规则处出现，首个命中即规则体 */
+  const ruleOf = (selector) => {
+    const m = new RegExp(selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\s*\\{([^}]*)\\}").exec(ENGINE_CSS);
+    return m ? m[1] : "";
+  };
+  assert.ok(/z-index:\s*46/.test(ruleOf(".cos-overlay")), "overlay z-index 46（压过全部交互 HUD ≤45 档）");
+  assert.ok(/z-index:\s*25/.test(ruleOf(".cos-card")), "详情卡 overlay 内 z-index 25（恒压过 chip/slab 与 wsbar/home 20）");
+  assert.ok(/z-index:\s*47/.test(ruleOf(".cos-toast")), "引擎 toast z-index 47（反馈层恒高于浮签 46）");
+  assert.ok(!/z-index/.test(ruleOf(".cos-chip")), "chip 无 z-index（auto，DOM 序）——重叠时详情卡恒在其上");
+  const tipRule = ruleOf(".cos-tiplines");
+  assert.ok(/pointer-events:\s*none/.test(tipRule), "引线层 pointer-events:none（MUST NOT 参与拾取）");
+  assert.ok(/position:\s*absolute/.test(tipRule) && /inset:\s*0/.test(tipRule), "引线层继承 overlay 定位（absolute inset 0 铺满全层）");
+
+  /* ② DOM 结构与尺寸同步（同一 resize 路径）：引线 canvas 为 overlay 首子元素，
+     位图与 CSS 尺寸与主画布恒等（MUST NOT 层间尺寸漂移）。 */
+  const container = stubEl("div");
+  const eng = createCosmosEngine({ container, style: createSkinD() });
+  try {
+    const rootEl = container.children[0];
+    const markup = String(rootEl.innerHTML);
+    const overlayAt = markup.indexOf('<div class="cos-overlay">');
+    assert.ok(overlayAt >= 0, "overlay 容器在册（ensureDom 产物）");
+    assert.ok(/^<div class="cos-overlay">\s*<canvas class="cos-tiplines"><\/canvas>/.test(markup.slice(overlayAt)),
+      "引线层为 overlay 首子元素（首子位 = 引线恒居浮签本体之下）");
+    const mainCanvas = rootEl._by[".cos-canvas"];
+    const tipCanvas = rootEl._by[".cos-tiplines"];
+    assert.equal(tipCanvas.tag, "canvas", "引线层为 canvas 载体（非 DOM/SVG 图形元素）");
+    assert.equal(typeof tipCanvas.getContext, "function", "引线层可取 2d context");
+    assert.equal(tipCanvas.width, mainCanvas.width, "引线层位图宽 = 主画布位图宽（同一 resize 路径）");
+    assert.equal(tipCanvas.height, mainCanvas.height, "引线层位图高 = 主画布位图高");
+    assert.equal(tipCanvas.style.width, mainCanvas.style.width, "引线层 CSS 宽 = 主画布 CSS 宽");
+    assert.equal(tipCanvas.style.height, mainCanvas.style.height, "引线层 CSS 高 = 主画布 CSS 高");
+  } finally {
+    eng.stop();
+    eng.dispose();
+  }
+
+  /* ③ 每帧清空契约：记录型 ctx 直挂引线层——可见帧「清屏先于描线」、摘除帧清屏仍执行
+     且零描边（无残影）；清屏以 CSS 像素坐标覆盖整层。桩皮肤 drawBody/background 零描边
+     ⇒ stroke()/clearRect() 只可能来自引线描线入口。 */
+  const ctxRec = recordingCtx();
+  ctxFactory = () => ctxRec;
+  const rec = ctxRec.__rec;
+  const layerStyle = {
+    skin: "stub-tiplayer", useBand: false,
+    palette: {
+      prop: { proto: "#8a9bc0", created: "#9fd8ff", reviewed: "#cfe8ff", executed: "#ffe27a" },
+      sess: { idle: "#a8b8d8", busy: "#54c8ff", waiting: "#ffaa4a", "done-unread": "#5affc0", free: "#cfeaff" },
+      accent: "#00ff88"
+    },
+    gold: "#ff00ff",
+    background() {},
+    drawBody() {}
+  };
+  const layerContainer = stubEl("div");
+  const layerEng = createCosmosEngine({ container: layerContainer, style: layerStyle });
+  try {
+    layerEng.setScene(miniScene(), "rebuild");
+    rafQ.length = 0;
+    layerEng.start();
+    let tNow = 90000;
+    const step = (n = 1) => { for (let i = 0; i < n; i++) { tNow += 50; stepFrame(tNow); } };
+    step(27); // 过冷启动序曲
+
+    /* 可见帧：chip 引线描线，清屏恰好一次、覆盖整层且先于描线 */
+    rec.strokes.length = 0; rec.clears.length = 0; rec.ops.length = 0;
+    step(1);
+    assert.equal(layerEng.inspectTipLines().length, 1, "银河态 chip 引线在册（可见帧前置）");
+    assert.deepEqual(rec.clears, [[0, 0, 800, 600]], "可见帧清屏恰好一次且覆盖整层（CSS 像素全幅）");
+    assert.equal(rec.ops[0], "clear", "清屏先于描线（操作序首位 = 清屏）");
+    assert.equal(rec.ops.length, 2, "可见帧操作序 = 清屏 + 描线（无多余写层）");
+    assert.equal(rec.strokes.length, 1, "可见帧每浮签一次描边");
+
+    /* 摘除帧：场景清空（浮签全摘）→ 清屏仍执行、零描边——独立引线层不被主循环
+       清屏，早退不清屏会残留上一帧引线（spec「MUST NOT 残影」红线）。 */
+    layerEng.setScene({ workspaces: [] }, "rebuild");
+    rec.strokes.length = 0; rec.clears.length = 0; rec.ops.length = 0;
+    step(1);
+    assert.deepEqual(layerEng.inspectTipLines(), [], "摘除帧：E.tipLines 空");
+    assert.deepEqual(rec.clears, [[0, 0, 800, 600]], "摘除帧清屏仍执行（清屏先于空帧早退）");
+    assert.equal(rec.ops.length, 1, "摘除帧操作序 = 仅清屏（无描边）");
+    assert.equal(rec.strokes.length, 0, "摘除帧零描边（引线层无残影）");
+    step(2);
+    assert.equal(rec.clears.length, 3, "连续空帧每帧都清（早退不清屏的回归路径被契约覆盖）");
+  } finally {
+    layerEng.stop();
+    layerEng.dispose();
     ctxFactory = stubCtx2d;
   }
 }
@@ -5352,7 +5455,7 @@ function goldLiteralsOutsideVarFallback(source) {
     assert.ok(planetMark && planetMark.hovered === true, "注入目标获得与画布 hover 同形的皮肤 hover 标记");
     assert.equal(planetMark.selected, false, "注入不冒充选中");
     assert.equal(cardKey(), "planet:xbin", "注入行星信息卡呈现（data-key）");
-    assert.equal(cardEl.dataset.sig, "planet:xbin|waiting|approval", "注入行星卡内容签名沿既有管线");
+    assert.equal(cardEl.dataset.sig, "planet:xbin|waiting|approval|db:0", "注入行星卡内容签名沿既有管线（含 delegatedBusy 分量）");
 
     /* 幂等不重置关联聚焦坡道：坡道到满后重注入，α 保持 1（未被重锚） */
     step(4);
@@ -5464,7 +5567,7 @@ function goldLiteralsOutsideVarFallback(source) {
     eng.setScene(patched, "patch");
     step(2);
     assert.equal(cardKey(), "planet:xbin", "重建后信息卡仍呈现注入目标");
-    assert.equal(cardEl.dataset.sig, "planet:xbin|busy|", "ws/data 引用已重映射 → 后续 patch 触达（非陈旧快照）");
+    assert.equal(cardEl.dataset.sig, "planet:xbin|busy||db:0", "ws/data 引用已重映射 → 后续 patch 触达（非陈旧快照）");
     /* 目标被场景摘除 → 引擎静默清除 + 置空通知恰一次 */
     const pruned = extScene();
     pruned.workspaces[0].planets = [];
@@ -5497,7 +5600,7 @@ function goldLiteralsOutsideVarFallback(source) {
     assert.equal(rel.focusKey, "ext1|star:xa", "注入恒星成为聚焦源");
     assert.deepEqual(rel.last.orbits.map((o) => o.planetId), ["xbin"], "注入恒星 → 关联行星轨道环点亮");
     assert.deepEqual(rel.last.segs.map((s) => [s.starId, s.planetId]), [["xa", "xbin"]], "恒星→行星关系段");
-    assert.deepEqual(rel.last.links.map((l) => [l.aId, l.bId]), [["xa", "xb"]], "该星端点共享会话虚线点亮");
+    assert.equal(rel.last.links, undefined, "星↔星提案虚线点亮解除（relLast 无 links 面，two）");
     assert.ok(rel.mix.find((m) => m.key === "ext1|star:xa").alpha < 1, "聚焦坡道渐入（无瞬间跳变）");
     const slabXa = slabOf("xa");
     assert.ok(slabXa, "注入恒星名牌已创建");
@@ -5523,7 +5626,7 @@ function goldLiteralsOutsideVarFallback(source) {
     assert.equal(rel.focusKey, "ext1|planet:xbin", "注入行星成为聚焦源");
     assert.deepEqual(rel.last.orbits.map((o) => o.planetId), ["xbin"], "行星自身轨道环点亮");
     assert.equal(rel.last.segs.length, 2, "联星行星 → 两条关系段");
-    assert.equal(rel.last.links.length, 0, "行星聚焦不点亮共享会话段");
+    assert.equal(rel.last.links, undefined, "行星聚焦不点亮星↔星段（通道解除，two）");
     assert.equal(cardKey(), "planet:xbin", "注入行星信息卡呈现");
 
     /* 注入彗星：聚焦集空（无 rel 增强）+ 信息卡照常 + 不报错 */
@@ -5603,6 +5706,80 @@ function goldLiteralsOutsideVarFallback(source) {
     assert.equal(dead.setExternalHover(null), false, "已销毁 → 清除亦 false");
     assert.equal(dead.inspectExternalHover(), null, "已销毁观测面 → null");
   }
+
+  eng.stop();
+  eng.dispose();
+  rafQ.length = 0;
+}
+
+/* ── 图样连线呈现与星↔星提案连线解除（two-use-cosmos-template-star-layout 3.x / 4.6） ── */
+{
+  /** 夹具：单星座三星（patternLines 相邻对 + 提案 links 跨接对，两通道刻意异构）。 */
+  const patternScene = () => ({
+    workspaces: [{
+      id: "pat1", name: "pat-one", pos: [0, 0, 0],
+      stars: [
+        { id: "pa", name: "pa", lifecycle: "created", setBy: null, at: null, tasks: [0, 0], age: "刚刚", act: 0, off: [-20, 0, 0] },
+        { id: "pb", name: "pb", lifecycle: "created", setBy: null, at: null, tasks: [0, 0], age: "刚刚", act: 0, off: [0, 0, 8] },
+        { id: "pc", name: "pc", lifecycle: "created", setBy: null, at: null, tasks: [0, 0], age: "刚刚", act: 0, off: [20, 0, 0] }
+      ],
+      patternLines: [[0, 1], [1, 2]],
+      links: [[0, 2]], // 提案关联数据面保留（面板投影消费）；引擎不再绘制
+      planets: [], comets: [], archives: 0, satelliteCount: 0
+    }]
+  });
+  const container = stubEl("div");
+  const eng = createCosmosEngine({ container, style: createSkinD() });
+  eng.setScene(patternScene(), "rebuild");
+  rafQ.length = 0;
+  eng.start();
+  let tNow = 9000;
+  const step = (n = 1) => { for (let i = 0; i < n; i++) { tNow += 50; stepFrame(tNow); } };
+  step(1); // 首帧：段淡入坡道起点
+
+  const keyOf = (row) => [row.aId, row.bId].sort().join("|");
+
+  /* 4.6 段集合：patternLines → 端点恒星 id 对；星↔星提案 links 段缺席（通道解除） */
+  let rows = eng.inspectPatternLines();
+  assert.deepEqual(rows.map(keyOf).sort(), ["pa|pb", "pb|pc"], "图样连线段 = patternLines 端点恒星对");
+  assert.ok(!rows.some((r) => keyOf(r) === "pa|pc"), "提案 links（pa↔pc）不再绘制（星↔星直线通道让位图样线）");
+  assert.ok(rows.every((r) => r.alpha > 0 && r.alpha <= 0.5), `段 α 弱化（≤0.5 = PAT_LINE_DIM × 坡道，实际 ${rows.map((r) => r.alpha.toFixed(2))}）`);
+
+  /* 淡入坡道（8.1 复用）：0.4s 内渐入到稳态弱化 α */
+  step(2);
+  const early = eng.inspectPatternLines().find((r) => keyOf(r) === "pa|pb").alpha;
+  assert.ok(early > 0 && early <= 0.5, "坡道在途 α 有界");
+  step(10); // 累计 > LINK_FADE_DUR（0.4s）
+  rows = eng.inspectPatternLines();
+  assert.ok(rows.every((r) => Math.abs(r.alpha - 0.5) < 1e-9), "坡道播完 → 稳态弱化 α（0.5 = DIM 因子，弱于恒星本体与轨道环）");
+
+  /* 端点跟随（3.4）：patch 改恒星 off → 段集合不变（无幽灵、无闪烁），端点随落位承接 */
+  const shifted = patternScene();
+  shifted.workspaces[0].stars[0].off = [-40, 0, 6];
+  eng.setScene(shifted, "patch");
+  step(2);
+  rows = eng.inspectPatternLines();
+  assert.deepEqual(rows.map(keyOf).sort(), ["pa|pb", "pb|pc"], "patch 滑位 → 段集合不变（端点恒等槽位重投影）");
+  assert.ok(rows.every((r) => Math.abs(r.alpha - 0.5) < 1e-9), "patch 不重播淡入（无闪烁）");
+
+  /* 移除段渐熄幽灵（3.4）：rebuild 收缩 patternLines → 移除段 'out' 渐熄、余段稳态 */
+  const shrunk = patternScene();
+  shrunk.workspaces[0].patternLines = [[0, 1]];
+  eng.setScene(shrunk, "rebuild");
+  step(1);
+  rows = eng.inspectPatternLines();
+  assert.deepEqual(rows.map(keyOf).sort(), ["pa|pb", "pb|pc"], "移除段以幽灵在册（渐熄中）");
+  const ghostRow = rows.find((r) => keyOf(r) === "pb|pc");
+  const steadyRow = rows.find((r) => keyOf(r) === "pa|pb");
+  assert.ok(ghostRow.alpha < 0.5 && steadyRow.alpha >= 0.49, "幽灵 α 递减、余段稳态不重播淡入");
+  step(10); // > LINK_FADE_DUR
+  rows = eng.inspectPatternLines();
+  assert.deepEqual(rows.map(keyOf), ["pa|pb"], "幽灵播完自灭（无残留段），余段照常");
+
+  /* 观测面守卫：无场景实例 → 空数组不抛错 */
+  const dead = createCosmosEngine({ container: stubEl("div"), style: createSkinD() });
+  assert.deepEqual(dead.inspectPatternLines(), [], "无场景 → 空观测面");
+  dead.dispose();
 
   eng.stop();
   eng.dispose();

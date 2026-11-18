@@ -10,7 +10,7 @@ metadata:
   contractVersion: "1"
 ---
 
-汇总提案最终主要交付内容，在提案目录创建archive.md文档，并读取（read 工具）C:\project\dsh-plugin-v\dsh-v-skill-links\.trae\skills\openspec-archive-change\SKILL.md，同步spec（包括delta 如有需要）归档这个提案。
+汇总提案最终主要交付内容，在提案目录创建archive.md文档，并读取（read 工具）OPENSPEC_PATH/openspec-archive-change/SKILL.md，同步spec（包括delta 如有需要）归档这个提案。落盘的 archive.md 及其他归档文档 MUST NOT 携带 OPENSPEC_PATH 令牌——写解析后的真实路径或相对路径（CONTRACT §9 持久工件禁令）。
 
 然后按以下流程调整提案状态：
 **状态步骤：无需动作**

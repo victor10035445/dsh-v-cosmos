@@ -330,6 +330,72 @@ try {
     ], "两节并存各自独立");
   }
 
+  /* ── paths 节端到端（step2-cosmos-openspec-path-setting 2.1/2.2）：零新增路由——
+        GET/PUT /config 对对象节透传（节集合注册即通），CAS/400/409 语义不变 ── */
+  {
+    const initialPaths = captureJson();
+    await capturedHandler({ method: "GET", url: "/api/dsh-v-cosmos/config" }, initialPaths.res);
+    assert.equal(initialPaths.status, 200);
+    assert.deepEqual(initialPaths.body.value.paths, { openspecPath: null, cosmosSpecDir: null }, "未配置 → 生效值未配置形状（恒两键显式）");
+    assert.deepEqual(initialPaths.body.base.paths, { openspecPath: null, cosmosSpecDir: null }, "组合层 paths 缺省未配置");
+    assert.equal(initialPaths.body.user.paths, undefined, "user 层无 paths 节");
+
+    const savePaths = captureJson();
+    await capturedHandler(
+      stubBodyReq("PUT", "/api/dsh-v-cosmos/config", {
+        baseRevision: 5,
+        sections: { paths: { openspecPath: "  C:/openspec  ", cosmosSpecDir: " D:\\cosmos-spec " } }
+      }),
+      savePaths.res
+    );
+    assert.equal(savePaths.status, 200, "paths 节 CAS 写入 200");
+    assert.equal(savePaths.body.revision, 6, "revision 递增");
+
+    const afterPaths = captureJson();
+    await capturedHandler({ method: "GET", url: "/api/dsh-v-cosmos/config" }, afterPaths.res);
+    assert.deepEqual(
+      afterPaths.body.value.paths,
+      { openspecPath: "C:/openspec", cosmosSpecDir: "D:\\cosmos-spec" },
+      "PUT → GET 回显（trim 非空保留字面量，反斜杠原样）"
+    );
+    assert.deepEqual(afterPaths.body.user.paths, { openspecPath: "C:/openspec", cosmosSpecDir: "D:\\cosmos-spec" }, "user 层即写入内容");
+
+    const pathsConflict = captureJson();
+    await capturedHandler(
+      stubBodyReq("PUT", "/api/dsh-v-cosmos/config", { baseRevision: 5, sections: { paths: { openspecPath: "x" } } }),
+      pathsConflict.res
+    );
+    assert.equal(pathsConflict.status, 409, "过期 revision 写 paths → 409");
+    assert.equal(pathsConflict.body.revision, 6, "409 携带服务端 revision");
+
+    const pathsArray = captureJson();
+    await capturedHandler(
+      stubBodyReq("PUT", "/api/dsh-v-cosmos/config", { baseRevision: 6, sections: { paths: [] } }),
+      pathsArray.res
+    );
+    assert.equal(pathsArray.status, 400, "paths 数组形状 → 400（对象节仅认普通对象）");
+    assert.equal(pathsArray.body.error, "invalid");
+
+    const buttonsObject = captureJson();
+    await capturedHandler(
+      stubBodyReq("PUT", "/api/dsh-v-cosmos/config", { baseRevision: 6, sections: { buttons: { openspecPath: "x" } } }),
+      buttonsObject.res
+    );
+    assert.equal(buttonsObject.status, 400, "buttons 对象形状 → 400（数组节行为不变）");
+
+    const pathsUnset = captureJson();
+    await capturedHandler(
+      stubBodyReq("PUT", "/api/dsh-v-cosmos/config", { baseRevision: 6, sections: { paths: null } }),
+      pathsUnset.res
+    );
+    assert.equal(pathsUnset.status, 200);
+    const afterPathsUnset = captureJson();
+    await capturedHandler({ method: "GET", url: "/api/dsh-v-cosmos/config" }, afterPathsUnset.res);
+    assert.equal(afterPathsUnset.body.user.paths, undefined, "paths: null → 节移除（unset）");
+    assert.deepEqual(afterPathsUnset.body.value.paths, { openspecPath: null, cosmosSpecDir: null }, "unset 后回显未配置形状");
+    assert.ok(afterPathsUnset.body.user.buttons, "unset paths 不动 buttons 节（节间互不读写）");
+  }
+
   /* ── 独立窗口占位（add-cosmos-standalone-window 1.1–1.3 / design D2）：
       `role=cosmos-window` 连接登记占位 → 全量计数帧；第二条 → count 2（双窗容忍）；
       连接断开（= 关窗）→ 清位并广播；无 role 连接（主壳）不登记但同样收到计数。 ── */

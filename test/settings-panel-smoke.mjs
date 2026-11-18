@@ -27,6 +27,7 @@ import {
   shortcutConflictOnRowOf,
   shortcutsIssue
 } from "../src/shortcuts.mjs";
+import { createPathsSettingsController } from "../src/paths-settings.mjs";
 
 /** 设置作用域桩：set/unset 可编程失败（模拟 CAS 409 / 只读拒绝）。 */
 function fakeScope(options = {}) {
@@ -1341,6 +1342,121 @@ const BUTTON = { name: "审查", prompt: "请使用 /cosmos-review 审查本提�
       "词典 zh/en 成对：cosmos.settings." + key
     );
   }
+}
+
+/* ── 路径区控制器（step2-cosmos-openspec-path-setting 3.1–3.4）：快照回显、草稿-保存
+      （trim/空白→null 两键显式载荷）、CAS 409 重试流、只读降级、非阻断存在性警示、
+      discard/键级 unset。UI 源码锚点在 test/client-ui-smoke.mjs。 ── */
+{
+  /* 1) 加载回显：effective 值投影为草稿文本（null → ""），未脏。 */
+  const scope = fakeScope({ writable: true });
+  scope.patch({ value: { buttons: [], paths: { openspecPath: "C:/openspec", cosmosSpecDir: null } } });
+  const face = createPathsSettingsController(scope);
+  let snap = face.getSnapshot();
+  assert.equal(snap.status, "ready", "快照就绪");
+  assert.equal(snap.loading, false, "非加载态");
+  assert.equal(snap.writable, true, "可写");
+  assert.equal(snap.openspecPath, "C:/openspec", "openspecPath 回显生效值");
+  assert.equal(snap.cosmosSpecDir, "", "未配置键回显空串");
+  assert.equal(snap.dirty, false, "未编辑 → 未脏");
+  assert.equal(snap.overridden, false, "user 层无 paths → 无覆盖标记");
+
+  /* 2) 编辑入草稿（原始文本保留供输入框）；载荷 trim 非空保留字面量 / 空白→null。 */
+  face.edit("openspecPath", "  C:/openspec-new  ");
+  snap = face.getSnapshot();
+  assert.equal(snap.openspecPath, "  C:/openspec-new  ", "草稿保留原始文本（输入框回显键入）");
+  assert.equal(snap.dirty, true, "编辑 → 未脏翻转");
+  await face.save();
+  snap = face.getSnapshot();
+  assert.deepEqual(
+    scope.calls.at(-1),
+    { op: "set", key: "paths", value: { openspecPath: "C:/openspec-new", cosmosSpecDir: null } },
+    "保存载荷：trim 非空保留字面量 / 缺席键 null（恒两键显式）"
+  );
+  assert.equal(snap.dirty, false, "保存成功 → 草稿清空、回退生效值");
+  assert.equal(snap.openspecPath, "C:/openspec-new", "保存后回显新生效值");
+  assert.deepEqual(snap.warnings, [], "无 checkDir 注入 → 无警示（检查跳过，非阻断）");
+
+  /* 3) 键级 unset：已配置键清空 → 载荷该键为 null。 */
+  face.edit("openspecPath", "   ");
+  await face.save();
+  assert.deepEqual(
+    scope.calls.at(-1).value,
+    { openspecPath: null, cosmosSpecDir: null },
+    "清空键 → 键级 unset（null）+ 恒两键显式"
+  );
+
+  /* 4) CAS 409 重试流：写失败 → failed 置位、草稿保留；revision 收敛后重试成功。 */
+  face.edit("cosmosSpecDir", "D:\\cosmos-spec");
+  scope.failNextSet(1);
+  const failedOk = await face.save();
+  snap = face.getSnapshot();
+  assert.equal(failedOk, false, "CAS 冲突 → 保存失败");
+  assert.equal(snap.failed, true, "failed 置位（UI「保存未生效，请重试」）");
+  assert.equal(snap.cosmosSpecDir, "D:\\cosmos-spec", "草稿保留（修正后重试）");
+  assert.equal(snap.dirty, true, "失败不清草稿（dirty 保持）");
+  const retried = await face.save();
+  snap = face.getSnapshot();
+  assert.equal(retried, true, "revision 收敛后重试成功");
+  assert.equal(snap.failed, false, "成功清失败态");
+  assert.deepEqual(scope.calls.at(-1).value, { openspecPath: null, cosmosSpecDir: "D:\\cosmos-spec" }, "重试载荷只含两路径键（不写其它节）");
+
+  /* 5) 非阻断存在性警示：checkDir 注入 → 目录不存在仍保存成功并出警示（含归一形态）。 */
+  const checkScope = fakeScope({ writable: true });
+  const checked = [];
+  const warnFace = createPathsSettingsController(checkScope, {
+    checkDir: (raw) => {
+      checked.push(raw);
+      if (raw === "C:/missing") return { exists: false, resolved: "C:\\resolved-missing" };
+      return { exists: true };
+    }
+  });
+  warnFace.edit("openspecPath", "C:/missing");
+  warnFace.edit("cosmosSpecDir", "C:/exists");
+  const warnSaved = await warnFace.save();
+  snap = warnFace.getSnapshot();
+  assert.equal(warnSaved, true, "目录不存在 → 仍保存成功（非阻断）");
+  assert.deepEqual(checked, ["C:/missing", "C:/exists"], "检查只针对已配置键（保存前调用）");
+  assert.deepEqual(
+    snap.warnings,
+    [{ key: "openspecPath", raw: "C:/missing", resolved: "C:\\resolved-missing" }],
+    "警示含键名与 path.resolve 归一后的实际形态"
+  );
+  assert.equal(snap.dirty, false, "警示不影响保存成功语义");
+  /* checkDir 抛错 → 按「无检查」处理，绝不阻断/抛出。 */
+  const boomFace = createPathsSettingsController(checkScope, {
+    checkDir: () => {
+      throw new Error("fs unavailable");
+    }
+  });
+  boomFace.edit("openspecPath", "C:/x");
+  assert.equal(await boomFace.save(), true, "检查器抛错 → 保存照常成功");
+  assert.deepEqual(boomFace.getSnapshot().warnings, [], "抛错检查器不产生警示");
+
+  /* 6) 只读降级：writable false → 保存拒绝（零 set 调用）；loading 态置位。 */
+  const roScope = fakeScope({ writable: false });
+  const roFace = createPathsSettingsController(roScope);
+  assert.equal(roFace.getSnapshot().writable, false, "只读快照 → 不可写");
+  roFace.edit("openspecPath", "C:/x");
+  assert.equal(await roFace.save(), false, "只读 → 保存拒绝");
+  assert.equal(roScope.calls.length, 0, "只读保存零写调用");
+  const loadScope = fakeScope({ writable: true });
+  loadScope.patch({ status: "loading" });
+  const loadFace = createPathsSettingsController(loadScope);
+  assert.equal(loadFace.getSnapshot().loading, true, "loading 态置位（UI 禁用 + 加载提示）");
+  loadFace.dispose();
+  roFace.dispose();
+  warnFace.dispose();
+  boomFace.dispose();
+
+  /* 7) 放弃修改：草稿回退生效值，失败/警示一并清。 */
+  face.edit("openspecPath", "C:/draft");
+  face.discard();
+  snap = face.getSnapshot();
+  assert.equal(snap.dirty, false, "discard → 未脏");
+  assert.equal(snap.failed, false, "discard 清失败态");
+  assert.deepEqual(snap.warnings, [], "discard 清警示");
+  face.dispose();
 }
 
 console.log("settings-panel-smoke: all assertions passed");

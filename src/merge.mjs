@@ -19,8 +19,14 @@
  *  - 卫星 = subagent 会话挂父天体（行星/彗星均可），单层渲染、单父上限 6、深层折叠计数；
  *  - 彗星 = 该工作区内其余非空自由会话（blank/子代理/未归属工作区不渲染）；
  *  - 星云密度 = archives（上限 520 粒由引擎负责）；
- *  - 星座 pos / 恒星 off 由确定性哈希生成（提案增删不打乱其余恒星）。
+ *  - 星座 pos = 命中模板中心 (ra,dec) 的天球投影（three-use-cosmos-template-sky-layout；
+ *    Fibonacci 球壳保留为降级路径）；
+ *  - 恒星 off = 星座模板图样落位（two-use-cosmos-template-star-layout：按 (at,id) 规范序
+ *    占图样主星位、溢出环形外扩，随落位交付图样连线索引对 patternLines；模板命中缺席
+ *    按星座粒度回退确定性哈希散布 starOffset——提案增删不打乱其余恒星槽位）。
  */
+
+import { allTemplates, TEMPLATE_COUNT } from "./cosmos/templates.mjs";
 
 /** 生命周期枚举（含 merge 层星胚 `proto`；磁盘枚举只有 created/reviewed/executed）。 */
 const LIFECYCLE_STATES = new Set(["proto", "created", "reviewed", "executed"]);
@@ -92,31 +98,116 @@ export function relativeTime(ms, now) {
   return days + " 天前";
 }
 
+/* ------------------------------------------------------------------ *
+ * 银河天球布局（three-use-cosmos-template-sky-layout 2.x / design D1–D5）
+ * ------------------------------------------------------------------ */
+
 /**
- * 星座确定性摆放（纯函数，任务 4.7 真机修订：充分利用 3D 空间）：
- *  - **Fibonacci 球壳**分布（黄金角经度 + 均匀纬度）——星座散布在环绕视点的球面
- *    上（上/下/远/近全方向），替换原 XZ 平面螺旋（默认俯视角下挤成一条横线）；
- *  - 球壳半径随数量外扩（spread × (0.9 + √N × 0.55)），id 哈希做 0.55–1.0× 径向
- *    抖动填充壳厚度；
- *  - 三维最小间距松弛（迭代推挤防碰撞）；
+ * 天球投影纯函数（three-use-cosmos-template-sky-layout 2.1 / design D1）：
+ * 模板中心赤经赤纬 → 赤道坐标球面世界坐标。
+ *  - θ = (ra / 24)·2π（赤经小时 → 经度角）；
+ *  - y = sin(dec·π/180) · spread（赤纬 → 纬度分量，北天为正）；
+ *  - 纬圈半径 xz = cos(dec·π/180)；
+ *  - x = cos(θ)·xz·spread、z = sin(θ)·xz·spread——**旋转方向钉死**（右手系：θ 增大
+ *    投影点自 +x 向 +z 旋转），MUST NOT 采用镜像变体（z = −sinθ 会翻转赤经东西
+ *    语义，spec「赤经方向一致」将不可判定）；
+ *  - spread = 世界投影半径（既有球壳半径公式 spread × (0.9 + √|S| × 0.55) 的
+ *    计算结果，骨架与子集同式——√N 收缩自动成立）。
+ * 输入域防御：模板缺失 / ra、dec 非有限 → null（调用方按「命中缺席」逐座回退，
+ * 不抛错）；有限越界 → ra 折回 [0,24)、dec 夹取 [−90,90]（确定性归一）。
+ * @param {{ra?: unknown, dec?: unknown}|null} template 模板条目（只读 ra/dec）
+ * @param {number} spread 世界投影半径
+ * @returns {[number, number, number]|null} 投影坐标；输入不可投影 → null
+ */
+export function skyPositionOf(template, spread) {
+  const radius = Number(spread);
+  if (!Number.isFinite(radius) || radius < 0) return null;
+  if (!template || typeof template !== "object") return null;
+  const ra = Number(template.ra);
+  const dec = Number(template.dec);
+  if (!Number.isFinite(ra) || !Number.isFinite(dec)) return null;
+  const hours = ((ra % 24) + 24) % 24; // 折回 [0, 24)
+  const deg = Math.min(90, Math.max(-90, dec)); // 夹取 [−90, 90]
+  const theta = (hours / 24) * Math.PI * 2;
+  const lat = (deg * Math.PI) / 180;
+  const ring = Math.cos(lat) * radius;
+  return [Math.cos(theta) * ring, Math.sin(lat) * radius, Math.sin(theta) * ring];
+}
+
+/**
+ * 工作区 → 模板分配（three-use-cosmos-template-sky-layout 1.2 / two-use-cosmos-
+ * template-star-layout 2.1 共用同一分配）：`hash32(wsId) % TEMPLATE_COUNT` 命中
+ * `allTemplates()` 码点序快照下标——D1 同口径（同一工作区恒同一图样，其他工作区增删
+ * 不影响既有命中）。查询经防御包裹：模块态异常/条目缺席 → null（调用方按「命中缺席」
+ * 逐座回退：sky 层回退 Fibonacci，恒星层回退 starOffset 散布），MUST NOT 抛错。
+ * 导出面 = two 的冒烟直测（任务 4.x）；three 内部继续调用同一实现。
+ * @param {string} wsId 工作区 id
+ * @returns {object|null} 模板条目（冻结快照）或 null
+ */
+export function templateForWorkspace(wsId) {
+  try {
+    const list = allTemplates();
+    if (!Array.isArray(list) || list.length !== TEMPLATE_COUNT) return null;
+    return list[hash32(String(wsId)) % TEMPLATE_COUNT] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** 模板模块整体可用性（three-use-cosmos-template-sky-layout D5）：不可用 → 整层回退。 */
+function skyLayerReady() {
+  try {
+    const list = allTemplates();
+    return (
+      Number.isFinite(TEMPLATE_COUNT) && TEMPLATE_COUNT > 0 &&
+      Array.isArray(list) && list.length === TEMPLATE_COUNT
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 星座确定性摆放（纯函数，任务 4.7 真机修订 + three-use-cosmos-template-sky-layout 2.2/2.3）：
+ *  - **天球投影（sky 主路径）**：星座位置由命中模板的中心赤经赤纬经 `skyPositionOf`
+ *    球面投影派生（模板分配 = `hash32(id) % 88`，与恒星层同口径），星座之间保持
+ *    真实星空地理（北天在上、黄道带沿赤道、邻接星座彼此邻近）；投影半径沿用既有
+ *    球壳半径公式 spread × (0.9 + √|S| × 0.55)，相机参数不重调；
+ *  - **Fibonacci 球壳保留为降级**：模板命中缺席（防御性）或平凡情形（星座数 0/1）
+ *    → 该座单独回退 Fibonacci 摆位（沿用规范序 Fibonacci 公式）；模板模块整体
+ *    不可用 → 整层回退（design D5）；函数签名与返回 Map 形态不变；
+ *  - `options.center`（过滤子集向心，design D4）：sky 布局的投影云质心平移回原点
+ *    （|S| ≥ 2；平移不改变成对几何，与松弛先后等价）——`filteredPositions` 专用；
+ *  - 三维最小间距松弛（迭代推挤防碰撞）原样沿用，承接黄道带投影拥挤（design D3）；
  *  - 输入先按 id 规范排序——位置只依赖工作区 id 集合，与传入顺序无关。
+ * `options.templateFor`（测试注入面）：模板查询函数替换——生产恒缺省（走真实
+ * 模板分配），仅供冒烟防御性注入「命中缺席 / 整层缺席」的降级路径。
  * @param {Array<{id: string}>} workspaces
- * @param {{ spread?: number, minDist?: number, relaxRounds?: number }} [options]
+ * @param {{ spread?: number, minDist?: number, relaxRounds?: number, center?: boolean, templateFor?: (id: string) => object|null }} [options]
  * @returns {Map<string, [number, number, number]>} id → pos
  */
 export function constellationPositions(workspaces, options = {}) {
   const spread = Number.isFinite(options.spread) ? options.spread : 150;
   const minDist = Number.isFinite(options.minDist) ? options.minDist : 240;
   const rounds = Number.isFinite(options.relaxRounds) ? options.relaxRounds : 24;
+  const lookup = typeof options.templateFor === "function" ? options.templateFor : templateForWorkspace;
   const list = (Array.isArray(workspaces) ? workspaces : [])
     .map((ws, index) => ({ id: ws?.id ?? String(index) }))
     .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
   const count = list.length;
   const golden = Math.PI * (3 - Math.sqrt(5));
   const shellRadius = spread * (0.9 + Math.sqrt(Math.max(1, count)) * 0.55);
+  /* 天球投影层启用条件（design D5）：模块整体可用且非平凡情形（星座数 ≥2）；
+     平凡情形（0/1）整层走 Fibonacci（保持单命位 +x 轴既有 camera-fit 基线口径）。 */
+  const sky = skyLayerReady() && count >= 2;
   const pts = list.map((ws, index) => {
+    if (sky) {
+      const projected = skyPositionOf(lookup(ws.id), shellRadius);
+      if (projected) return { id: ws.id, x: projected[0], y: projected[1], z: projected[2] };
+    }
+    /* Fibonacci 球面（规范序第 index 点）：纬度均匀、经度黄金角逐点推进——
+       降级路径（模板命中缺席 / 平凡情形 / 模块整体不可用），口径与 two 一致。 */
     const seed = hash32(ws.id);
-    /* Fibonacci 球面（规范序第 index 点）：纬度均匀、经度黄金角逐点推进。 */
     const y = count === 1 ? 0 : 1 - ((index + 0.5) * 2) / count;
     const ringR = Math.sqrt(Math.max(0, 1 - y * y));
     const theta = golden * index;
@@ -128,6 +219,14 @@ export function constellationPositions(workspaces, options = {}) {
       z: Math.sin(theta) * ringR * radial
     };
   });
+  /* 子集向心（design D4）：sky 布局的投影云质心平移回原点（|S| ≥ 2）——命中天区
+     的云天然偏离原点，平移保持子集内方位关系不变；|S|=1 走平凡回退不动。 */
+  if (options.center === true && sky && count >= 2) {
+    let cx = 0, cy = 0, cz = 0;
+    for (const pt of pts) { cx += pt.x; cy += pt.y; cz += pt.z; }
+    cx /= count; cy /= count; cz /= count;
+    for (const pt of pts) { pt.x -= cx; pt.y -= cy; pt.z -= cz; }
+  }
   /* 三维最小间距松弛：成对过近时沿连线对称推开（迭代收敛，纯确定性）。 */
   for (let round = 0; round < rounds; round++) {
     let moved = false;
@@ -264,10 +363,12 @@ function compareText(a, b) {
 }
 
 /**
- * 匹配子集布局（纯函数薄封装，1.2 / design D3）：以命中子集调既有
- * `constellationPositions`（复用不改动——子集布局恒以原点为球心、√N 收缩 →
- * 自动向心聚拢），产出 id → pos Map。
- * 空子集 → 空 Map（过滤关闭语义；调用方据此短路为「不重排」）。
+ * 匹配子集布局（纯函数薄封装，1.2 / design D3；three-use-cosmos-template-sky-layout
+ * 2.3 扩展子集天球重摆）：以命中子集调既有 `constellationPositions`（复用不改动——
+ * 子集走同一投影管线，`options.center` 使投影云质心回原点、投影长度随命中规模的
+ * 既有球壳半径公式收缩 → 自动向心聚拢），产出 id → pos Map。
+ * 空子集 → 空 Map（过滤关闭语义；调用方据此短路为「不重排」）；
+ * 单命中 → 平凡回退（+x 轴确定位，camera-fit 基线口径不变）。
  *
  * @param {Set<string>|string[]|null} matchedIds 命中工作区 id
  * @returns {Map<string, [number, number, number]>} id → 子集布局位置
@@ -280,7 +381,7 @@ export function filteredPositions(matchedIds) {
       : [];
   const valid = ids.filter((id) => id != null);
   if (valid.length === 0) return new Map();
-  return constellationPositions(valid.map((id) => ({ id })));
+  return constellationPositions(valid.map((id) => ({ id })), { center: true });
 }
 
 /* ------------------------------------------------------------------ *
@@ -351,8 +452,10 @@ export function isWindowsPlatform(nav = typeof navigator !== "undefined" ? navig
 }
 
 /**
- * 恒星确定性偏移（纯函数，任务 4.7）：提案 id 哈希在星座半径内散布——
- * 提案增删不打乱其余恒星（offset 只依赖提案自身 id）。
+ * 恒星确定性偏移（纯函数；two-use-cosmos-template-star-layout 起**降级路径专用**——
+ * 模板命中缺席的星座整体回退本函数散布，D5「旧函数保留不删」；正常装配走
+ * `starPatternLayout` 图样落位）：提案 id 哈希在星座半径内散布——提案增删不打乱
+ * 其余恒星（offset 只依赖提案自身 id）。
  * @param {string} proposalId
  * @param {number} radius 星座半径（世界单位）
  * @returns {[number, number, number]}
@@ -363,6 +466,136 @@ export function starOffset(proposalId, radius = 26) {
   const radial = radius * (0.25 + ((seed >>> 8) / 16777216) * 0.75);
   const y = (((seed >>> 16) / 65536) - 0.5) * radius * 0.5;
   return [Math.cos(angle) * radial, y, Math.sin(angle) * radial];
+}
+
+/* ------------------------------------------------------------------ *
+ * 恒星图样落位（two-use-cosmos-template-star-layout 2.x / design D1–D5）
+ * ------------------------------------------------------------------ */
+
+/** 图样世界尺度常量（D4：40–56 定标固化，任务 2.5 定标核对）：归一化图样坐标 × 本值
+    → 世界单位，替代旧 starOffset 半径 26 上限。定标依据（实测）：旧口径因 id 尾字哈希
+    退化典型最小邻距仅 ≈0.45 世界单位（「太紧密」的直接根源）；本尺度下全 88 模板满员
+    最小邻距 4.04–10+（≥9× 松绑），图样在钻取参考视距（dist 155）占视高 ≈30%、腰带/
+    斗形可辨。同时充当外扩环的内核尺度（D3 半径公式基数）。 */
+export const PATTERN_SCALE = 56;
+/** 外扩环距比（D3）：第 r 环半径 = 内核尺度 × (1 + r × 环距比)。取 0.5 → 相邻环距
+    = 尺度 × 0.5 = 24 ≥ 基准间距（跨环最小间距约束天然成立）。 */
+export const PATTERN_RING_RATIO = 0.5;
+/** 图样槽位基准间距（世界单位，D3 最小间距约束的基准）：外扩环相邻槽位弦距下限。
+    取 12 > 旧口径典型邻距（半径 26 圆盘内 3–10 星的最近邻 ≈8–10）——外扩区不比
+    图样内核更挤，「太紧密」的直接解法在溢出侧同样成立。 */
+export const PATTERN_SLOT_GAP = 12;
+
+/**
+ * 星座恒星图样落位（two-use-cosmos-template-star-layout 2.1–2.3/2.6 纯函数）：
+ *  - **规范序**（D2 / req 恒星图样序落位）：恒星按 `(at ?? 0, id)` 码点序排序——
+ *    全序、与传入顺序无关；`at` 缺失/非法按 0 兜底、同 `at` 以 id 码点序兜底；
+ *    星胚 proto 与正式恒星同一条序（决议 3：星胚自然占位、无特殊化）。新增恒星
+ *    `at` 不早于既有恒星 → 恒落序尾占下一图样位，既有恒星槽位零扰动。
+ *  - **内核槽位**（k < N，N = 模板主星数）：第 k 颗占 `template.stars[k]`，世界偏移
+ *    = （归一化坐标 − 模板图样包围盒中心）× PATTERN_SCALE，图样中心对齐星座中心
+ *    （MUST NOT 整体偏移出星座中心）。**平面取向**：图样落在星座中心的水平面
+ *    （u=x、v=北 → z、y=0）——钻取相机 pitch 0.35 固定而 yaw 任意，水平面投影
+ *    失真恒为 sin(pitch) ≈ 0.34 且与 yaw 无关（竖直面在最坏 yaw 下侧棱退化为线），
+ *    形状任意姿态可辨；「y 轴向上」语义保持（北向恒映射世界 +z）。
+ *  - **溢出环形外扩**（k ≥ N，D3）：第 r 环半径 = PATTERN_SCALE × (1 + r × 环距比)，
+ *    环容量按弦距公式精确取（2·radius·sin(π/n) ≥ PATTERN_SLOT_GAP），恒星按规范序
+ *    顺序占环（第 r 环满员才进第 r+1 环）；环内槽位均分圆周、环相位由该环首个占位
+ *    恒星 id 哈希确定性派生（同集合恒同布局）。
+ *  - **图样连线交付**（2.6 / req 图样连线呈现）：模板 `lines`（槽位下标对）→ 传入
+ *    数组（= 场景最终 stars 数组）下标对；槽位无恒星（恒星数 < 图样位）→ 该对端点
+ *    缺席不出线。与骨架 `ws.links`（提案关联数据面）相互独立、原样独立。
+ *  - **降级**（D5）：template 为 null / 图样数据损坏（坐标非有限、stars 缺失）→
+ *    返回 null（调用方按星座粒度回退 `starOffset(id, 26)`），MUST NOT 抛错。
+ *
+ * @param {object|null} template 模板条目（`templateForWorkspace` 命中产物；可为 null）
+ * @param {Array<{id: unknown, at?: unknown}>} stars 星座恒星清单（场景最终数组序，
+ *        正式提案 ∪ 星胚 proto，元素多余字段被忽略）
+ * @returns {{offs: Map<string, [number, number, number]>, lines: Array<[number, number]>}|null}
+ *          offs 键 = String(star.id)；null = 本星座回退旧散布
+ */
+export function starPatternLayout(template, stars) {
+  const list = Array.isArray(stars) ? stars : [];
+  if (!template || typeof template !== "object") return null;
+  const tplStars = Array.isArray(template.stars) ? template.stars : [];
+  const tplLines = Array.isArray(template.lines) ? template.lines : [];
+  if (tplStars.length === 0 || list.length === 0) return null;
+  /* 图样包围盒（全 N 主星；中心对齐星座中心的基准）。坐标非有限 → 图样损坏 → 降级。 */
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const s of tplStars) {
+    const x = Number(s?.x), y = Number(s?.y);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+    if (x < minX) minX = x;
+    if (y < minY) minY = y;
+    if (x > maxX) maxX = x;
+    if (y > maxY) maxY = y;
+  }
+  const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
+  /* 规范序（D2）：(at ?? 0, id) 码点序。index 兜底仅防御重复 id（骨架层已保证唯一），
+     重复入参下确定性退化为「与传入顺序相关」——正常输入不可达。 */
+  const ordered = list
+    .map((star, index) => ({ star, index }))
+    .sort((a, b) => {
+      const atA = Number(a.star?.at) || 0;
+      const atB = Number(b.star?.at) || 0;
+      if (atA !== atB) return atA - atB;
+      const idA = String(a.star?.id ?? ""), idB = String(b.star?.id ?? "");
+      return idA < idB ? -1 : idA > idB ? 1 : a.index - b.index;
+    });
+  const TAU = Math.PI * 2;
+  const kernel = tplStars.length;
+  const offs = new Map();
+  /* 内核槽位（k < N）：归一化坐标 − 包围盒中心，× 尺度，水平面（y=0）。 */
+  const coreCount = Math.min(kernel, ordered.length);
+  for (let k = 0; k < coreCount; k++) {
+    const s = tplStars[k];
+    offs.set(String(ordered[k].star?.id), [
+      (Number(s.x) - cx) * PATTERN_SCALE, 0, (Number(s.y) - cy) * PATTERN_SCALE
+    ]);
+  }
+  /* 溢出环形外扩（k ≥ N）：环容量弦距精确解 → 规范序顺序占环 → 环内均分 + 首占者相位。 */
+  if (ordered.length > kernel) {
+    const radiusOf = (r) => PATTERN_SCALE * (1 + r * PATTERN_RING_RATIO);
+    const capacityOf = (r) => {
+      const radius = radiusOf(r);
+      const frac = PATTERN_SLOT_GAP / (2 * radius);
+      if (!(frac < 1)) return 1; // 防御（现实半径下 frac ≈ 0.08，不可达）
+      return Math.max(6, Math.floor(Math.PI / Math.asin(frac)));
+    };
+    const assign = [];
+    let ring = 1, slot = 0, cap = capacityOf(1);
+    for (let k = kernel; k < ordered.length; k++) {
+      if (slot >= cap) { ring += 1; slot = 0; cap = capacityOf(ring); }
+      assign.push({ star: ordered[k].star, ring, slot });
+      slot += 1;
+    }
+    const ringCount = new Map();
+    const ringFirst = new Map();
+    for (const a of assign) {
+      ringCount.set(a.ring, (ringCount.get(a.ring) ?? 0) + 1);
+      if (!ringFirst.has(a.ring)) ringFirst.set(a.ring, String(a.star?.id ?? ""));
+    }
+    for (const a of assign) {
+      const radius = radiusOf(a.ring);
+      const n = Math.max(1, ringCount.get(a.ring) ?? 1);
+      const phase = (hash32(ringFirst.get(a.ring)) / 4294967296) * TAU;
+      const angle = phase + (a.slot / n) * TAU;
+      offs.set(String(a.star?.id), [Math.cos(angle) * radius, 0, Math.sin(angle) * radius]);
+    }
+  }
+  /* 图样连线交付（2.6）：模板 lines（槽位下标对）→ 场景 stars 数组下标对；
+     槽位无恒星 → 端点缺失不出线（弱化连线恒等恒星槽位落位的部分前提）。 */
+  const indexById = new Map(list.map((star, i) => [String(star?.id), i]));
+  const slotToIndex = ordered.map((item) => indexById.get(String(item.star?.id)));
+  const lines = [];
+  for (const pair of tplLines) {
+    const a = Number(pair?.[0]), b = Number(pair?.[1]);
+    if (!Number.isInteger(a) || !Number.isInteger(b) || a === b) continue;
+    const ia = slotToIndex[a], ib = slotToIndex[b];
+    if (ia == null || ib == null || ia === ib) continue;
+    lines.push([ia, ib]);
+  }
+  return { offs, lines };
 }
 
 /** 星云密度上限（demo 引擎常量沿用；合并层只透传 archives 数值，引擎负责 cap）。 */
@@ -497,9 +730,9 @@ export function mergeScene({ skeleton, sessions, workspaces, statuses = null, no
   const outWorkspaces = skeletonWorkspaces.map((ws) => {
     const pos = positions.get(ws.id) ?? [0, 0, 0];
     /* 恒星生命周期装配（3.2）：骨架 star 的 lifecycle/setBy/at 透传；星胚（pending
-       锚点）装配为 lifecycle:"proto" 条目（off = starOffset(slug) 确定性预占位；
-       同名真实目录的锚点已在骨架层剔除，此处再防御一次）。索引顺序 = 骨架恒星在前、
-       星胚在后——骨架 links 索引不受影响。
+       锚点）装配为 lifecycle:"proto" 条目（off 随下方图样落位管线统一派生；同名真实
+       目录的锚点已在骨架层剔除，此处再防御一次）。索引顺序 = 骨架恒星在前、星胚在后
+       ——骨架 links 索引不受影响。
        `sessionId`（add-cosmos-embryo-cards 2.2）：锚点可选字段**原样透传**（读取端容错
        已在 scan 层完成；此处空值归一为 null）——画布渲染不读该字段（逐字不变），
        面板投影据此把同一探索会话的锚点归并为一张星胚卡片；同时纳入
@@ -512,8 +745,7 @@ export function mergeScene({ skeleton, sessions, workspaces, statuses = null, no
       at: Number(star.at) || null,
       tasks: [Number(star.tasks?.[0]) || 0, Number(star.tasks?.[1]) || 0],
       age: relativeTime(star.birthMs, now),
-      act: 0,
-      off: starOffset(star.id, 26)
+      act: 0
     }));
     const starIds = new Set(stars.map((star) => star.id));
     for (const anchor of Array.isArray(ws.pending) ? ws.pending : []) {
@@ -527,9 +759,21 @@ export function mergeScene({ skeleton, sessions, workspaces, statuses = null, no
         sessionId: typeof anchor.sessionId === "string" && anchor.sessionId ? anchor.sessionId : null,
         tasks: [0, 0],
         age: relativeTime(anchor.at, now),
-        act: 0,
-        off: starOffset(anchor.name, 26)
+        act: 0
       });
+    }
+    /* 恒星图样落位（two-use-cosmos-template-star-layout 2.x / D6 交付口径不变）：
+       星座级纯函数派生槽位 off 与图样连线索引对——patternLines 引用场景最终 stars
+       数组下标（含星胚槽位），与骨架 `links`（提案关联数据面）相互独立、原样独立。
+       模板命中缺席 → 该星座整体回退旧 starOffset 散布（D5 降级路径，按星座粒度、
+       不抛错、不中断装配；正常路径不可达）。 */
+    const layout = starPatternLayout(templateForWorkspace(ws.id), stars);
+    let patternLines = [];
+    if (layout) {
+      for (const star of stars) star.off = layout.offs.get(star.id) ?? starOffset(star.id, 26);
+      patternLines = layout.lines;
+    } else {
+      for (const star of stars) star.off = starOffset(star.id, 26);
     }
     const starIndex = new Map(stars.map((star, i) => [star.id, i]));
 
@@ -626,6 +870,9 @@ export function mergeScene({ skeleton, sessions, workspaces, statuses = null, no
       pos,
       stars,
       links,
+      /* 图样连线索引对（two 2.6）：引用本数组 stars 下标（含星胚槽位）；引擎据此绘制
+         弱化图样连线（背景层、纯装饰），与 links（提案关联数据面）相互独立。 */
+      patternLines,
       planets: planets.sort(byUpdatedAtDesc),
       comets: comets.sort(byUpdatedAtDesc),
       archives: Math.max(0, Math.round(Number(ws.archives) || 0)),
@@ -701,8 +948,10 @@ export function todoBadgeOf(summary) {
  *    （add-celestial-states 3.5：卫星走属性补丁路径，subagent 起停不触发场景级重建）；
  *    相对时间文本（age/when）必须计入：否则「仅时间桶变化」会被误判为 none，
  *    客户端为刷新文本只能全量重建（画面闪烁）。
- *  - "rebuild"：任一集合/连线/位置变化——引擎全量重建（dust 重播散、覆盖层增量对齐、
- *    同 id 天体的尾迹按中心继承）。
+ *  - "rebuild"：任一集合/连线/图样连线/位置变化——引擎全量重建（dust 重播散、覆盖层
+ *    增量对齐、同 id 天体的尾迹按中心继承）。图样连线（two 2.6）与 links 同级：集合
+ *    不变时其内容由落位管线确定性派生、理论上恒等；纳入守卫是防御不变量（patternLines
+ *    变化而恒星集合不变 = 不可能态，出现即整场重建以恢复一致性）。
  *
  * @param {object|null} prev 上一帧 scene
  * @param {object} next 下一帧 scene
@@ -720,6 +969,7 @@ export function sceneDiffLevel(prev, next) {
     if (!sameVec(a.pos, b.pos)) return "rebuild";
     if (!sameIdList(a.stars, b.stars) || !sameIdList(a.planets, b.planets) || !sameIdList(a.comets, b.comets)) return "rebuild";
     if (!sameLinks(a.links, b.links)) return "rebuild";
+    if (!sameLinks(a.patternLines, b.patternLines)) return "rebuild";
     /* 名称/路径是面板与 chip 的可见字段（重命名、工作区迁移），必须触发 patch——
        否则会被判 none 而在客户端早退，界面文本停留在旧值。 */
     if (a.name !== b.name || a.path !== b.path) patch = true;

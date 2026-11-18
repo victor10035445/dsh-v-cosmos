@@ -53,11 +53,21 @@ export function createSnapshotStore(initial) {
   };
 }
 
-/** 合成只读快照：入口 config 不在 client 可达范围，只声明「可读、不可写」。 */
+/** 合成只读快照：入口 config 不在 client 可达范围，只声明「可读、不可写」。
+ *  `paths` 节以未配置恒定形状补齐（step2-cosmos-openspec-path-setting：快照形状
+ *  加法扩展，消费者可无条件读 `value.paths`）。 */
 export const READ_ONLY_SNAPSHOT = Object.freeze({
   status: "ready",
-  value: Object.freeze({ buttons: Object.freeze([]), constellationButtons: Object.freeze([]) }),
-  base: Object.freeze({ buttons: Object.freeze([]), constellationButtons: Object.freeze([]) }),
+  value: Object.freeze({
+    buttons: Object.freeze([]),
+    constellationButtons: Object.freeze([]),
+    paths: Object.freeze({ openspecPath: null, cosmosSpecDir: null })
+  }),
+  base: Object.freeze({
+    buttons: Object.freeze([]),
+    constellationButtons: Object.freeze([]),
+    paths: Object.freeze({ openspecPath: null, cosmosSpecDir: null })
+  }),
   user: null,
   revision: undefined,
   writable: false,
@@ -248,8 +258,16 @@ export function createApiChannel(options = {}) {
   const listeners = new Set();
   let snapshot = Object.freeze({
     status: "loading",
-    value: Object.freeze({ buttons: Object.freeze([]), constellationButtons: Object.freeze([]) }),
-    base: Object.freeze({ buttons: Object.freeze([]), constellationButtons: Object.freeze([]) }),
+    value: Object.freeze({
+      buttons: Object.freeze([]),
+      constellationButtons: Object.freeze([]),
+      paths: Object.freeze({ openspecPath: null, cosmosSpecDir: null })
+    }),
+    base: Object.freeze({
+      buttons: Object.freeze([]),
+      constellationButtons: Object.freeze([]),
+      paths: Object.freeze({ openspecPath: null, cosmosSpecDir: null })
+    }),
     user: null,
     revision: undefined,
     writable: true,

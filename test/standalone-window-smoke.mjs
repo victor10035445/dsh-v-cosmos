@@ -351,7 +351,7 @@ const read = (path) => readFileSync(new URL("../src/" + path, import.meta.url), 
   /* 设置面接线：通用页签 order -1 + launch face + storage 事件桥 */
   assert.ok(client.includes('id: "general"') && client.includes("order: -1,"), "「通用」页签置于「快捷动作」(0) 之前");
   assert.ok(client.includes("CosmosGeneralPanel"), "通用页签组件注册");
-  assert.ok(client.includes("inject: () => ({ launch: launchFace, desktop: DESKTOP_PROTOCOL })"), "注入 launch face + 桌面标记");
+  assert.ok(client.includes("inject: () => ({ launch: launchFace, desktop: DESKTOP_PROTOCOL, paths: pathsSettings })"), "注入 launch face + 桌面标记 + 路径 face（step2-cosmos-openspec-path-setting 3.1）");
   assert.ok(client.includes("const launchFace = {"), "launch face（受控镜像 + 写入）");
   assert.ok(client.includes("set: (mode) => applyLaunchMode(mode)"), "写入唯一链路 = applyLaunchMode");
   assert.ok(client.includes("window.addEventListener(\"storage\", onStorage);"), "storage 事件桥绑定");
@@ -412,7 +412,7 @@ const read = (path) => readFileSync(new URL("../src/" + path, import.meta.url), 
   const engine = read("cosmos/engine.mjs");
   assert.ok(engine.includes("sessionNavAvailable: opts.sessionNavAvailable !== false"), "缺省可用（内嵌态零变化）");
   assert.ok(engine.includes("sessionNavAvailable: opts.sessionNavAvailable !== false") && engine.includes("card: Object.assign({}, DEFAULT_LABELS.card"), "card 文案注入位并入缺省表");
-  const cardActions = engine.slice(engine.indexOf("function cardActionsHtml(sessionId, lead)"), engine.indexOf("function cardHtml(e)"));
+  const cardActions = engine.slice(engine.indexOf("function cardActionsHtml(sessionId, lead, ent)"), engine.indexOf("function cardHtml(e)"));
   assert.ok(cardActions.includes("const open = E.sessionNavAvailable"), "按钮 markup 按可用性分流");
   assert.ok(cardActions.includes("disabled>打开会话</button>"), "不可用态渲染 disabled");
   assert.ok(cardActions.includes("escapeHtml(E.labels.card.openDisabled)"), "不可用态 title 提示");

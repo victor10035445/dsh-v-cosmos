@@ -4,10 +4,11 @@
  * 入口与页面（对齐 dsh-v-hive 轨道；add-cosmos-entry 4.1/5.x）：
  *  - sidebar.footer.action 座位：侧栏底部「Cosmos」按钮（座位序 15——Hive(10) 与
  *    Token统计(20) 之间，对齐两插件入口形态）；
- *  - conversation.header.leading 座位（add-cosmos-header-entry）：主列会话头部左前的
- *    icon-only「Cosmos」入口——侧栏收起（含 Windows 桌面 footArea 隐藏态）/ drawer /
- *    空白与任意会话状态下常驻；与侧栏座位同源（同一 store、同一分流纯函数、同一文案键），
- *    整页打开期间被 `shell.overlay` 覆盖属预期「开向入口」形态；
+ *  - shell.overlay 条目（order 10，move-cosmos-entry-to-dsh-menu）：Windows 桌面端标题栏
+ *    菜单条「星群」文字入口——测量宿主 [data-windows-menu] open shadowRoot「编辑」按钮
+ *    几何定位其右缘 + 2px（token-insight「用量」同款机制；锚点 `dsh-v-cosmos:menu-seat`
+ *    供「用量」链式让位，顺序 = 应用 → 编辑 → 星群 → 用量）；与侧栏座位同源（同一 store、
+ *    同一分流纯函数、同一文案键）；非桌面端 / 测量失败渲染 null（侧栏座位兜底）；
  *  - shell.overlay 条目（order 45）：应用内整页帧——left 跟踪侧栏右缘
  *    （usePageLeft 测量 [data-slot="sidebar"] 父列，降级 left:0）、Esc 分层、全屏；
  *  - 页面开合走模块级 cosmosOpenStore（微观察者，hive hiveOpenStore 同款）；
@@ -89,7 +90,8 @@ import {
   createSnapshotStore
 } from "./settings-seam.mjs";
 import { CONSTELLATION_PROFILE, constButtonDraftOf, constButtonIssue, createButtonSettingsController } from "./button-settings.mjs";
-import { COSMOS_SETTINGS_CSS, CosmosActionsPanel, CosmosGeneralPanel, CosmosNavPanel, CosmosShortcutsPanel, CosmosSkinPanel, CosmosSettingsSection, SETTINGS_TAB_SLOT } from "./settings-ui.jsx";
+import { createPathsSettingsController } from "./paths-settings.mjs";
+import { COSMOS_SETTINGS_CSS, CosmosActionsPanel, CosmosGeneralPanel, CosmosNavPanel, CosmosPathsSection, CosmosShortcutsPanel, CosmosSkinPanel, CosmosSettingsSection, SETTINGS_TAB_SLOT } from "./settings-ui.jsx";
 /* 快捷键纯逻辑（add-cosmos-shortcuts）：键位池/规范形/匹配器/净房/跨域查重单一来源——
    外壳分发（关闭链 + 按钮键 + 浮窗语音）与设置面全部经此模块，不散落硬编码。 */
 import {
@@ -1951,6 +1953,17 @@ function SessionRow({ t, row, selected, onSelect, onOpen, onArchive, linked, onH
      per-session 门（无需全局 Map）；归档成功后行随场景刷新卸载，状态自然清理。
      门禁口径与信息卡一致：只拦本行「归档」重复请求，**不拦**该行「打开」与行选中。 */
   const [archiving, setArchiving] = useState(false);
+  /* 活跃门禁 + 按态说明文案（add-cosmos-session-archive-busy-gate 2.1/D1/D2）：
+     busy（投影已折入 delegatedBusy）与 waiting 禁用——与行状态文字/loader 同源零二次推导；
+     done-unread/idle 恒可点（done-unread 正是归档主要清扫对象）。两门正交叠加（D4）：
+     在途门（archiving）与活跃门声明式组合，随 props 重算，无直接 DOM 覆写面。
+     `aria-busy` 语义仍只随「归档请求在途」（瞬态请求态），活跃门是持续状态态、不加。 */
+  const archiveDisabled = archiving || row.state === "busy" || row.state === "waiting";
+  const archiveTitle = row.state === "busy"
+    ? t("cosmos.sessions.archiveBusy", "执行中，暂不可归档")
+    : row.state === "waiting"
+      ? t("cosmos.sessions.archiveWaiting", "待决策中，暂不可归档")
+      : t("cosmos.sessions.archiveAria", "归档会话");
   const archiveRow = (event) => {
     /* 只归档不选中（D4）：点击不冒泡到行主体/整页点击处理器（选中态零副作用）。 */
     event.stopPropagation();
@@ -2035,15 +2048,17 @@ function SessionRow({ t, row, selected, onSelect, onOpen, onArchive, linked, onH
       {/* 行内「归档」常显图标钮（add-cosmos-session-row-archive 2.1/2.2）：恒居动作区末位
           （「打开」之后，与信息卡「归档会话恒居末位」纪律同源）；`data-action="archive"`
           为程序化分流钩子（`data-session` 为信息卡专有，行内不引入），行容器既有
-          `data-cosmos-session` 供程序化定位。在途禁用 + `aria-busy`（行级门禁 D2）。 */}
+          `data-cosmos-session` 供程序化定位。在途禁用 + `aria-busy`（行级门禁 D2）；
+          活跃门禁 + 按态 title/aria-label 随 `archiveDisabled`/`archiveTitle` 声明式切换
+          （add-cosmos-session-archive-busy-gate 2.1，spec「活跃会话归档入口禁用」）。 */}
       <button
         type="button"
         className="dsh-cosmos-session-archive"
         data-action="archive"
-        aria-label={t("cosmos.sessions.archiveAria", "归档会话")}
-        title={t("cosmos.sessions.archiveAria", "归档会话")}
+        aria-label={archiveTitle}
+        title={archiveTitle}
         aria-busy={archiving || undefined}
-        disabled={archiving}
+        disabled={archiveDisabled}
         onClick={archiveRow}
       >
         <span className="dsh-cosmos-session-archive-icon" aria-hidden="true">▣</span>
@@ -4228,29 +4243,228 @@ function CosmosSeat({ wide, t }) {
   );
 }
 
+/* ------------------------------------------------------------------ *
+ * 标题栏菜单「星群」入口（move-cosmos-entry-to-dsh-menu；仅 Windows 桌面端）
+ * ------------------------------------------------------------------ *
+ * 宿主事实（Desktop preload lib/preload-app.cjs installWindowsMenu()）：
+ *  · 菜单栏 = document.body 下 fixed div（`host.dataset.windowsMenu = ""`，
+ *    light DOM 属性选择器稳定可达）：top:0 / left: var(--dsh-windows-menu-start,
+ *    48px) / z-index 1100 / height: var(--dsh-windows-titlebar-height) /
+ *    display:flex; align-items:center；内部 open shadowRoot（mode:"open"）
+ *    含 [role=menubar] 与恰好两个硬编码按钮（application / edit）；
+ *  · 按钮 chrome（shadow 样式表）：height 28px / padding 0 10px / 6px 圆角 /
+ *    `font: inherit` + font-size 14px / 透明底 + label-secondary，hover 与
+ *    aria-expanded=true → interactive-bg-hover + label-primary；
+ *    按钮间距 = shadow 样式表 [role=menubar] { gap: 2px }；
+ *  · 标题栏高度变量 `--dsh-windows-titlebar-height` 由 syncWindowsAppearance()
+ *    写在 html 上（40px），属性 `data-windows-titlebar` 同源注入；
+ *  · 宿主只在 `[data-shell-overlay]` 出现后才 append 菜单栏 → 挂载是异步的。
+ * 宿主未提供任何插件槽位，故本入口自绘按钮贴齐其几何；读取面只有该标记元素
+ * 与其 open shadowRoot 的按钮 rect——不读宿主样式表、不改宿主节点、不调其 IPC。
+ * 排布契约（design D2）：本按钮占位「编辑」右邻位（token-insight「用量」旧址），
+ * 「用量」经其仓链式让位排到本按钮右侧——本组件只声明锚点
+ * `dsh-v-cosmos:menu-seat`，不感知「用量」节点。
+ */
+const COS_MENU_BUTTON_GAP = 2; /* 宿主 shadow 样式表 [role=menubar] gap（见上） */
+const COS_MENU_BUTTON_HEIGHT = 28; /* 宿主按钮 height（见上），垂直居中用 */
+const COS_MENU_FALLBACK_TITLEBAR_HEIGHT = 40; /* --dsh-windows-titlebar-height 缺省值（见上） */
+
+/** 标题栏高度：读 html 上的 --dsh-windows-titlebar-height，缺席/不可解析回退 40px。 */
+function menuTitlebarHeight() {
+  try {
+    const raw = getComputedStyle(document.documentElement).getPropertyValue("--dsh-windows-titlebar-height");
+    const value = Number.parseFloat(raw);
+    if (Number.isFinite(value) && value > 0) return value;
+  } catch {
+    /* 非浏览器环境或读取异常 → 常量回退 */
+  }
+  return COS_MENU_FALLBACK_TITLEBAR_HEIGHT;
+}
+
 /**
- * 顶部头部座位「Cosmos」（add-cosmos-header-entry 2.1）：
- *  - 挂点 `conversation.header.leading`（single / root；宿主会话头部左前，空白会话也渲染）；
- *  - 与侧栏座位**同一**开关链路与状态源（design D2：模块级单件已共享，不抽 hook）：
- *    受控镜像三 store（open / presence / launch）订阅驱动重渲染，点击闭包使用本轮渲染读取
- *    的 `effectiveLaunchModeOf` 结果（桌面形态降级恒 embedded）；`disabled` 与 toggle 内
- *    `if (locked) return` 是同一快照的同源双保险——跨渲染的极窄竞态窗口与侧栏座位同构，
- *    本变更不另立机制（升级核对时两座位一起看）；
- *  - icon-only（28px 基线，对齐宿主 HeaderLeadingControls.iconButton 的 chrome 形态）；
- *    aria/title 全部复用 `cosmos.seat.*` 文案键（零新 locale 键）；
- *  - 整页打开期间 `shell.overlay` 覆盖主列（含会话头部），本入口指针不可达属预期——定位为
- *    「开向入口」，关闭路径维持既有三条不变；`data-active` / `aria-expanded` 照常绑定
- *    真实开合态（window 模式与程序化观测面可立即验证；window / 锁定态省略 aria-expanded
- *    的理由见下方渲染注释）。
+ * 宿主菜单栏几何测量（视口坐标；降级红线：任一环不符即 null，调用侧渲染 null）。
+ * left = 「编辑」（shadowRoot 末位按钮）右缘 + 既有按钮间距；top = 标题栏垂直居中位。
+ * 纯只读：不写宿主、不做宽度估算（语言切换后一律重读 rect）。
+ */
+function measureMenuSeat() {
+  try {
+    if (typeof document === "undefined") return null;
+    if (!document.documentElement?.hasAttribute("data-windows-titlebar")) return null;
+    const mount = document.querySelector("[data-windows-menu]");
+    if (!mount) return null;
+    const shadow = mount.shadowRoot; /* preload attachShadow({ mode: "open" }) */
+    if (!shadow) return null; /* 结构不符（宿主改版）→ 静默降级 */
+    const buttons = shadow.querySelectorAll("button");
+    const last = buttons.length > 0 ? buttons[buttons.length - 1] : null;
+    if (!last) return null;
+    const buttonRect = last.getBoundingClientRect();
+    if (!(buttonRect.width > 0 && buttonRect.height > 0)) return null; /* 未上屏/隐藏 */
+    const mountRect = mount.getBoundingClientRect();
+    /* 垂直居中：宿主菜单栏与标题栏等高（:host height = 标题栏变量），挂载盒实测
+       优先、变量/常量回退——不依赖任何静态推算。 */
+    const barTop = Number.isFinite(mountRect.top) ? mountRect.top : 0;
+    const barHeight = mountRect.height > 0 ? mountRect.height : menuTitlebarHeight();
+    return {
+      left: Math.round(buttonRect.right + COS_MENU_BUTTON_GAP),
+      top: Math.round(barTop + (barHeight - COS_MENU_BUTTON_HEIGHT) / 2)
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 标题栏菜单「星群」入口（shell.overlay order 10 条目组件；move-cosmos-entry-to-dsh-menu）。
+ * 行为与侧栏座位（CosmosSeat）完全同源：三 store 订阅（open / presence / launch）、
+ * 点击时现读 launchMode（`effectiveLaunchModeOf`：桌面形态降级恒 embedded）、locked
+ * 短路兜底（竞态窗口）、window 分支同一 `openStandaloneWindow`（弹窗拦截 toast 同源）、
+ * embedded 翻转同一整页 store——零第二套行为实现（design D3）。
+ * 渲染条件 = `data-windows-titlebar` 在场（Windows 桌面端）且宿主几何测量成功；
+ * 任一不满足 → null（静默回退到仅侧栏座位形态：不抛错、不占位、不打 error 日志）。
+ * 层级：order 10 低于 Cosmos 整页 45——整页打开期间标题栏菜单条不受覆盖，本入口
+ * 常驻可点；`aria-expanded` / `data-active` 绑定真实开合（高亮 chrome 对齐宿主按钮
+ * aria-expanded 形态；window / 锁定态省略 aria-expanded 不谎报开合，与侧栏座位同构）。
+ * 独立窗口形态（`?cosmos=window` 页）显式短路——该页 MUST NOT 呈现任何入口控件。
+ * 定位跟随（design D1，token-insight 同款）：ResizeObserver（挂载元素 + 末按钮）只作
+ * 重测触发器（语言切换改变按钮文本宽度）；侧栏收起/展开改写 `--dsh-windows-menu-start`
+ * （菜单整体平移而尺寸不变，RO 不触发），另观察 `data-sidebar-collapsed`；两类情形
+ * 位置一律重读末按钮实时 rect。MutationObserver 兜底宿主延迟挂载。observer 随组件
+ * 卸载断开。坐标系不假设「条目根向上无包含块」——每次几何更新后实测自身 rect，
+ * 与目标不符即一次性反向修正（下方校正 effect）。
  * @param {{t?: (key: string) => string}} props
  */
-function CosmosHeaderSeat({ t }) {
+function CosmosMenuSeat({ t }) {
   const open = useCosmosOpen();
   const presenceState = useSyncExternalStore(cosmosPresenceStore.subscribe, cosmosPresenceStore.getSnapshot);
   const launchState = useSyncExternalStore(cosmosLaunchStore.subscribe, cosmosLaunchStore.getSnapshot);
-  /* 独立窗口形态（`?cosmos=window`）：该页 MUST NOT 呈现任何入口控件（spec「独立窗口形态
-     不呈现」）。宿主主壳树仍会挂载，故显式短路，不产生补位入口。 */
+  /* 独立窗口形态短路（模块级常量，页面生命周期内不变——hook 顺序恒定）。 */
   if (STANDALONE) return null;
+  const buttonRef = useRef(null);
+  const [geometry, setGeometry] = useState(null);
+  /* 自校正代数（同一测量代最多校正一次，避免往返抖动）。 */
+  const correctionRef = useRef(0);
+
+  useEffect(() => {
+    let disposed = false;
+    let mount = null;
+    let ro = null;
+    let bodyMo = null;
+    let rootMo = null;
+    let collapseMo = null;
+    let raf = 0;
+    let lastKey = "\u0000"; /* 哨兵：首次测量即使为 null 也要提交一次 */
+
+    const commit = (measurement) => {
+      const key = measurement === null ? "null" : `${measurement.left}:${measurement.top}`;
+      if (key === lastKey) return;
+      lastKey = key;
+      correctionRef.current = 0;
+      setGeometry(measurement);
+    };
+    const measureNow = () => {
+      if (disposed) return;
+      commit(measureMenuSeat());
+    };
+    const schedule = () => {
+      if (raf) cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => {
+        raf = 0;
+        measureNow();
+      });
+    };
+    /* 绑定宿主观察：挂载元素尺寸变化（语言切换 → 菜单更宽）作重测触发器；
+       末按钮也纳入观察（文本宽度直接变化时同样触发），重定位仍重读其 rect。 */
+    const bind = () => {
+      let next = null;
+      try {
+        next = document.querySelector("[data-windows-menu]");
+      } catch {
+        next = null;
+      }
+      if (next === mount && next?.isConnected) return;
+      mount = next;
+      ro?.disconnect();
+      ro = null;
+      if (!mount || typeof ResizeObserver === "undefined") return;
+      ro = new ResizeObserver(schedule);
+      ro.observe(mount);
+      try {
+        const buttons = mount.shadowRoot?.querySelectorAll?.("button");
+        const last = buttons && buttons.length > 0 ? buttons[buttons.length - 1] : null;
+        if (last) ro.observe(last);
+      } catch {
+        /* shadow 结构异常：仅观察挂载元素，测量层按降级红线兜底 */
+      }
+    };
+
+    bind();
+    measureNow();
+
+    if (typeof MutationObserver !== "undefined") {
+      /* 宿主延迟挂载兜底：稳态下只做 O(1) 的 isConnected 检查，零查询开销。 */
+      bodyMo = new MutationObserver(() => {
+        if (disposed || mount?.isConnected) return;
+        bind();
+        measureNow();
+      });
+      try {
+        bodyMo.observe(document.body, { childList: true, subtree: true });
+      } catch {
+        /* body 未就绪：框架内不会发生，忽略 */
+      }
+      /* 标题栏标记/高度变量由 preload 写在 html 上，可能与菜单异步：属性变化重测。 */
+      rootMo = new MutationObserver(() => {
+        if (disposed) return;
+        bind();
+        measureNow();
+      });
+      try {
+        rootMo.observe(document.documentElement, { attributes: true, attributeFilter: ["data-windows-titlebar", "style"] });
+      } catch {
+        /* 忽略 */
+      }
+      /* 侧栏收起/展开改写 --dsh-windows-menu-start——宿主菜单整体平移而尺寸不变，
+         ResizeObserver 不会触发，故另观察该状态属性仅作重测触发器：位置仍重读末按钮
+         实时 rect（不推算，design D1）。 */
+      collapseMo = new MutationObserver(() => {
+        if (disposed) return;
+        schedule();
+      });
+      try {
+        collapseMo.observe(document.documentElement, { attributes: true, subtree: true, attributeFilter: ["data-sidebar-collapsed"] });
+      } catch {
+        /* 忽略 */
+      }
+    }
+    window.addEventListener("resize", schedule);
+
+    return () => {
+      disposed = true;
+      if (raf) cancelAnimationFrame(raf);
+      ro?.disconnect();
+      bodyMo?.disconnect();
+      rootMo?.disconnect();
+      collapseMo?.disconnect();
+      window.removeEventListener("resize", schedule);
+    };
+  }, []);
+
+  /* 坐标系实测校正（design D1）：fixed 定位若落在 transform/filter 等包含块下，style
+     坐标会被平移。不假设「条目根向上无包含块」——每次几何更新后实测自身 rect，
+     与目标不符即反向修正一次；无包含块的常规情形偏差为 0，零额外渲染。 */
+  useEffect(() => {
+    if (geometry === null) return;
+    const node = buttonRef.current;
+    if (!node) return;
+    const rect = node.getBoundingClientRect();
+    const dx = Math.round(rect.left - geometry.left);
+    const dy = Math.round(rect.top - geometry.top);
+    if (Math.abs(dx) <= 1 && Math.abs(dy) <= 1) return;
+    if (correctionRef.current > 0) return;
+    correctionRef.current += 1;
+    setGeometry({ left: geometry.left - dx, top: geometry.top - dy });
+  }, [geometry]);
+
   const locked = seatLockOf(presenceState?.count);
   const mode = effectiveLaunchModeOf({ launchMode: launchState?.launchMode, protocol: pageProtocol() });
   const windowMode = mode === "window";
@@ -4264,8 +4478,9 @@ function CosmosHeaderSeat({ t }) {
   };
   const lockedText = tr("cosmos.seat.locked", "Cosmos 已在独立窗口打开");
   const windowText = tr("cosmos.seat.windowAria", "在独立窗口打开 Cosmos");
-  const embeddedText = tr("cosmos.seat.aria", "打开 Cosmos 星系视图");
-  const hint = locked ? lockedText : (windowMode ? windowText : embeddedText);
+  const menuText = tr("cosmos.menu.seat", "星群");
+  const menuAriaText = tr("cosmos.menu.seat.aria", "打开 Cosmos 星群视图");
+  const hint = locked ? lockedText : (windowMode ? windowText : menuAriaText);
   const toggle = () => {
     /* 占位锁：禁用态之外的兜底（状态帧到达与点击之间的竞态窗口）——静默 no-op。 */
     if (locked) return;
@@ -4275,23 +4490,28 @@ function CosmosHeaderSeat({ t }) {
     }
     cosmosOpenStore.set(!cosmosOpenStore.getSnapshot());
   };
-  /* window 模式不是 disclosure 控件、锁定态已禁用——两者省略 aria-expanded（不谎报开合，
-     与侧栏座位同构）；embedded 态的 data-active 始终绑定真实开合，供程序化观测。 */
+  if (geometry === null) return null;
+  const ref = (element) => {
+    buttonRef.current = element;
+  };
   return (
     <button
       type="button"
-      className="cos-header-seat"
-      data-plugin-anchor="dsh-v-cosmos:header-seat"
+      ref={ref}
+      className="cos-menu-seat"
+      data-plugin-anchor="dsh-v-cosmos:menu-seat"
       data-active={open || undefined}
       data-locked={locked || undefined}
-      aria-label={hint}
+      style={{ left: `${geometry.left}px`, top: `${geometry.top}px` }}
       aria-expanded={windowMode || locked ? undefined : open}
       aria-disabled={locked || undefined}
       disabled={locked}
+      aria-label={hint}
       title={hint}
       onClick={toggle}
-      dangerouslySetInnerHTML={{ __html: COSMOS_ICON_SVG }}
-    />
+    >
+      {menuText}
+    </button>
   );
 }
 
@@ -4311,19 +4531,18 @@ div:has(> [data-slot="sidebar.footer.action"]):has(.cos-seat){flex-wrap:wrap}
 .cos-seat-row .cos-seat-icon,.cos-seat-rail .cos-seat-icon{display:flex;flex:none}
 .cos-seat-row svg,.cos-seat-rail svg{width:16px;height:16px;flex:none}
 .cos-seat-label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-/* ── 顶部头部入口（add-cosmos-header-entry 2.3）：「conversation.header.leading」座位，
-     对齐宿主 HeaderLeadingControls.iconButton 的 chrome 形态（28×28 / --dsw-radius-sm /
-     --dsw-alias-label-secondary / hover --dsw-alias-interactive-bg-hover）；icon-only，
-     flex:none 不参与标题挤压。令牌优先、风格 D 基线回落（宿主 0.2.x 均定义，
-     回落值 = 插件画布既有暖金 / 冷灰基线，令牌缺席不裸奔）。「-webkit-app-region:no-drag」
-     兜底（design D4：spike 判定当前宿主 Windows 拖拽条不覆盖头部（frame 预留 titlebar
-     高度）；该声明只防 app-region 拖拽带扩展，JS 拖拽消费者不在 CSS 防护范围）。 ── */
-.cos-header-seat{box-sizing:border-box;flex:none;display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;padding:0;cursor:pointer;color:var(--dsw-alias-label-secondary,var(--cos-accent-ink,#ffe3b8));background:0 0;border:none;border-radius:var(--dsw-radius-sm,8px);-webkit-app-region:no-drag}
-@media (hover:hover){.cos-header-seat:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover,rgba(255,210,140,.12))}}
-.cos-header-seat:focus-visible{outline:var(--dsw-focus-ring-width,2px) solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary,#ffd28a));outline-offset:-2px}
-.cos-header-seat[data-active="true"]{color:var(--dsw-alias-state-business-primary,var(--cos-accent-ink,#ffe3b8))}
-.cos-header-seat svg{width:16px;height:16px;flex:none}
-.cos-header-seat:disabled{cursor:not-allowed;opacity:.5}
+/* ── 标题栏菜单「星群」入口（move-cosmos-entry-to-dsh-menu）：Windows 桌面端标题栏
+     菜单条「编辑」右邻自绘 fixed 文字按钮；chrome 镜像宿主菜单 shadow 样式表按钮
+     （28px 高 / padding 0 10px / 6px 圆角 / 透明底 / label-secondary，hover 与
+     aria-expanded=true → interactive-bg-hover + label-primary）；font:inherit 继承
+     标题栏字体栈。令牌优先、风格 D 基线回落（回落值 = 插件画布既有暖金基线，
+     令牌缺席不裸奔）。「-webkit-app-region:no-drag」兜底（防 app-region 拖拽带
+     扩展，宿主 :host 同款语义）。 ── */
+.cos-menu-seat{position:fixed;box-sizing:border-box;height:28px;padding:0 10px;border:none;border-radius:6px;background:transparent;color:var(--dsw-alias-label-secondary,var(--cos-accent-ink,#ffe3b8));font:inherit;font-size:14px;line-height:28px;white-space:nowrap;cursor:pointer;display:inline-flex;align-items:center;-webkit-app-region:no-drag}
+@media (hover:hover){.cos-menu-seat:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover,rgba(255,210,140,.12));color:var(--dsw-alias-label-primary,var(--cos-accent-ink,#ffe3b8))}}
+.cos-menu-seat[aria-expanded="true"],.cos-menu-seat[data-active="true"]{background:var(--dsw-alias-interactive-bg-hover,rgba(255,210,140,.12));color:var(--dsw-alias-label-primary,var(--cos-accent-ink,#ffe3b8))}
+.cos-menu-seat:focus-visible{outline:var(--dsw-focus-ring-width,2px) solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary,#ffd28a));outline-offset:-2px}
+.cos-menu-seat:disabled{cursor:not-allowed;opacity:.5}
 ${ENGINE_CSS}
 /* ── 新增工作区按钮（add-cosmos-add-workspace 4.4；polish-cosmos-touch-nav 5.1 方形化）：
       左下角常驻，方形 icon-only（44×44，只留「＋」；触屏点击目标 ≥40px，语义经
@@ -4562,42 +4781,59 @@ ${ENGINE_CSS}
 .dsh-cosmos-session-archive:focus-visible{outline:1px solid rgb(var(--cos-accent-rgb,255 210 140) / .85);outline-offset:1px}
 .dsh-cosmos-session-archive:disabled{opacity:.45;cursor:not-allowed}
 .dsh-cosmos-session-archive-icon{display:block;line-height:1}
-/* ── 状态描边层（p2-add-cosmos-card-state-chrome 2.3–2.6）：会话行与正式提案卡的整卡
-      描边随状态呈现——叠加于既有行内点/loader 与提案卡左缘生命周期色条之上（MUST NOT
-      替代）：busy（含 delegatedBusy）与 act>0 = accent 流动巡游；done-unread = done 色
-      静态高亮 + glow；waiting = warning 色慢脉冲；idle 与 act=0（沉睡）= 现状静默
-      （沉睡 MUST NOT 用虚线——虚线为星胚「还没出生」专有语义）。环带层 = 容器 ::before
-      （absolute inset:0），流动态以 padding + 双层 mask 挖空中心、只留 1px 边环；静态态
-      直接 1px 描边。环带 pointer-events:none（覆盖整卡，缺省会挡住「打开」钮与卡片
-      命中/悬停）。动画仅由状态选择器触发（无常驻）；选中态优先（animation:none，静态
-      状态色保留，MUST NOT 双动画叠在同一条边）；reduced-motion 下时长归零（同色静态
-      描边，色信息保留）。取色零新令牌：accent 通道 / --cos-done / --cos-waiting 经宿主
-      alias → 皮肤令牌级联；glow 挂环带层（light 覆盖块只清元素级，不触及伪元素）。 ── */
+/* ── 状态描边层（p2-add-cosmos-card-state-chrome 2.3–2.6；polish-cosmos-state-chrome-flow
+      1.1–1.6）：会话行与正式提案卡的整卡描边随状态呈现——叠加于既有行内点/loader 与
+      提案卡左缘生命周期色条之上（MUST NOT 替代）：busy（含 delegatedBusy）与 act>0 =
+      accent 流动巡游；done-unread = done 色静态高亮 + glow；waiting = warning 色慢脉冲；
+      idle 与 act=0（沉睡）= 现状静默（沉睡 MUST NOT 用虚线——虚线为星胚「还没出生」
+      专有语义）。环带层 = 容器 ::before（absolute inset:0），流动态以 padding + 双层
+      mask 挖空中心、只留 1px 边环。流动态形态 = 双背景顺时针巡游：底层 accent 低α 均匀
+      常亮基线（描边任意时刻连续可见，无空窗），顶层 conic 单亮带承载流动——彗星尾向
+      （design D2 定稿）：亮头为顺时针最前点、渐隐尾迹拖在头后方逆时针侧（transparent
+      前半圈余量、末 ~110deg 向亮头渐入，MUST NOT 呈亮尾在前的反向彗星读感）。conic
+      角度由 @property 注册的 --cos-chrome-flow 驱动（keyframes 0→360deg 插值 =
+      绕环一周，2.4s linear）；**使用处 var(--cos-chrome-flow,0deg) fallback 必写
+      （design D1/D4 降级前提）**：@property 不支持的旧内核上未注册自定义属性是
+      guaranteed-invalid，缺 fallback 整条 background IACVT 回落透明、环不可见；带
+      fallback 则降级为静态光带 + 常亮基线，色信息保留、可用性无损。环带
+      pointer-events:none（覆盖整卡，缺省会挡住「打开」钮与卡片命中/悬停）。动画仅由
+      状态选择器触发（无常驻）；选中态优先（animation:none + background 覆盖为 accent
+      α.5 均匀静态色环，MUST NOT 冻结动画中间帧的不对称亮块，MUST NOT 双动画叠在
+      同一条边）；reduced-motion 下时长归零 + 同色均匀静态色环（waiting 动画为透明度
+      呼吸，时长归零即均匀色，口径维持现状）。取色零新令牌：accent 通道 / --cos-done /
+      --cos-waiting 经宿主 alias → 皮肤令牌级联；glow 挂环带层（light 覆盖块只清元素级，
+      不触及伪元素）。 ── */
 .dsh-cosmos-session-row,.dsh-cosmos-panel-card{position:relative}
 .dsh-cosmos-session-row::before,.dsh-cosmos-panel-card::before{content:'';position:absolute;inset:0;
   pointer-events:none;border-radius:inherit}
+/* 注册角度自定义属性（design D1）：keyframes 需注册 <angle> 才能对自定义属性插值。 */
+@property --cos-chrome-flow{syntax:'<angle>';inherits:false;initial-value:0deg}
 .dsh-cosmos-session-row[data-state=busy]::before,
 .dsh-cosmos-panel-card[data-act=active]::before{padding:1px;
-  background:repeating-linear-gradient(115deg,transparent 0 5px,rgb(var(--cos-accent-rgb,255 210 140) / .85) 5px 10px,transparent 10px 15px);
+  background:conic-gradient(from var(--cos-chrome-flow,0deg),transparent 0deg,transparent 250deg,rgb(var(--cos-accent-rgb,255 210 140) / .95) 360deg),
+    linear-gradient(rgb(var(--cos-accent-rgb,255 210 140) / .28),rgb(var(--cos-accent-rgb,255 210 140) / .28));
   -webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);
   -webkit-mask-composite:xor;
   mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);
   mask-composite:exclude;
-  animation:cos-state-chrome-flow 2s linear infinite}
-@keyframes cos-state-chrome-flow{from{background-position:0 0}to{background-position:13.59px 6.34px}}
+  animation:cos-state-chrome-flow 2.4s linear infinite}
+@keyframes cos-state-chrome-flow{to{--cos-chrome-flow:360deg}}
 .dsh-cosmos-session-row[data-state=done-unread]::before{border:1px solid var(--dsw-alias-state-success-primary,var(--cos-done,#5affc0));
   box-shadow:0 0 10px var(--dsw-alias-state-success-primary,var(--cos-done,#5affc0))}
 .dsh-cosmos-session-row[data-state=waiting]::before{border:1px solid var(--dsw-alias-state-warn-primary,var(--cos-waiting,#ffaa4a));
   animation:cos-state-chrome-pulse 2.4s ease-in-out infinite}
 @keyframes cos-state-chrome-pulse{0%,100%{opacity:.55}50%{opacity:1}}
-/* 选中优先（design D3）：状态动画停止、静态状态色保留——与既有 [data-selected=true]
-   高亮同用，无双动画叠在同一条边上。 */
+/* 选中优先（design D3）：busy/active 静态降级为 accent 均匀静态色环（替代动画停帧的
+   不对称亮块），waiting 静止帧本就均匀（透明度呼吸），仅停动画——与既有
+   [data-selected=true] 高亮同用，无双动画叠在同一条边上。 */
 .dsh-cosmos-session-row[data-selected=true][data-state=busy]::before,
-.dsh-cosmos-panel-card[data-selected=true][data-act=active]::before,
+.dsh-cosmos-panel-card[data-selected=true][data-act=active]::before{animation:none;
+  background:rgb(var(--cos-accent-rgb,255 210 140) / .5)}
 .dsh-cosmos-session-row[data-selected=true][data-state=waiting]::before{animation:none}
 @media (prefers-reduced-motion:reduce){
   .dsh-cosmos-session-row[data-state=busy]::before,
-  .dsh-cosmos-panel-card[data-act=active]::before,
+  .dsh-cosmos-panel-card[data-act=active]::before{animation-duration:0s;animation-iteration-count:1;
+    background:rgb(var(--cos-accent-rgb,255 210 140) / .5)}
   .dsh-cosmos-session-row[data-state=waiting]::before{animation-duration:0s;animation-iteration-count:1}
 }
 /* ── 跨面板悬停关联标记（polish-cosmos-session-focus-and-hover-markers 1.1）：方向三角
@@ -4945,6 +5181,11 @@ export function apply(ctx) {
   const publishConstButtons = () => cosmosConstButtonsFace.set(constButtonsStore.getSnapshot());
   const offConstButtons = constButtonsStore.subscribe(publishConstButtons);
   publishConstButtons();
+  /* 路径配置面（step2-cosmos-openspec-path-setting 3.1–3.3）：与按钮两节共享同一设置
+     作用域（activeScope），控制器只读写 `paths` 对象节（整节 CAS 写、null 键 = 键级
+     unset）。web bundle 无 fs 通道 → 不注入 checkDir：存在性检查跳过（MAY 语义、
+     非阻断），端点不可达时仅路径区禁用降级（launch 单选走 localStorage 面不受牵连）。 */
+  const pathsSettings = createPathsSettingsController(activeScope);
   /* 跨域唯一性（add-cosmos-shortcuts 3.3/5.3/D9）：两个控制器实例的 `crossIssue` 在保存门
      并集查重（本侧草稿 + 另一侧当前草稿 + 全局四键生效值）。侧别经闭包固定；「另一侧」
      经惰性 holder 读取——控制器构造期即会 publish（此时对侧尚未创建，按空列表处理，
@@ -5091,6 +5332,7 @@ export function apply(ctx) {
     constButtonSettings.dispose();
     buttonsStore.dispose();
     constButtonsStore.dispose();
+    pathsSettings.dispose();
     activeScope.dispose();
     cosmosButtonsFace.set({ buttons: [] });
     cosmosConstButtonsFace.set({ constellationButtons: [] });
@@ -5130,17 +5372,20 @@ export function apply(ctx) {
     )
   );
 
-  /* 2. 顶部头部座位「Cosmos」（add-cosmos-header-entry 2.2）：`conversation.header.leading`
-     为 single / root（空白会话也渲染 headerLeading，侧栏收起 / drawer 下入口仍可达）；
-     single 座位无 order 语义，与侧栏座位同源（同一 store / 分流纯函数 / 文案键）。 */
-  ctx.slots.inject("conversation.header.leading", () =>
+  /* 2. 标题栏菜单「星群」入口（move-cosmos-entry-to-dsh-menu；Windows 桌面端）：
+     `shell.overlay` order 10 自绘 fixed 按钮——测量宿主 `[data-windows-menu]` open
+     shadowRoot「编辑」按钮几何定位其右缘 + 2px（token-insight「用量」同款机制，其
+     order 10 同级）；锚点 `dsh-v-cosmos:menu-seat` 供「用量」链式让位，共同顺序 =
+     应用 → 编辑 → 星群 → 用量。非桌面端 / 测量失败 → 组件渲染 null（侧栏座位兜底）。 */
+  ctx.slots.inject("shell.overlay", () =>
     ctx.slots.register(
       {
-        name: "conversation.header.leading",
-        id: "v-cosmos-header-seat",
+        name: "shell.overlay",
+        id: "v-cosmos-menu-seat",
+        order: 10,
         locale: NS
       },
-      CosmosHeaderSeat
+      CosmosMenuSeat
     )
   );
 
@@ -5235,7 +5480,7 @@ export function apply(ctx) {
         order: -1,
         label: () => sectionT("cosmos.settings.tabGeneral"),
         locale: NS,
-        inject: () => ({ launch: launchFace, desktop: DESKTOP_PROTOCOL })
+        inject: () => ({ launch: launchFace, desktop: DESKTOP_PROTOCOL, paths: pathsSettings })
       },
       CosmosGeneralPanel
     )
@@ -5460,7 +5705,7 @@ export function apply(ctx) {
 
 /* 冒烟测试观测面（hive exports 先例）：只读镜像 + 纯函数引用，供 bundle 级冒烟
    直测导出面与推导口径；运行时行为不受影响。 */
-export { cosmosOpenStore, cosmosPresenceStore, cosmosLaunchStore, cosmosStandaloneStore, STANDALONE, DESKTOP_PROTOCOL, requestPageClose, applyLaunchMode, openStandaloneWindow, isStandaloneSearch, isStandalonePage, standaloneUrlOf, isDesktopProtocol, effectiveLaunchModeOf, seatLockOf, otherWindowHintOf, closeDecisionOf, CosmosGeneralPanel, sceneVersionStore, filterStore, drillStore, engineSelectStore, engineHoverStore, cosmosButtonsFace, cosmosConstButtonsFace, cosmosSkinStore, cosmosNavStore, cosmosShortcutsStore, cosmosButtonDraftsStore, cosmosSessionPanelStore, cosmosSelectHealthOf, currentShortcuts, buttonDraftsOf, floatOpenOf, COSMOS_SKINS, COSMOS_SKIN_IDS, COSMOS_DEFAULT_SKIN, createSkin, applySkinTokens, mergeScene, sceneDiffLevel, planetStateOf, relativeTime, matchWorkspaces, filteredPositions, findRegisteredWorkspace, normalizeWorkspacePath, isWindowsPlatform, isEmptyConstellation, projectPanel, projectSessionPanel, sessionKeyOf, findCard, proposalKeyOf, assembleMessage, assembleEmbryoMessage, actionButtonVisible, draftMatches, isBlankDraft, pendingReadinessOf, createActionGate, createPendingActionStore, createActionExecutor, createEmbryoActionExecutor, consumePendingAction, explorationTargetOf, createModelBridge, ProposalPanel, SessionPanel, ActionBar, ConstActionBar, ActionHeroDock, ConstellationFloatDock, EmbryoActionDock, CosmosSettingsSection, CosmosActionsPanel, CosmosSkinPanel, CosmosNavPanel, CosmosShortcutsPanel, SKIN_D_PALETTE, createSkinD, createCosmosEngine, isUiChromeTarget, fetchScene, subscribeCosmosEvents, bindSession, loadCosmosSettings, saveCosmosSettings, COSMOS_SETTINGS_DEFAULTS, COSMOS_SETTINGS_BOUNDS, PENDING_DIVE_WAIT_MS, normalizeConstButtons, constButtonsSectionOf, constellationMessageOf, createFloatMarkerStore, createConstellationExecutor, floatPresentationOf, createButtonSettingsController, constButtonDraftOf, constButtonIssue, CONSTELLATION_PROFILE, isSessionArchiveOutcome, activitySummaryOf, archiveNoticeOf, archiveRequestFailureNotice, SHORTCUT_DEFAULTS, SHORTCUT_FIELDS, SHORTCUT_UI_ORDER, SHORTCUT_GLOBAL_KEYS, SHORTCUT_BUTTON_KEYS, shortcutLabelOf, shortcutMatches, shortcutsOf, shortcutConflictOf, shortcutsIssue };
+export { cosmosOpenStore, cosmosPresenceStore, cosmosLaunchStore, cosmosStandaloneStore, STANDALONE, DESKTOP_PROTOCOL, requestPageClose, applyLaunchMode, openStandaloneWindow, isStandaloneSearch, isStandalonePage, standaloneUrlOf, isDesktopProtocol, effectiveLaunchModeOf, seatLockOf, otherWindowHintOf, closeDecisionOf, CosmosGeneralPanel, CosmosPathsSection, createPathsSettingsController, sceneVersionStore, filterStore, drillStore, engineSelectStore, engineHoverStore, cosmosButtonsFace, cosmosConstButtonsFace, cosmosSkinStore, cosmosNavStore, cosmosShortcutsStore, cosmosButtonDraftsStore, cosmosSessionPanelStore, cosmosSelectHealthOf, currentShortcuts, buttonDraftsOf, floatOpenOf, COSMOS_SKINS, COSMOS_SKIN_IDS, COSMOS_DEFAULT_SKIN, createSkin, applySkinTokens, mergeScene, sceneDiffLevel, planetStateOf, relativeTime, matchWorkspaces, filteredPositions, findRegisteredWorkspace, normalizeWorkspacePath, isWindowsPlatform, isEmptyConstellation, projectPanel, projectSessionPanel, sessionKeyOf, findCard, proposalKeyOf, assembleMessage, assembleEmbryoMessage, actionButtonVisible, draftMatches, isBlankDraft, pendingReadinessOf, createActionGate, createPendingActionStore, createActionExecutor, createEmbryoActionExecutor, consumePendingAction, explorationTargetOf, createModelBridge, ProposalPanel, SessionPanel, ActionBar, ConstActionBar, ActionHeroDock, ConstellationFloatDock, EmbryoActionDock, CosmosSettingsSection, CosmosActionsPanel, CosmosSkinPanel, CosmosNavPanel, CosmosShortcutsPanel, SKIN_D_PALETTE, createSkinD, createCosmosEngine, isUiChromeTarget, fetchScene, subscribeCosmosEvents, bindSession, loadCosmosSettings, saveCosmosSettings, COSMOS_SETTINGS_DEFAULTS, COSMOS_SETTINGS_BOUNDS, PENDING_DIVE_WAIT_MS, normalizeConstButtons, constButtonsSectionOf, constellationMessageOf, createFloatMarkerStore, createConstellationExecutor, floatPresentationOf, createButtonSettingsController, constButtonDraftOf, constButtonIssue, CONSTELLATION_PROFILE, isSessionArchiveOutcome, activitySummaryOf, archiveNoticeOf, archiveRequestFailureNotice, SHORTCUT_DEFAULTS, SHORTCUT_FIELDS, SHORTCUT_UI_ORDER, SHORTCUT_GLOBAL_KEYS, SHORTCUT_BUTTON_KEYS, shortcutLabelOf, shortcutMatches, shortcutsOf, shortcutConflictOf, shortcutsIssue };
 
 /* 文案（zh/en 成对；引擎内嵌中文提示为 demo 语言的既定呈现）。 */
 const DICT = {
@@ -5472,6 +5717,10 @@ const DICT = {
     "cosmos.seat.locked": "Cosmos 已在独立窗口打开",
     "cosmos.seat.windowAria": "在独立窗口打开 Cosmos",
     "cosmos.seat.popupBlocked": "浏览器拦截了独立窗口，请放行弹窗后重试",
+    /* 标题栏菜单「星群」入口（move-cosmos-entry-to-dsh-menu）：菜单条文字与 aria；
+       锁定 / 独立窗 / 弹窗拦截文案复用 cosmos.seat.* 同源键。 */
+    "cosmos.menu.seat": "星群",
+    "cosmos.menu.seat.aria": "打开 Cosmos 星群视图",
     "cosmos.add": "新增",
     "cosmos.add.aria": "新增工作区",
     "cosmos.search.placeholder": "搜索工作区…",
@@ -5497,6 +5746,9 @@ const DICT = {
        open/openAria 同款配对，图标钮的完整语义走 archiveAria 的 aria-label/title）。 */
     "cosmos.sessions.archive": "归档",
     "cosmos.sessions.archiveAria": "归档会话",
+    /* 归档活跃门禁按态说明文案（add-cosmos-session-archive-busy-gate 2.2）。 */
+    "cosmos.sessions.archiveBusy": "执行中，暂不可归档",
+    "cosmos.sessions.archiveWaiting": "待决策中，暂不可归档",
     "cosmos.sessions.todos": "任务进度",
     "cosmos.sessions.satellites": "子代理会话",
     "cosmos.sessions.waitingBadge": "待处理会话",
@@ -5589,6 +5841,22 @@ const DICT = {
     "cosmos.settings.launchModeWindowHint": "浏览器新开同源窗口，只显示 Cosmos；主壳入口在此期间禁用，分屏时数据实时同态。",
     "cosmos.settings.launchModeDesktop": "独立窗口仅 web（浏览器）形态可用：当前为桌面形态，入口固定为内嵌整页（历史配置保留，切回 web 端仍生效）。",
     "cosmos.settings.launchModeInstant": "改动立即生效并保存",
+    "cosmos.settings.pathsLabel": "路径",
+    "cosmos.settings.pathsHint": "openspec 路径令牌 OPENSPEC_PATH 的解析值与 cosmos-spec 技能目录：保存后写入本机共享配置并即时生效（无需重启插件或会话）。未配置留空。",
+    "cosmos.settings.pathsLoading": "正在加载路径设置…",
+    "cosmos.settings.pathsOpenspecLabel": "openspecPath（openspec 技能仓库根）",
+    "cosmos.settings.pathsOpenspecHint": "路径令牌 OPENSPEC_PATH 的解析值：渲染技能引用时以该目录为 openspec 根。",
+    "cosmos.settings.pathsOpenspecPh": "如 C:\\openspec 或 ~/openspec（留空 = 未配置）",
+    "cosmos.settings.pathsCosmosSpecLabel": "cosmosSpecDir（cosmos-spec 目录）",
+    "cosmos.settings.pathsCosmosSpecHint": "cosmos-spec canonical 目录：技能渲染的扫描根（技能提供方消费）。",
+    "cosmos.settings.pathsCosmosSpecPh": "如 C:\\cosmos-spec（留空 = 未配置）",
+    "cosmos.settings.pathsUnavailable": "路径设置暂不可用：插件页面未就绪（刷新页面后重试）。",
+    "cosmos.settings.pathsNotWritable": "路径设置在此连接不可用（插件宿主半区未就绪或未升级）：页面其余设置不受影响。",
+    "cosmos.settings.pathsSave": "保存",
+    "cosmos.settings.pathsSaving": "保存中…",
+    "cosmos.settings.pathsSaveFailed": "保存未生效（可能已被他端修改），请重试",
+    "cosmos.settings.pathsDiscard": "放弃修改",
+    "cosmos.settings.pathsDirMissing": "目录不存在（仍已保存，可先配后建）：",
     "cosmos.settings.tabActions": "快捷动作",
     "cosmos.settings.tabConstActions": "星座动作",
     "cosmos.settings.tabSkins": "皮肤",
@@ -5755,6 +6023,10 @@ const DICT = {
     "cosmos.seat.locked": "Cosmos is already open in a standalone window",
     "cosmos.seat.windowAria": "Open Cosmos in a standalone window",
     "cosmos.seat.popupBlocked": "The browser blocked the standalone window; allow pop-ups and retry",
+    /* Menu entry (move-cosmos-entry-to-dsh-menu): titlebar text + aria; locked /
+       standalone-window / popup-blocked copy reuse the cosmos.seat.* keys. */
+    "cosmos.menu.seat": "Cosmos",
+    "cosmos.menu.seat.aria": "Open the Cosmos galaxy view",
     "cosmos.add": "Add",
     "cosmos.add.aria": "Add workspace",
     "cosmos.search.placeholder": "Search workspaces…",
@@ -5778,6 +6050,8 @@ const DICT = {
     "cosmos.sessions.openAria": "Open session",
     "cosmos.sessions.archive": "Archive",
     "cosmos.sessions.archiveAria": "Archive session",
+    "cosmos.sessions.archiveBusy": "Running — archiving unavailable",
+    "cosmos.sessions.archiveWaiting": "Awaiting decision — archiving unavailable",
     "cosmos.sessions.todos": "Task progress",
     "cosmos.sessions.satellites": "Subagent sessions",
     "cosmos.sessions.waitingBadge": "Sessions waiting",
@@ -5862,6 +6136,22 @@ const DICT = {
     "cosmos.settings.launchModeWindowHint": "The browser opens a same-origin window showing only Cosmos; the main entry is disabled meanwhile, and data stays in sync across screens.",
     "cosmos.settings.launchModeDesktop": "The standalone window is available only in the web (browser) form: on desktop the entry always opens inline (the stored preference is kept and applies again on the web).",
     "cosmos.settings.launchModeInstant": "Changes apply and persist immediately",
+    "cosmos.settings.pathsLabel": "Paths",
+    "cosmos.settings.pathsHint": "Resolution value of the openspec path token OPENSPEC_PATH and the cosmos-spec skill directory: saved into this machine's shared config and applied immediately (no plugin or session restart). Leave blank for unset.",
+    "cosmos.settings.pathsLoading": "Loading path settings…",
+    "cosmos.settings.pathsOpenspecLabel": "openspecPath (openspec repo root)",
+    "cosmos.settings.pathsOpenspecHint": "Resolution value of the OPENSPEC_PATH token: skill references render against this directory.",
+    "cosmos.settings.pathsOpenspecPh": "e.g. C:\\openspec or ~/openspec (blank = unset)",
+    "cosmos.settings.pathsCosmosSpecLabel": "cosmosSpecDir (cosmos-spec directory)",
+    "cosmos.settings.pathsCosmosSpecHint": "cosmos-spec canonical directory: the scan root for skill rendering.",
+    "cosmos.settings.pathsCosmosSpecPh": "e.g. C:\\cosmos-spec (blank = unset)",
+    "cosmos.settings.pathsUnavailable": "Path settings are unavailable: the plugin page is not ready (reload the page and retry).",
+    "cosmos.settings.pathsNotWritable": "Path settings are unavailable on this connection (host half not ready or outdated); other settings are unaffected.",
+    "cosmos.settings.pathsSave": "Save",
+    "cosmos.settings.pathsSaving": "Saving…",
+    "cosmos.settings.pathsSaveFailed": "Save did not take effect (it may have changed elsewhere); please retry",
+    "cosmos.settings.pathsDiscard": "Discard changes",
+    "cosmos.settings.pathsDirMissing": "Directory does not exist (saved anyway; configure before creating):",
     "cosmos.settings.tabActions": "Quick actions",
     "cosmos.settings.tabConstActions": "Constellation actions",
     "cosmos.settings.tabSkins": "Skins",

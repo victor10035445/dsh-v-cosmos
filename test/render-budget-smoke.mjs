@@ -72,7 +72,7 @@ function stubEl(tag) {
     remove() {},
     querySelector(sel) {
       if (!el._by[sel]) {
-        const child = stubEl(sel === ".cos-canvas" ? "canvas" : "div");
+        const child = stubEl(sel === ".cos-canvas" || sel === ".cos-tiplines" ? "canvas" : "div");
         if (child.tag === "canvas") child.getContext = () => ctxFactory();
         el._by[sel] = child;
       }

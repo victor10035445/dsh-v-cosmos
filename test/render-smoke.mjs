@@ -79,7 +79,7 @@ function makeElement(tag) {
       el._byClass = el._byClass || {};
       const cls = String(sel).replace(".", "");
       if (!el._byClass[cls]) {
-        el._byClass[cls] = sel === ".cos-canvas" ? makeCanvasEl() : makeElement("div");
+        el._byClass[cls] = sel === ".cos-canvas" || sel === ".cos-tiplines" ? makeCanvasEl() : makeElement("div");
         el._byClass[cls].getBoundingClientRect = () => ({ left: 0, top: 0, right: 800, bottom: 600, width: 800, height: 600 });
       }
       return el._byClass[cls];
@@ -293,13 +293,14 @@ function findCanvas(node) {
   };
   const starWp = (id) => engine.inspectEntities("ws1").stars.find((s) => s.id === id).wp;
 
-  /* ① 恒星聚焦：关系段/环/共享会话段进入渲染条目（skin-d rel 分支执行），卡面呈现活力行 */
+  /* ① 恒星聚焦：关系段/环进入渲染条目（skin-d rel 分支执行），卡面呈现活力行；
+     星↔星提案虚线已解除（two-use-cosmos-template-star-layout）：relLast 无 links 面 */
   hoverWorld(starWp("add-a"));
   const relStar = engine.inspectRelation();
   assert.equal(relStar.focusKey, "ws1|star:add-a", "hover 恒星 → 聚焦源");
   assert.ok(relStar.last.segs.length >= 1, "恒星→行星关系段进入渲染条目");
   assert.ok(relStar.last.orbits.some((o) => o.planetId === "p1"), "关联行星轨道环 rel 标记");
-  assert.ok(relStar.last.links.some((l) => l.aId === "add-a" && l.bId === "add-b"), "共享会话虚线点亮");
+  assert.equal(relStar.last.links, undefined, "星↔星提案虚线点亮解除（relLast 无 links 面，two）");
   const starHtml = String(cardEl.innerHTML);
   assert.ok(starHtml.includes("活力"), "恒星信息卡渲染活力状态行");
   assert.ok(/活跃|沉睡/.test(starHtml), "活力行取值为两态之一");
