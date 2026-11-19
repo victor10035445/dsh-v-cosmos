@@ -547,9 +547,9 @@ rafQueue.length = 0; // 清掉已停引擎的陈旧帧回调（新增块从确�
   assert.ok(!haltBody.includes("setVisible") && !haltBody.includes("engine."), "失焦处理器 MUST NOT 触碰渲染启停（失焦续播）");
   assert.ok(!source.includes('const onBlur = () => controllerRef.current?.setVisible(false);'), "无「失焦 → setVisible(false)」处理器定义");
   assert.ok(!source.includes('const onFocus = () => controllerRef.current?.setVisible(true);'), "无「回焦 → setVisible(true)」处理器定义");
-  assert.ok(source.includes('const onVisibility = () => controllerRef.current?.setVisible(!document.hidden);'), "可见性处理器 = 唯一 setVisible 触发源（document.hidden 取反）");
-  assert.ok(source.includes('document.addEventListener("visibilitychange", onVisibility);'), "visibilitychange 监听在位");
-  assert.ok(source.includes('document.removeEventListener("visibilitychange", onVisibility);'), "visibilitychange 清理成对移除（无泄漏）");
+  assert.ok(source.includes('const sync = () => controllerRef.current?.setVisible(!document.hidden && dockVisible);'), "可见性处理器 = 唯一 setVisible 触发源（document.hidden 取反 × dock tab 可见性）");
+  assert.ok(source.includes('document.addEventListener("visibilitychange", sync);'), "visibilitychange 监听在位");
+  assert.ok(source.includes('document.removeEventListener("visibilitychange", sync);'), "visibilitychange 清理成对移除（无泄漏）");
   assert.equal((source.match(/controllerRef\.current\?\.setVisible\(/g) ?? []).length, 1, "页面层 setVisible 调用点恰好一处（防焦点分支复归）");
   assert.ok(!source.includes("setVisible(false)") && !source.includes("setVisible(true)"), "无字面量 true/false 的 setVisible 调用（启停恒由可见性裁决）");
   assert.ok(source.includes("窗口失焦不暂停"), "effect 注释钉住「窗口失焦不暂停」依据（spec「渲染节能」，防实现复归）");

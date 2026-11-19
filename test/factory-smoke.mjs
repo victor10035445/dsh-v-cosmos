@@ -76,10 +76,62 @@ assert.equal(typeof exportsShape.createFloatMarkerStore, "function", "浮窗标�
 assert.equal(exportsShape.createFloatMarkerStore().ttlMs, 10000, "浮窗标记 TTL 10s");
 assert.equal(typeof exportsShape.constellationMessageOf, "function", "纯提示词组装导出");
 assert.equal(typeof exportsShape.floatPresentationOf, "function", "浮窗门控纯函数导出");
+assert.equal(typeof exportsShape.floatTextareaHeightOf, "function", "浮窗文本面增高夹取纯函数导出（p1-align-const-float-native-layout 3.3）");
 assert.equal(typeof exportsShape.createActionGate, "function", "共享防重入门导出");
 assert.equal(typeof exportsShape.createButtonSettingsController, "function", "参数化设置控制器导出");
 assert.equal(typeof exportsShape.ConstActionBar, "function", "星座动作条组件导出");
 assert.equal(typeof exportsShape.ConstellationFloatDock, "function", "星座浮窗条目组件导出");
+/* ── 浮窗图片附件观测面（p2-add-const-float-image-attach 1.1/1.2/6.4）── */
+assert.equal(typeof exportsShape.createAttachFace, "function", "attachFace 工厂导出（注入面与缺席形态可直测）");
+assert.equal(typeof exportsShape.clipboardFilesOf, "function", "剪贴板文件收集纯函数导出");
+assert.ok(Array.isArray(exportsShape.FLOAT_IMAGE_TYPES), "图片 MIME 白名单导出");
+assert.deepEqual(
+  [...exportsShape.FLOAT_IMAGE_TYPES],
+  ["image/png", "image/jpeg", "image/webp", "image/gif"],
+  "白名单 = 宿主 isImageMediaType 四类（本地复刻）"
+);
+assert.equal(exportsShape.FLOAT_IMAGE_ACCEPT, "image/png,image/jpeg,image/webp,image/gif", "accept 值与白名单同源");
+assert.equal(exportsShape.FLOAT_ATTACH_WATCH_MS, 10000, "附件观察态看门狗 10s");
+for (const name of ["floatSendPlanOf", "floatWatchOutcomeOf", "floatAttachmentsPendingOf", "intakeFloatImages", "removeFloatAttachment"]) {
+  assert.equal(typeof exportsShape[name], "function", "附件纯逻辑导出：" + name);
+}
+assert.equal(exportsShape.floatSendPlanOf({ draft: "  ", attachmentIds: [] }), "empty", "空输入分类（观察面可用）");
+/* 缺席形态（旧宿主 / 服务不可达）：available=false、mint 抛错、resolve 恒空、uploads 稳定空面。 */
+{
+  const absent = exportsShape.createAttachFace();
+  assert.equal(absent.available, false, "face 缺席 → available=false");
+  assert.throws(() => absent.mint("s", [], true), /附件铸造不可用/, "缺席 mint 抛错（MUST NOT 静默成功）");
+  assert.deepEqual(absent.resolve(["a"]), [], "缺席 resolve 恒空（rail 零布局）");
+  assert.equal(typeof absent.release, "function", "缺席 release 为 no-op");
+  assert.equal(absent.uploads.getSnapshot(), absent.uploads.getSnapshot(), "缺席上传快照引用稳定（useSyncExternalStore 契约）");
+  const off = absent.uploads.subscribe(() => {});
+  assert.equal(typeof off, "function", "缺席上传订阅返回退订函数");
+}
+/* 注入形态（动词齐备）：available=true、mint 薄透传 ids、抛错原样上抛、uploads 委托服务。 */
+{
+  const calls = [];
+  const service = {
+    createDrafts: (sessionId, files, uploadImages) => files.map((file) => ({ id: "draft-" + file.name, kind: "image" })),
+    resolveDraftAttachments: (ids) => ids.map((id) => ({ id, kind: "image" })),
+    releaseDraftAttachment: (id) => calls.push(id),
+    fileUploads: { getSnapshot: () => ({ draft: { status: "uploading" } }), subscribe: () => () => {} }
+  };
+  const face = exportsShape.createAttachFace({
+    service: () => service,
+    uploads: { getSnapshot: () => service.fileUploads.getSnapshot(), subscribe: () => () => {} }
+  });
+  assert.equal(face.available, true, "四件齐备 → available=true");
+  assert.deepEqual(face.mint("s1", [{ name: "a.png" }], true).ids, ["draft-a.png"], "mint 返回有序 ids");
+  assert.deepEqual(face.resolve(["x"]), [{ id: "x", kind: "image" }], "resolve 薄透传");
+  face.release("x");
+  assert.deepEqual(calls, ["x"], "release 薄透传");
+  assert.deepEqual(face.uploads.getSnapshot(), { draft: { status: "uploading" } }, "uploads 引用注入面（apply 侧受控镜像）");
+  const broken = exportsShape.createAttachFace({
+    service: () => ({ ...service, createDrafts: () => { throw new Error("unsupported image media type: image/bmp"); } })
+  });
+  assert.throws(() => broken.mint("s1", [], true), /unsupported image media type/, "mint 抛错薄透传（face MUST NOT 吞错）");
+  assert.equal(exportsShape.createAttachFace({ service: () => ({ createDrafts: () => [] }) }).available, false, "动词缺失 → 降级");
+}
 assert.equal(exportsShape.ConstellationNativeWindow, undefined, "原生浮动输入窗口组件零残留（rework 拆除死槽位实现）");
 assert.equal(exportsShape.nativeWindowOf, undefined, "原生窗口门控纯函数零残留");
 assert.equal(typeof exportsShape.actionButtonVisible, "function", "前置状态呈现门控导出");
@@ -122,6 +174,20 @@ assert.deepEqual(exportsShape.archiveNoticeOf({ outcome: "already-archived" }), 
 assert.equal(exportsShape.archiveNoticeOf({ outcome: "skipped", activity: [{ family: "job" }] }).text, "会话仍在运行，未归档：后台任务", "bundle 内 skipped 文案口径");
 assert.equal(typeof exportsShape.archiveRequestFailureNotice, "function", "请求失败文案导出");
 assert.equal(exportsShape.archiveRequestFailureNotice("500").tone, "error", "请求失败基调");
+
+/* ── 宿主当前会话跟随观测面（add-cosmos-host-session-follow）──
+   纯逻辑模块随 client.jsx import 链并入 bundle（无 files/check 清单变更），
+   导出面同步供 bundle 级冒烟直测（行为直测在 host-session-follow-smoke）。 */
+assert.equal(typeof exportsShape.currentSessionIdOf, "function", "单点出口导出");
+assert.equal(exportsShape.currentSessionIdOf({
+  uiSession: { adapter: { current: { getSnapshot: () => ({ key: "s-bundle" }) } } }
+}), "s-bundle", "bundle 内单点出口采信主源快照");
+assert.equal(exportsShape.currentSessionIdOf(null, "s-mirror"), "s-mirror", "bundle 内单点出口回落镜像");
+assert.equal(typeof exportsShape.wsIdBySessionId, "function", "会话 id → 星座解析导出");
+assert.equal(exportsShape.wsIdBySessionId({
+  workspaces: [{ id: "w-bundle", planets: [{ id: "p-bundle" }], comets: [] }]
+}, "p-bundle"), "w-bundle", "bundle 内星座解析口径");
+assert.equal(typeof exportsShape.createHostSessionFollow, "function", "跟随器工厂导出");
 
 /* ── 激活冒烟（apply 走通：注册表形状 + 无异常 + 通道降级） ──
    React 组件不挂载（bundle external），但 apply 的接线逻辑（槽位注册/通道装配/
@@ -199,7 +265,7 @@ assert.equal(exportsShape.archiveRequestFailureNotice("500").tone, "error", "请
   const navTab = tabs.find((entry) => entry.options.id === "nav");
   const shortcutsTab = tabs.find((entry) => entry.options.id === "shortcuts");
   assert.ok(generalTab && actionTab && constTab && skinTab && navTab && shortcutsTab, "标签页 id 齐备");
-  assert.equal(generalTab.options.order, -1, "通用 order -1（置于「快捷动作」之前，add-cosmos-standalone-window 2.2）");
+  assert.equal(generalTab.options.order, -1, "通用 order -1（置于「快捷动作」之前，add-cosmos-rightbar-dock）");
   assert.equal(actionTab.options.order, 0, "快捷动作 order 0");
   assert.equal(constTab.options.order, 1, "星座动作 order 1（排于其后）");
   assert.equal(skinTab.options.order, 2, "皮肤 order 2（add-cosmos-skin-themes 3.4）");
@@ -207,49 +273,64 @@ assert.equal(exportsShape.archiveRequestFailureNotice("500").tone, "error", "请
   assert.equal(shortcutsTab.options.order, 4, "快捷键 order 4（排于「界面」之后，add-cosmos-shortcuts 7.1）");
   assert.equal(typeof skinTab.options.label, "function", "皮肤标签文案走词典");
   assert.equal(typeof navTab.options.label, "function", "导航标签文案走词典");
-  /* 「通用」页签注入面（add-cosmos-standalone-window 2.2）：launch face + 桌面标记 */
+  /* 「通用」页签注入面（add-cosmos-rightbar-dock）：launch face（两档，无形态判据） */
   const generalInjected = generalTab.options.inject();
   assert.equal(typeof generalInjected.launch?.getSnapshot, "function", "通用标签页注入 launch face.getSnapshot");
   assert.equal(typeof generalInjected.launch?.subscribe, "function", "通用标签页注入 launch face.subscribe");
   assert.equal(typeof generalInjected.launch?.set, "function", "通用标签页注入 launch face.set（改动即保存）");
-  assert.equal(generalInjected.desktop, false, "Node 无 location → 非桌面形态（降级不触发）");
+  assert.equal(generalInjected.desktop, undefined, "无桌面形态注入（dock 双端同效）");
   assert.equal(generalInjected.launch.getSnapshot().launchMode, "embedded", "face 快照含缺省 launchMode（内嵌）");
-  assert.equal(generalInjected.launch.set("window").launchMode, "window", "face.set 写穿（Node 无 localStorage → 净房合并结果）");
+  assert.equal(generalInjected.launch.set("dock").launchMode, "dock", "face.set 写穿（Node 无 localStorage → 净房合并结果）");
+  assert.equal(generalInjected.launch.set("window").launchMode, "dock", "历史 window 值迁移为 dock");
   assert.equal(generalInjected.launch.set("hacker").launchMode, "embedded", "非法值写侧回落缺省");
-  /* 独立窗口观测面（add-cosmos-standalone-window 3.x/6.x）：纯逻辑与 store 导出 */
-  for (const name of ["isStandaloneSearch", "isStandalonePage", "standaloneUrlOf", "isDesktopProtocol", "effectiveLaunchModeOf", "seatLockOf", "otherWindowHintOf", "closeDecisionOf"]) {
-    assert.equal(typeof exportsShape[name], "function", "独立窗口纯逻辑导出：" + name);
+  /* 「通用」页签·星座模板名开关 face（add-cosmos-template-name-toggle 1.2）：三件套 + 写穿 */
+  assert.equal(typeof generalInjected.templateNames?.getSnapshot, "function", "通用标签页注入 templateNames face.getSnapshot");
+  assert.equal(typeof generalInjected.templateNames?.subscribe, "function", "通用标签页注入 templateNames face.subscribe");
+  assert.equal(typeof generalInjected.templateNames?.set, "function", "通用标签页注入 templateNames face.set（即时保存）");
+  assert.equal(generalInjected.templateNames.getSnapshot().templateNames, false, "face 快照含缺省 templateNames（关闭 = 默认渲染零变化）");
+  assert.equal(generalInjected.templateNames.set(true).templateNames, true, "face.set 写穿（Node 无 localStorage → 净房合并结果）");
+  assert.equal(generalInjected.templateNames.set(false).templateNames, false, "face.set 关闭写穿");
+  assert.equal(generalInjected.templateNames.set("hacker").templateNames, false, "非布尔写侧回落缺省 false");
+  assert.ok(exportsShape.cosmosTemplateNamesStore && typeof exportsShape.cosmosTemplateNamesStore.subscribe === "function",
+    "templateNames 受控镜像导出（设置页受控读面）");
+  /* dock 分流纯逻辑与 store 导出（add-cosmos-rightbar-dock） */
+  for (const name of ["dockEntryPlanOf", "findDockTabOf", "dockPresenceOf", "pageCloseActionOf", "dockFallbackNoticeKeyOf"]) {
+    assert.equal(typeof exportsShape[name], "function", "dock 纯逻辑导出：" + name);
   }
-  assert.ok(exportsShape.cosmosPresenceStore && typeof exportsShape.cosmosPresenceStore.subscribe === "function", "占位计数 store 导出");
   assert.ok(exportsShape.cosmosLaunchStore && typeof exportsShape.cosmosLaunchStore.subscribe === "function", "launchMode 受控镜像导出");
-  assert.equal(exportsShape.STANDALONE, false, "Node 无 window → 非独立窗口态（模块根检测安全）");
-  assert.equal(exportsShape.cosmosPresenceStore.getSnapshot().count, 0, "占位计数冷启动 0");
+  assert.ok(exportsShape.cosmosDockStore && typeof exportsShape.cosmosDockStore.subscribe === "function", "dock 呈现态 store 导出");
+  assert.deepEqual(exportsShape.cosmosDockStore.getSnapshot(), { available: false, active: false, sessionId: undefined }, "dock 冷启动不可用（Node 无宿主席位）");
+  assert.equal(typeof exportsShape.CosmosDockBody, "function", "dock 正文组件导出");
+  assert.equal(typeof exportsShape.launchCosmosEntry, "function", "入口分流导出");
+  assert.equal(exportsShape.COSMOS_DOCK_TAB_ID, "dsh-v-cosmos", "dock tab id 常量");
+  assert.equal(exportsShape.COSMOS_DOCK_TAB_KIND, "cosmos", "dock tab kind 常量");
   const navInjected = navTab.options.inject();
   assert.equal(typeof navInjected.nav?.getSnapshot, "function", "导航标签页注入 face.getSnapshot");
   assert.equal(typeof navInjected.nav?.subscribe, "function", "导航标签页注入 face.subscribe");
   assert.equal(typeof navInjected.nav?.set, "function", "导航标签页注入 face.set（改动即生效）");
   const navSnapshot = navInjected.nav.getSnapshot();
   assert.deepEqual(
-    [navSnapshot.zoomDiveRatio, navSnapshot.zoomFlyOutRatio, navSnapshot.zoomPointerFocus],
-    [100, 25, true],
-    "face 快照含缩放导航三键默认"
+    Object.keys(navSnapshot).sort(),
+    [
+      "actionBtnHeight", "actionBtnWidth", "addBtnSize", "constActionHeight",
+      "constPanelHeight", "constPanelWidth", "hudBtnSize", "searchHeight",
+      "searchWidth", "sessionPanelHeight", "sessionPanelWidth", "wsTitleSize",
+      "zoomPointerFocus"
+    ],
+    "face 快照 = 指针聚焦 + 界面尺寸 12 键（缩放阈值两键已退场）"
   );
+  assert.equal(navSnapshot.zoomPointerFocus, true, "指针聚焦缺省开");
+  assert.equal("zoomDiveRatio" in navSnapshot, false, "快照不含进入阈值键");
+  assert.equal("zoomFlyOutRatio" in navSnapshot, false, "快照不含返回阈值键");
   /* 数据链直测（add-cosmos-zoom-focus-nav 3.2/3.4）：face.set → 控制器 saveNav →
      净房持久化（Node 无 localStorage → 合并净房结果）→ 受控镜像同步。engine 未 attach
-     时 setTuning 为 no-op（热更链理由 engine-smoke/浏览器走查覆盖）。 */
-  const navSetResult = navInjected.nav.set({ zoomDiveRatio: 80, zoomFlyOutRatio: 40, zoomPointerFocus: false });
+     时 setTuning 为 no-op（热更链理由 engine-smoke/浏览器走查覆盖）。
+     add-cosmos-zoom-ruler 3.2：导航组仅剩指针聚焦开关。 */
+  navInjected.nav.set({ zoomPointerFocus: false });
   const navAfter = navInjected.nav.getSnapshot();
-  assert.deepEqual(
-    [navAfter.zoomDiveRatio, navAfter.zoomFlyOutRatio, navAfter.zoomPointerFocus],
-    [80, 40, false],
-    "导航 face.set 即时写回受控镜像（改动即生效）"
-  );
-  navInjected.nav.set({ zoomDiveRatio: 100, zoomFlyOutRatio: 25, zoomPointerFocus: true });
-  assert.deepEqual(
-    [navInjected.nav.getSnapshot().zoomDiveRatio, navInjected.nav.getSnapshot().zoomFlyOutRatio, navInjected.nav.getSnapshot().zoomPointerFocus],
-    [100, 25, true],
-    "恢复默认（避免污染后续断言）"
-  );
+  assert.equal(navAfter.zoomPointerFocus, false, "导航 face.set 即时写回受控镜像（指针聚焦关闭）");
+  navInjected.nav.set({ zoomPointerFocus: true });
+  assert.equal(navInjected.nav.getSnapshot().zoomPointerFocus, true, "恢复默认（避免污染后续断言）");
   assert.equal(typeof navTab.component, "function", "导航面板为函数组件");
   const skinInjected = skinTab.options.inject();
   assert.equal(typeof skinInjected.skins?.getSnapshot, "function", "皮肤标签页注入 face.getSnapshot");
@@ -289,6 +370,11 @@ assert.equal(exportsShape.archiveRequestFailureNotice("500").tone, "error", "请
   assert.equal(floatInjected.pending, undefined, "浮窗条目不持有 hero 通道");
   assert.equal(typeof floatInjected.switchModel, "function", "浮窗注入模型切换通道（链路先行）");
   assert.equal(typeof floatInjected.notify, "function", "浮窗注入 toast 通道");
+  /* p2 附件注入面：conversation 服务缺席（stub ctx 的 inject 回空 scope）→ 降级 face 在场。 */
+  assert.equal(typeof floatInjected.attachFace, "object", "浮窗条目注入 attachFace（p2）");
+  assert.equal(floatInjected.attachFace.available, false, "服务不可达 → available=false（添加图片钮置灰可点）");
+  assert.equal(typeof floatInjected.attachFace.mint, "function", "降级 face 仍暴露 mint（组件统一调用面）");
+  assert.deepEqual(floatInjected.attachFace.uploads.getSnapshot(), {}, "降级上传快照恒空");
   assert.equal(typeof float.component, "function", "浮窗组件为函数组件（无标记时渲染 null）");
   /* 星胚条目（add-cosmos-action-prestate-gate 3.3）：第三通道独立 store、零跨通道读取。 */
   const embryoInjected = embryo.options.inject("sess-1");
@@ -448,13 +534,10 @@ assert.equal(exportsShape.archiveRequestFailureNotice("500").tone, "error", "请
 
   /* 导航写入（1.4）：受控镜像不流转 + 落印 nav 失败。 */
   const navBefore = navFace.getSnapshot();
-  navFace.set({ zoomDiveRatio: 80 });
+  navFace.set({ zoomPointerFocus: false });
   const navAfter = navFace.getSnapshot();
-  assert.deepEqual(
-    [navAfter.zoomDiveRatio, navAfter.zoomFlyOutRatio, navAfter.zoomPointerFocus],
-    [navBefore.zoomDiveRatio, navBefore.zoomFlyOutRatio, navBefore.zoomPointerFocus],
-    "控制器缺失 → 受控镜像不流转（返回当前快照）"
-  );
+  assert.equal(navAfter.zoomPointerFocus, navBefore.zoomPointerFocus, "控制器缺失 → 受控镜像不流转（返回当前快照）");
+  assert.equal(navAfter.zoomPointerFocus, true, "死控制器不改写指针聚焦缺省");
   const navFailure = fresh.cosmosSelectHealthOf().lastFailure;
   assert.equal(navFailure?.face, "nav", "失败记录迁移至 nav");
   assert.equal(navFailure?.code, "controller-missing", "nav 同原因码");
@@ -465,9 +548,17 @@ assert.equal(exportsShape.archiveRequestFailureNotice("500").tone, "error", "请
   const navNotice = navTree.find((el) => el.props.className === "cs-error");
   assert.ok(navNotice && textOf(navNotice).includes("界面设置未生效"), "界面面板渲染「未生效」提示条");
   assert.ok(textOf(navNotice).includes("controller-missing"), "界面提示含原因码后缀");
+  /* 导航组收敛（add-cosmos-zoom-ruler 3.2）：仅指针聚焦开关；两阈值数字输入退场。 */
+  assert.ok(!navTree.some((el) => el.props.id === "cosmos-nav-dive"), "面板不再渲染进入阈值输入");
+  assert.ok(!navTree.some((el) => el.props.id === "cosmos-nav-flyout"), "面板不再渲染返回阈值输入");
+  const focusToggle = navTree.find((el) => el.props.type === "checkbox");
+  assert.ok(focusToggle, "指针聚焦开关仍在");
+  assert.equal(typeof focusToggle.props.onChange, "function", "开关可写（face.set zoomPointerFocus）");
+  assert.ok(textOf(navTree).includes("25%"), "navHint 如实说明屏心 25% 闸门");
   const navPlaceholder = collectElements(fresh.CosmosNavPanel({ t: (key) => key, nav: null }));
   assert.ok(textOf(navPlaceholder).includes("界面设置暂不可用"), "nav face 缺失 → 降级占位文案");
   assert.ok(!navPlaceholder.some((el) => el.props.className === "cs-navInput"), "占位不渲染数字输入控件");
+  assert.ok(!navPlaceholder.some((el) => el.props.id === "cosmos-nav-dive"), "占位不渲染进入阈值输入（已退场）");
   assert.ok(!navPlaceholder.some((el) => el.props.className === "cs-sizeInput"), "占位不渲染尺寸输入控件");
 
   /* 「发送前编辑」face（add-cosmos-native-composer 4.1）：星座动作页签正交注入；
@@ -496,10 +587,10 @@ assert.equal(exportsShape.archiveRequestFailureNotice("500").tone, "error", "请
   assert.equal(skinFace.select("fermata"), "fermata", "复活后点选生效（返回生效 id）");
   assert.equal(fresh.cosmosSkinStore.getSnapshot().skin, "fermata", "复活后选择写回 store");
   assert.equal(fresh.cosmosSelectHealthOf().lastFailure, null, "成功路径自愈：失败记录清除");
-  navFace.set({ zoomDiveRatio: 80 });
+  navFace.set({ zoomPointerFocus: false });
   assert.equal(fresh.cosmosSelectHealthOf().lastFailure, null, "导航成功写入后保持无失败记录");
-  assert.equal(navFace.getSnapshot().zoomDiveRatio, 80, "复活后导航写入生效（受控镜像流转）");
-  navFace.set({ zoomDiveRatio: 100 });
+  assert.equal(navFace.getSnapshot().zoomPointerFocus, false, "复活后导航写入生效（受控镜像流转）");
+  navFace.set({ zoomPointerFocus: true });
   skinFace.select("rosepine"); // 恢复默认，避免污染后续断言
   /* 「发送前编辑」切换即时写回（4.1）：控制器就位后 face.set → savePreflight →
      净房结果返回 + 受控镜像流转；非法值回落 float（净房同源，rework 缺省翻转）。 */

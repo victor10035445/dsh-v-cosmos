@@ -10,7 +10,7 @@
  * 运行：node test/merge-smoke.mjs
  */
 import assert from "node:assert/strict";
-import { mergeScene, sceneDiffLevel, planetStateOf, relativeTime, constellationPositions, skyPositionOf, starOffset, dustCountOf, hash32, matchWorkspaces, embryoGroupsOf, filteredPositions, normalizeWorkspacePath, findRegisteredWorkspace, isWindowsPlatform, starPlanetIdsOf, templateForWorkspace, starPatternLayout, PATTERN_SCALE, PATTERN_RING_RATIO, PATTERN_SLOT_GAP } from "../src/merge.mjs";
+import { mergeScene, sceneDiffLevel, planetStateOf, relativeTime, constellationPositions, skyPositionOf, starOffset, dustCountOf, hash32, matchWorkspaces, embryoGroupsOf, filteredPositions, normalizeWorkspacePath, findRegisteredWorkspace, isWindowsPlatform, starPlanetIdsOf, templateForWorkspace, templateZhOf, starPatternLayout, PATTERN_SCALE, PATTERN_RING_RATIO, PATTERN_SLOT_GAP } from "../src/merge.mjs";
 import { TEMPLATE_COUNT, allTemplates, templateOf } from "../src/cosmos/templates.mjs";
 
 const NOW = 1_000_000_000_000;
@@ -217,7 +217,17 @@ assert.deepEqual(protoStar.tasks, [0, 0], "星胚无任务进度");
 const protoLayout = starPatternLayout(templateForWorkspace("ws1"), protoWs.stars);
 assert.ok(protoLayout, "ws1 命中模板（fixture 星座走图样落位）");
 assert.deepEqual(protoStar.off, protoLayout.offs.get("explore-ui"), "星胚 off = 图样槽位（与正式恒星同一条序、自然占位）");
-assert.ok(Array.isArray(protoWs.patternLines) && protoWs.patternLines.every((pair) => pair[0] !== pair[1] && pair.every((i) => Number.isInteger(i) && i >= 0 && i < protoWs.stars.length)), "patternLines = 场景 stars 合法下标对（含星胚槽位）");
+/* 图样全量交付（add-cosmos-template-figure-display 1.2/D1/D2 / 4.2）：`ws.pattern =
+   { slots, lines }` —— slots = 模板全部内核主星位（下标 = 模板 stars 下标）、lines = 模板
+   lines **原样**（空槽端点不过滤）；门控 = stars 非空（星胚并入 stars 即满足），
+   与 links 数据面相互独立。 */
+const protoTpl = templateForWorkspace("ws1");
+assert.ok(protoTpl && Array.isArray(protoTpl.lines), "ws1 命中模板（图样数据面前提）");
+assert.ok(protoWs.pattern && Array.isArray(protoWs.pattern.slots) && Array.isArray(protoWs.pattern.lines), "stars 非空 → 交付 ws.pattern");
+assert.equal(protoWs.pattern.slots.length, protoTpl.stars.length, "pattern.slots = 模板全部主星位（全量、非仅被占槽位）");
+assert.deepEqual(protoWs.pattern.lines, protoTpl.lines, "pattern.lines = 模板 lines 原样（空槽端点不过滤）");
+assert.ok(protoWs.pattern.lines.every((pair) => pair[0] !== pair[1] && pair.every((i) => Number.isInteger(i) && i >= 0 && i < protoWs.pattern.slots.length)), "lines 下标入 slots（合法索引对）");
+assert.ok(!("patternLines" in protoWs), "patternLines 字段退役（不再交付场景 stars 下标对）");
 assert.deepEqual(protoWs.links, [[0, 1]], "骨架 links 数据面原样独立（星胚追加在骨架恒星之后 → 索引不受影响）");
 assert.equal(protoScene.workspaces[1].stars.length, 1, "仅锚点无目录的星座也渲染星胚");
 assert.equal(protoScene.workspaces[1].stars[0].lifecycle, "proto");
@@ -1100,15 +1110,25 @@ assert.equal(sceneDiffLevel(sceneA, wsPathMoved), "patch", "工作区路径变�
   const fallback = starOffset("p-a", 26);
   assert.equal(fallback.length, 3, "降级路径 starOffset 保留可用（旧函数不删）");
 
-  /* 2.6 图样线交付：模板 lines（槽位下标对）→ 场景 stars 下标对；部分占位端点缺席不出线 */
+  /* 2.6 图样全量交付（add-cosmos-template-figure-display 1.1 / 4.1）：模板 `lines` 原样
+     交付（下标入 `slots`，端点可为空槽位——恒星存在性过滤退役）；`slots` = 全部内核
+     主星位世界坐标，与恒星集合无关、确定性可重放。 */
   const full = starPatternLayout(t, mkOver(N));
   assert.equal(full.lines.length, t.lines.length, "满员：图样线全量交付");
-  assert.ok(l1.lines.every((pair, i) => pair[0] !== pair[1] && pair.every((v) => Number.isInteger(v) && v >= 0 && v < 5)), "lines = 合法场景下标对");
-  assert.equal(l1.lines.length, t.lines.filter((pair) => pair[0] < 5 && pair[1] < 5).length, "5 星部分占位：仅两端都已占位的图样线交付");
-  const expectedPartial = t.lines.filter((pair) => pair[0] < 2 && pair[1] < 2).length;
+  assert.equal(l1.slots.length, t.stars.length, "slots = 模板全部主星位（与恒星数无关）");
+  for (let k = 0; k < t.stars.length; k++) {
+    assert.deepEqual(l1.slots[k], slotOf(t, k), `slots[${k}] = 第 ${k} 主星位世界坐标（同源同式）`);
+    assert.equal(l1.slots[k][1], 0, `slots[${k}] 落水平面（y = 0）`);
+  }
+  const l1Again = starPatternLayout(t, mk(ids5));
+  assert.deepEqual(l1Again.slots, l1.slots, "slots 同输入重放逐位相同（确定性）");
+  assert.deepEqual(l1Again.lines, l1.lines, "lines 同输入重放逐位相同（确定性）");
+  assert.equal(l1.lines.length, t.lines.length, "5 星部分占位：图样线仍全量交付（不再按端点占位过滤）");
+  assert.ok(l1.lines.every((pair) => pair[0] !== pair[1] && pair.every((v) => Number.isInteger(v) && v >= 0 && v < t.stars.length)), "lines = 合法槽位下标对（下标入 slots）");
   const partial = starPatternLayout(t, mk(ids5.slice(0, 2)));
-  assert.equal(partial.lines.length, expectedPartial, "前 2 颗占位：图样线按占位槽位交付");
-  assert.ok(partial.lines.every((pair) => pair.every((v) => v < 2)), "部分占位线端点引用已占位恒星");
+  assert.equal(partial.lines.length, t.lines.length, "前 2 颗占位：图样线全量交付（空槽端点对保留）");
+  assert.deepEqual(partial.lines, l1.lines, "图样线仅依赖模板（与恒星集合无关）");
+  assert.deepEqual(partial.slots, l1.slots, "slots 同样与恒星集合无关（模板派生静态数据）");
 
   /* 2.5 定标核对（数值面；钻取目测归真机走查 5.2）：全 88 模板满员最小邻距 ≥ 旧口径
      实测典型（≈0.45 世界单位，id 尾字哈希退化最坏基线）×8——「太紧密」的直接解法。 */
@@ -1121,7 +1141,7 @@ assert.equal(sceneDiffLevel(sceneA, wsPathMoved), "patch", "工作区路径变�
   }
   assert.ok(worstMin >= 8 * 0.45, `全 88 模板最小邻距 ≥ 旧口径典型 ×8（实际 ${worstMin.toFixed(2)} ≥ ${(8 * 0.45).toFixed(2)}）`);
 
-  /* mergeScene 集成面：恒星 off 恒等布局派生 + patternLines 字段随场景交付（links 数据面独立） */
+  /* mergeScene 集成面：恒星 off 恒等布局派生 + 图样全量字段随场景交付（links 数据面独立） */
   const twoSkeleton = {
     workspaces: [{
       id: "ws-ori",
@@ -1145,14 +1165,99 @@ assert.equal(sceneDiffLevel(sceneA, wsPathMoved), "patch", "工作区路径变�
   for (const star of twoWs.stars) {
     assert.deepEqual(star.off, twoLay.offs.get(star.id), `场景恒星 off = 布局派生（${star.id}）`);
   }
-  /* 槽位→场景下标映射正确：fixture 三星 at 递增且数组序 = 规范序（ordinal == index）
-     → patternLines 应恰为「两端槽位均已占位」的命中模板线集合，逐对相等。
-     注意：命中模板 = hash(ws id) % 88（D1），与工作区命名无关——期望值取实际命中条目。 */
+  /* 图样全量交付（1.2/4.2）：命中模板 = hash(ws id) % 88（D1，与工作区命名无关）——
+     slots = 模板全部主星位世界坐标（下标 = 模板 stars 下标，逐位等于 starPatternLayout
+     同源同式派生）；lines = 模板 lines 原样（空槽端点不过滤）；与 links 数据面独立。 */
   const hitTpl = templateForWorkspace("ws-ori");
   assert.ok(hitTpl, "命中模板存在（与落位布局同源）");
-  const expectedLines = hitTpl.lines.filter((pair) => pair[0] < 3 && pair[1] < 3);
-  assert.deepEqual(twoWs.patternLines, expectedLines, "patternLines = 可画模板线的场景下标对（槽位映射正确）");
+  assert.ok(twoWs.pattern, "stars 非空 → ws.pattern 交付");
+  assert.deepEqual(twoWs.pattern.slots, twoLay.slots, "pattern.slots = 布局派生的全部内核槽位（同源）");
+  assert.deepEqual(twoWs.pattern.lines, hitTpl.lines, "pattern.lines = 模板 lines 原样（空槽端点不过滤）");
+  assert.ok(!("patternLines" in twoWs), "patternLines 字段退役（场景 JSON 不再含该字段）");
   assert.deepEqual(twoWs.links, [[0, 2]], "骨架 links 数据面原样透传（引擎不再绘制、面板投影继续消费）");
+
+  /* 门控：星座无恒星（仅会话）→ 不装配 pattern 字段（零图样交付，呈现与引入前一致）。 */
+  const emptySkeleton = {
+    workspaces: [{
+      id: "ws-ori", name: "ori-empty", path: "C:/ori", stars: [], pending: [],
+      archives: 0, links: [], associations: []
+    }]
+  };
+  const emptyScene = mergeScene({ skeleton: emptySkeleton, sessions: { ids: [], byId: {} }, workspaces: { items: [] }, now: NOW });
+  const emptyWs = emptyScene.workspaces[0];
+  assert.ok(!("pattern" in emptyWs), "stars 为空 → 不装配 pattern 字段（零交付）");
+  assert.ok(!("patternLines" in emptyWs), "stars 为空 → patternLines 亦零交付（字段已退役）");
+  assert.deepEqual(emptyWs.stars, [], "无恒星场景（仅会话）");
+
+  /* 图样恒定不触发 rebuild（1.3/4.2）：同恒星集合重放 → 图样逐位恒等 → none；
+     门控翻转（首星装配 / 末星移除）与恒星集合变化同帧 → 走既有 rebuild 判级。 */
+  const twoAgain = mergeScene({ skeleton: twoSkeleton, sessions: { ids: [], byId: {} }, workspaces: { items: [] }, now: NOW });
+  assert.deepEqual(twoAgain.workspaces[0].pattern, twoScene.workspaces[0].pattern, "同星座重复装配：pattern 逐位恒等（确定性派生）");
+  assert.equal(sceneDiffLevel(twoScene, twoAgain), "none", "图样恒定 → 判 none（MUST NOT 触发 rebuild）");
+  assert.equal(sceneDiffLevel(emptyScene, twoScene), "rebuild", "门控翻转（末星移除/首星装配）随恒星集合走既有 rebuild 判级");
+  /* 防御不变量：同恒星集合而图样存在性不一致 = 不可能态 → rebuild（正常路径零触发）。 */
+  const forged = mergeScene({ skeleton: twoSkeleton, sessions: { ids: [], byId: {} }, workspaces: { items: [] }, now: NOW });
+  delete forged.workspaces[0].pattern;
+  assert.equal(sceneDiffLevel(twoScene, forged), "rebuild", "同恒星集合而图样存在性不一致 → rebuild（防御不变量）");
+
+  /* 冻结快照形态（1.2）：场景 pattern 为逐项拷贝——外部改写不污染后续装配的图样数据。 */
+  twoWs.pattern.slots[0][0] = 999;
+  const replayPattern = mergeScene({ skeleton: twoSkeleton, sessions: { ids: [], byId: {} }, workspaces: { items: [] }, now: NOW }).workspaces[0].pattern;
+  assert.notEqual(replayPattern.slots[0][0], 999, "pattern 快照引用隔离（逐项拷贝，跨装配不共享）");
+}
+
+/* ── 星座模板中文名交付（add-cosmos-template-name-toggle 2.1/4.2 / D2）：
+   `ws.tplZh` 由模板分配契约单一出处派生（= 命中模板 `zh`），同 id 恒同名、与其他工作区
+   增删无关；命中缺席/缺 zh/非字符串归一 null；`sceneDiffLevel` 纳入防御不变量
+   （同 id 值不一致 = 不可能态 → rebuild），且不进 patch 属性签名。 ── */
+{
+  const base = skeletonFixture();
+  const sceneA = mergeScene({ skeleton: base, sessions: sessionsFixture(), workspaces: workspacesFixture(), now: NOW });
+  for (const ws of sceneA.workspaces) {
+    const hit = templateForWorkspace(ws.id);
+    assert.ok(hit && typeof hit.zh === "string" && hit.zh, ws.id + "：命中模板带中文名（数据面前提）");
+    assert.equal(ws.tplZh, hit.zh, ws.id + "：tplZh = 命中模板 zh（单一出处派生）");
+  }
+
+  /* 确定性：同 id 多次装配恒同名；其他工作区注册/注销不影响既有交付（D1 同口径）。 */
+  const sceneA2 = mergeScene({ skeleton: skeletonFixture(), sessions: sessionsFixture(), workspaces: workspacesFixture(), now: NOW });
+  assert.deepEqual(
+    sceneA.workspaces.map((ws) => ws.tplZh),
+    sceneA2.workspaces.map((ws) => ws.tplZh),
+    "同骨架重复装配：tplZh 逐座恒等（确定性）"
+  );
+  const extra = skeletonFixture();
+  extra.workspaces.push({ id: "ws-extra", name: "ws-extra", path: "C:/extra", stars: [], pending: [], archives: 0, links: [], associations: [] });
+  const sceneExtra = mergeScene({ skeleton: extra, sessions: sessionsFixture(), workspaces: workspacesFixture(), now: NOW });
+  for (const ws of sceneA.workspaces) {
+    assert.equal(
+      sceneExtra.workspaces.find((w) => w.id === ws.id).tplZh,
+      ws.tplZh,
+      ws.id + "：新增其他工作区不改变既有 tplZh（不受增删影响）"
+    );
+  }
+
+  /* 命中缺席 / 缺 zh / 非字符串 → null（防御性归一，呈现端按无名称处理）。 */
+  assert.equal(templateZhOf(null), null, "命中缺席 → null");
+  assert.equal(templateZhOf(undefined), null, "undefined → null");
+  assert.equal(templateZhOf({}), null, "缺 zh → null");
+  assert.equal(templateZhOf({ zh: "" }), null, "空串 → null");
+  assert.equal(templateZhOf({ zh: 42 }), null, "非字符串（数字）→ null");
+  assert.equal(templateZhOf({ zh: null }), null, "null → null");
+  assert.equal(templateZhOf({ zh: "猎户座" }), "猎户座", "合法中文名透传");
+
+  /* 场景差分：确定性派生字段同值 → 判 none；同 id 值不一致 = 防御不变量 → rebuild。 */
+  assert.equal(sceneDiffLevel(sceneA, sceneA2), "none", "重复装配（含 tplZh 恒等）→ none");
+  const forgedZh = JSON.parse(JSON.stringify(sceneA));
+  forgedZh.workspaces[0].tplZh = "伪造座";
+  assert.equal(sceneDiffLevel(sceneA, forgedZh), "rebuild", "同 id tplZh 不一致 → rebuild（防御不变量）");
+  const nulledZh = JSON.parse(JSON.stringify(sceneA));
+  nulledZh.workspaces[0].tplZh = null;
+  assert.equal(sceneDiffLevel(sceneA, nulledZh), "rebuild", "tplZh 有值 → null 亦判 rebuild");
+  /* 呈现层开关不进场景差分：同名同值 patch 判定与 tplZh 无耦合（关/开切换不触达场景级）。 */
+  const renamed = JSON.parse(JSON.stringify(sceneA));
+  renamed.workspaces[0].name = renamed.workspaces[0].name + "-renamed";
+  assert.equal(sceneDiffLevel(sceneA, renamed), "patch", "仅名称变化仍判 patch（tplZh 不进 patch 属性签名）");
 }
 
 console.log("merge-smoke: all assertions passed");

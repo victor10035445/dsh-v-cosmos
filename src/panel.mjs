@@ -42,9 +42,19 @@
  * `rowIsLinkedOf` / `cardIsLinkedOf` 为受体判定（星胚合并卡按任一 slug 命中整卡）；
  * `hoverSourceAlive` 供场景刷新残留清理守卫（源实体键仍在册判定）——全部零 DOM、
  * 零网络、冒烟直测。
+ *
+ * 再含**动作队列投影**（add-cosmos-action-queue 5.1–5.4 / spec cosmos-action-queue
+ * 「队列呈现（面板与配套入队钮）」「条目操作矩阵与复验跳过」）：`projectQueuePanel`
+ * 把服务端权威队列快照（条目投影无 prompt 正文）投影为面板行数据（徽标 / 锁定 /
+ * 排序与移出可用性 / title 文案）；`queueEntryLockedOf` /
+ * `queueEntryRemovableOf` / `queueOrderFlagsOf` 为操作矩阵单一来源（前端禁用先行、
+ * 服务端 400 兜底，design D6）；`queuePendingKeysOf` 供动作条配套入队钮的「已在队列中」
+ * 禁用判定（**仅 queued 命中**——failed/skipped 残留不构成重复，与服务端同口径）；
+ * `queueScopeOf` 决定面板作用域（钻取优先 / 选中兜底 / 空队列零布局）——同样零 DOM、
+ * 零网络、冒烟直测。
  */
 
-import { embryoGroupsOf, starPlanetIdsOf } from "./merge.mjs";
+import { embryoGroupsOf, relativeTime, starPlanetIdsOf } from "./merge.mjs";
 
 /** 可列出的**正式提案**生命周期（proto 星胚走独立合并卡片路径，见 `embryoKeyOf`）。 */
 const LISTABLE_LIFECYCLE = new Set(["created", "reviewed", "executed"]);
@@ -656,9 +666,369 @@ export function hoverSourceAlive(scene, hover) {
   }
   if (hover.kind === "star") {
     const stars = Array.isArray(ws.stars) ? ws.stars : [];
-    return stars.some((star) => star && star.id === id && (hover.source === "canvas" || star.lifecycle !== "proto"));
+    /* 存活口径（add-cosmos-action-queue 5.2）：`canvas` 与 `queue` 源都认 proto 恒星
+       ——队列条目可指向星胚提案（`preState: "proto"` 按钮同样可入队），其源实体在册
+       判定必须与画布同口径；`card` 源仍不认 proto（星胚在面板走合并卡分支）。 */
+    return stars.some((star) => star && star.id === id
+      && (hover.source === "canvas" || hover.source === "queue" || star.lifecycle !== "proto"));
   }
   if (hover.kind === "planet") return hasBody(ws.planets);
   if (hover.kind === "comet") return hasBody(ws.comets);
   return false;
+}
+
+/* ------------------------------------------------------------------ *
+ * 动作队列投影（add-cosmos-action-queue 5.1–5.4 / spec cosmos-action-queue
+ * 「队列呈现（面板与配套入队钮）」「条目操作矩阵与复验跳过」「持久化与多窗口广播」/ design D6/D7）
+ *
+ * 数据源 = 服务端权威队列快照（`GET /api/dsh-v-cosmos/queue`；多窗口经 SSE
+ * `queue-changed` 轻帧拉全量对账）。本层只做**呈现投影**（浏览器端 MUST NOT 持有权威
+ * 队列状态，design D1）：
+ *  - 条目投影**无 prompt 正文**（执行快照在服务端，浏览器只拿元数据）；
+ *  - 操作矩阵（排序 / 移出 / 清空的可用性）在此单点判定——UI 禁用先行、服务端 400
+ *    兜底（design D6）；`executing`（含「等待决策」子态）条目完全锁定（v1 无中止入口）；
+ *  - 空队列 → `visible:false`（调用方整面板不渲染 = 零布局、无占位）。
+ * 纯函数：零 DOM、零网络、不修改入参；非法输入一律空投影（MUST NOT 抛错）。
+ * ------------------------------------------------------------------ */
+
+/**
+ * 条目状态 → 徽标（`data-badge` 呈现键 + 文案）。`executing` 的两个**呈现子态**在
+ * `queueBadgeOf` 里按 `subState` 二次分派：`waiting` = 琥珀「等待决策」、
+ * `running` / 缺省 = 「执行中」——子态不落枚举（spec「每星座单队列模型」）。
+ */
+export const QUEUE_BADGES = Object.freeze({
+  queued: Object.freeze({ key: "queued", label: "等待" }),
+  launching: Object.freeze({ key: "running", label: "执行中" }),
+  executing: Object.freeze({ key: "running", label: "执行中" }),
+  waiting: Object.freeze({ key: "waiting", label: "等待决策" }),
+  failed: Object.freeze({ key: "failed", label: "失败" }),
+  skipped: Object.freeze({ key: "skipped", label: "跳过" })
+});
+
+/** 未知状态兜底徽标（上游形状漂移时可见、可诊断；MUST NOT 伪装成等待 / 执行中）。 */
+const QUEUE_BADGE_UNKNOWN = Object.freeze({ key: "unknown", label: "未知" });
+
+/** 计数口径的状态域（`active` = 计入在途上限的三态，与服务端 `queueCountsOf` 同口径）。 */
+const QUEUE_STATE_KEYS = Object.freeze(["queued", "launching", "executing", "failed", "skipped"]);
+
+/** 计数键全集（服务端 `counts` 透传的防御归一域）。 */
+const QUEUE_COUNT_KEYS = Object.freeze(["total", "queued", "launching", "executing", "failed", "skipped", "active"]);
+
+/**
+ * 条目状态归一（未知值 → ""，所有判定按「未知」保守处理：既不放行操作、也不误标态）。
+ * @param {unknown} entry
+ * @returns {string}
+ */
+function queueStateOf(entry) {
+  const state = typeof entry?.state === "string" ? entry.state : "";
+  return QUEUE_STATE_KEYS.includes(state) ? state : "";
+}
+
+/**
+ * 徽标解析：`executing + subState = "waiting"` → 「等待决策」（琥珀）；其余按 state
+ * 取表，未知状态 → 「未知」兜底。
+ * @param {unknown} entry
+ * @returns {{key: string, label: string}}
+ */
+function queueBadgeOf(entry) {
+  const state = queueStateOf(entry);
+  if (state === "executing" && entry?.subState === "waiting") return QUEUE_BADGES.waiting;
+  return QUEUE_BADGES[state] ?? QUEUE_BADGE_UNKNOWN;
+}
+
+/**
+ * 条目锁定判定（spec「条目操作矩阵与复验跳过」）：`launching` / `executing`（含
+ * 「等待决策」子态）→ true——排序、移出、清空全部禁用（v1 SHALL NOT 提供中止入口）。
+ * @param {unknown} entry
+ * @returns {boolean}
+ */
+export function queueEntryLockedOf(entry) {
+  const state = queueStateOf(entry);
+  return state === "launching" || state === "executing";
+}
+
+/**
+ * 条目可移出判定：`queued` 与终态残留（`failed` / `skipped`）可移出；executing 锁定；
+ * 未知状态不可操作（防御：MUST NOT 放行未知态）。
+ * @param {unknown} entry
+ * @returns {boolean}
+ */
+export function queueEntryRemovableOf(entry) {
+  const state = queueStateOf(entry);
+  return state === "queued" || state === "failed" || state === "skipped";
+}
+
+/**
+ * 排序可用性（spec「条目排序 SHALL 仅对 queued 条目可用」；邻位非 queued 时服务端拒绝，
+ * 前端同口径禁用）：仅当**自身 queued** 且相邻条目存在且同样 queued 时放行。
+ * @param {unknown} entries 队列条目数组（服务端顺序）
+ * @param {number} index 条目下标
+ * @returns {{canMoveUp: boolean, canMoveDown: boolean}}
+ */
+export function queueOrderFlagsOf(entries, index) {
+  const list = Array.isArray(entries) ? entries : [];
+  const position = Number.isInteger(index) ? index : -1;
+  if (position < 0 || position >= list.length) return { canMoveUp: false, canMoveDown: false };
+  if (queueStateOf(list[position]) !== "queued") return { canMoveUp: false, canMoveDown: false };
+  const prev = position > 0 ? list[position - 1] : null;
+  const next = position + 1 < list.length ? list[position + 1] : null;
+  return {
+    canMoveUp: queueStateOf(prev) === "queued",
+    canMoveDown: queueStateOf(next) === "queued"
+  };
+}
+
+/**
+ * 入队键（跨工作区唯一：同一提案名 / 按钮名可同时存在于两个星座）：NUL 分隔三元组，
+ * 与 `proposalKeyOf` 同族（NUL 不进提案名 / 按钮名）。
+ * @param {unknown} wsId 工作区 id
+ * @param {unknown} proposalId 提案目录名
+ * @param {unknown} buttonName 动作按钮名
+ * @returns {string}
+ */
+export function queueEnqueuedKeyOf(wsId, proposalId, buttonName) {
+  return String(wsId ?? "") + "\u0000" + String(proposalId ?? "") + "\u0000" + String(buttonName ?? "");
+}
+
+/**
+ * 队列条目读取（防御两种上游形状）：单星座队列（`{entries}`）或全量快照（`{queues}`）；
+ * 其余（null / 畸形）→ 空数组。全量快照按 `Object.values` 顺序拼接（呈现只用于键集
+ * 与计数，顺序无语义）。
+ * @param {unknown} queue
+ * @returns {Array<object>}
+ */
+function queueEntriesOf(queue) {
+  if (!queue || typeof queue !== "object") return [];
+  if (Array.isArray(queue.entries)) return queue.entries;
+  const queues = queue.queues;
+  if (!queues || typeof queues !== "object" || Array.isArray(queues)) return [];
+  const entries = [];
+  for (const value of Object.values(queues)) {
+    if (value && typeof value === "object" && Array.isArray(value.entries)) entries.push(...value.entries);
+  }
+  return entries;
+}
+
+/**
+ * 单星座队列解析：`queue` 既可为单队列对象（已按作用域取好），也可为全量快照
+ * （`{queues}`，按 `wsId` 取）。缺失 / 畸形 → null。
+ * @param {unknown} queue
+ * @param {string} wsId
+ * @returns {object|null}
+ */
+function queueQueueOf(queue, wsId) {
+  if (!queue || typeof queue !== "object") return null;
+  if (Array.isArray(queue.entries)) return queue;
+  const queues = queue.queues;
+  if (!queues || typeof queues !== "object" || Array.isArray(queues)) return null;
+  const found = typeof wsId === "string" && wsId ? queues[wsId] : null;
+  return found && typeof found === "object" ? found : null;
+}
+
+/**
+ * 「已在队列中」键集（动作条配套入队钮的禁用判定）：**仅 `state === "queued"` 的条目
+ * 计入**——failed / skipped 残留不构成重复（spec「每星座单队列模型」：残留经移出 /
+ * 清空清理，与服务端重复判定同口径）。缺字段的畸形条目不产生键（MUST NOT 拼出
+ * 跨条目碰撞的空键）。
+ * @param {unknown} queue 单星座队列或全量快照（`{queues}`）
+ * @returns {Set<string>}
+ */
+export function queuePendingKeysOf(queue) {
+  const keys = new Set();
+  for (const entry of queueEntriesOf(queue)) {
+    if (entry?.state !== "queued") continue;
+    const wsId = typeof entry.wsId === "string" ? entry.wsId : "";
+    const proposalId = typeof entry.proposalId === "string" ? entry.proposalId : "";
+    const buttonName = typeof entry.buttonName === "string" ? entry.buttonName : "";
+    if (!wsId || !proposalId || !buttonName) continue;
+    keys.add(queueEnqueuedKeyOf(wsId, proposalId, buttonName));
+  }
+  return keys;
+}
+
+/**
+ * 队列面板作用域（design D7 / 显式设计决策）：`drillWsId ?? selectedWsId ?? null`——
+ * 钻取态恒显示钻取星座；银河态随**选中提案所属星座**显示（面板是动作条的配套面，
+ * 无选中即无动作目标，也就没有该显示的队列）；两者皆无 → null（不渲染）。
+ * 作用域星座的队列不存在 / 为空（`entries` 长度 0）→ null（spec「空队列零布局」）。
+ * @param {object} [input]
+ * @param {string|null} [input.drillWsId] 钻取星座 id
+ * @param {string|null} [input.selectedWsId] 选中提案所属星座 id
+ * @param {object|null} [input.queues] 全量快照的 `queues` 映射
+ * @returns {string|null} 作用域星座 id
+ */
+export function queueScopeOf(input = {}) {
+  const drillWsId = typeof input?.drillWsId === "string" && input.drillWsId ? input.drillWsId : null;
+  const selectedWsId = typeof input?.selectedWsId === "string" && input.selectedWsId ? input.selectedWsId : null;
+  const wsId = drillWsId ?? selectedWsId ?? null;
+  if (wsId === null) return null;
+  const queues = input?.queues;
+  if (!queues || typeof queues !== "object" || Array.isArray(queues)) return null;
+  const queue = queues[wsId];
+  if (!queue || typeof queue !== "object") return null;
+  const entries = Array.isArray(queue.entries) ? queue.entries : [];
+  return entries.length > 0 ? wsId : null;
+}
+
+/**
+ * 按 entries 现算计数（服务端 `counts` 缺失 / 畸形时的防线；口径与服务端一致：
+ * `active` = queued + launching + executing，failed / skipped 残留不计入上限）。
+ * @param {Array<object>} entries
+ * @returns {{total: number, queued: number, launching: number, executing: number, failed: number, skipped: number, active: number}}
+ */
+function queueCountsByEntries(entries) {
+  const counts = { total: entries.length, queued: 0, launching: 0, executing: 0, failed: 0, skipped: 0 };
+  for (const entry of entries) {
+    const state = queueStateOf(entry);
+    if (state) counts[state] += 1;
+  }
+  counts.active = counts.queued + counts.launching + counts.executing;
+  return counts;
+}
+
+/**
+ * 计数归一：服务端 `counts` 优先（透传 = 服务端权威口径），逐键缺失 / 非数值时按
+ * entries 现算兜底（MUST NOT 因上游缺字段让面板显示 0）。
+ * @param {object|null} queue 单星座队列
+ * @param {Array<object>} entries
+ * @returns {{total: number, queued: number, launching: number, executing: number, failed: number, skipped: number, active: number}}
+ */
+function queueCountsOf(queue, entries) {
+  const computed = queueCountsByEntries(entries);
+  const source = queue?.counts !== null && typeof queue?.counts === "object" && !Array.isArray(queue.counts)
+    ? queue.counts
+    : {};
+  const counts = {};
+  for (const key of QUEUE_COUNT_KEYS) {
+    const value = Number(source?.[key]);
+    counts[key] = Number.isFinite(value) && value >= 0 ? Math.floor(value) : computed[key];
+  }
+  return counts;
+}
+
+/**
+ * 失败 / 跳过残留的诊断摘要（`message` 与 `reason` 并置；无信息 → null）。终态残留行
+ * 据此给出可见记录（spec「执行时刻复验跳过前进」：留下可见记录）。
+ * @param {unknown} entry
+ * @returns {string|null}
+ */
+function queueEntryDetailOf(entry) {
+  const state = queueStateOf(entry);
+  if (state !== "failed" && state !== "skipped") return null;
+  const message = typeof entry?.message === "string" ? entry.message.trim() : "";
+  const reason = typeof entry?.reason === "string" ? entry.reason.trim() : "";
+  const parts = [];
+  if (message) parts.push(message);
+  if (reason) parts.push("(" + reason + ")");
+  return parts.length > 0 ? parts.join(" ") : null;
+}
+
+/**
+ * 单行装配（UI 零二次推导）：徽标 / 锁定 / 排序与移出可用性 / 三档 title 文案。
+ * @param {object} entry 条目投影（无 prompt 正文）
+ * @param {number} index 服务端顺序下标
+ * @param {Array<object>} entries 全量条目（排序可用性判定用）
+ * @param {string} wsId 作用域星座 id
+ * @param {number} now 当前时刻（入队相对时间）
+ * @returns {object}
+ */
+function queueRowOf(entry, index, entries, wsId, now) {
+  const id = typeof entry?.id === "string" ? entry.id : "";
+  const proposalId = typeof entry?.proposalId === "string" ? entry.proposalId : "";
+  const buttonName = typeof entry?.buttonName === "string" ? entry.buttonName : "";
+  const state = queueStateOf(entry);
+  const subState = typeof entry?.subState === "string" ? entry.subState : null;
+  const badge = queueBadgeOf(entry);
+  const locked = queueEntryLockedOf(entry);
+  const flags = queueOrderFlagsOf(entries, index);
+  const canRemove = queueEntryRemovableOf(entry);
+  const failedDetail = queueEntryDetailOf(entry);
+  const enqueuedAt = Number(entry?.enqueuedAt) || 0;
+  /* title 文案三档（禁用态必须解释为什么，spec「executing 条目操作被拒」）：
+     锁定 → 执行中不可调整；非 queued → 仅等待中可排序；相邻非 queued → 邻居不可调整；
+     单条 / 双端边界 → 已到队列边界。 */
+  const orderTitle = locked
+    ? "执行中条目不可调整"
+    : state !== "queued"
+      ? "仅等待中的条目可调整顺序"
+      : flags.canMoveUp || flags.canMoveDown
+        ? "调整顺序"
+        : entries.length > 1
+          ? "相邻条目不可调整（仅等待中的条目可排序）"
+          : "已是队列边界";
+  const removeTitle = locked
+    ? "执行中条目不可移出"
+    : canRemove
+      ? "移出队列"
+      : "该条目不可移出";
+  /* 行 title：状态徽标 + 自动发送标注（spec「队列执行恒自动发送」：条目呈现标注）+
+     残留诊断 + 入队相对时间。 */
+  const rowParts = [badge.label, "自动发送"];
+  if (failedDetail) rowParts.push(failedDetail);
+  if (enqueuedAt > 0) rowParts.push("入队 " + relativeTime(enqueuedAt, now));
+  return {
+    id,
+    /* 行键（React key 稳定）：有服务端 id 用 id（队列内唯一）；畸形条目回落三元组 + 下标
+       （防重复键导致行身份错乱）。 */
+    rowKey: id ? "queue\u0000" + wsId + "\u0000" + id : queueEnqueuedKeyOf(wsId, proposalId, buttonName) + "\u0000" + String(index),
+    wsId,
+    proposalId,
+    buttonName,
+    state,
+    subState,
+    badgeKey: badge.key,
+    badgeLabel: badge.label,
+    locked,
+    canMoveUp: flags.canMoveUp,
+    canMoveDown: flags.canMoveDown,
+    canRemove,
+    removeTitle,
+    orderTitle,
+    rowTitle: rowParts.join(" · "),
+    failedDetail
+  };
+}
+
+/**
+ * 队列面板投影（纯函数）。
+ *
+ * 输出形状：
+ *  - `visible`：条目数 > 0 才渲染（空队列零布局，MUST NOT 留占位）；
+ *  - `indicator`：存在「等待决策」→ `"waiting"`（琥珀优先，spec「执行指示与状态徽标」）；
+ *    否则存在 `executing` / `launching` → `"running"`（呼吸点）；否则 null；
+ *  - `counts`：服务端 `counts` 透传（缺键按 entries 现算兜底；`active` = 在途计数）；
+ *  - `rows`：服务端顺序逐条投影（顺序即执行顺序，MUST NOT 二次排序）。
+ *
+ * @param {object} [options]
+ * @param {object|null} [options.queue] 单星座队列（`{paused, pausedAt, counts, entries}`）；
+ *        亦接受全量快照（`{queues}`）——按 `wsId` 取（防御两种上游形状）
+ * @param {string} [options.wsId] 作用域星座 id
+ * @param {number} [options.now] 当前时刻（入队相对时间；缺省 Date.now()）
+ * @returns {{
+ *   visible: boolean, wsId: string, paused: boolean,
+ *   counts: {total: number, queued: number, launching: number, executing: number, failed: number, skipped: number, active: number},
+ *   indicator: "running"|"waiting"|null,
+ *   rows: Array<object>
+ * }}
+ */
+export function projectQueuePanel(options = {}) {
+  const wsId = typeof options?.wsId === "string" ? options.wsId : "";
+  const rawNow = Number(options?.now);
+  const now = Number.isFinite(rawNow) && rawNow > 0 ? rawNow : Date.now();
+  const queue = queueQueueOf(options?.queue, wsId);
+  const entries = Array.isArray(queue?.entries) ? queue.entries : [];
+  const rows = entries.map((entry, index) => queueRowOf(entry, index, entries, wsId, now));
+  const waiting = entries.some((entry) => queueStateOf(entry) === "executing" && entry?.subState === "waiting");
+  const running = entries.some((entry) => {
+    const state = queueStateOf(entry);
+    return state === "executing" || state === "launching";
+  });
+  return {
+    visible: entries.length > 0,
+    wsId,
+    paused: queue?.paused === true,
+    counts: queueCountsOf(queue, entries),
+    indicator: waiting ? "waiting" : running ? "running" : null,
+    rows
+  };
 }

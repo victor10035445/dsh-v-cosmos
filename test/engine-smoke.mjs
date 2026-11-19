@@ -5,7 +5,7 @@
  */
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { createCosmosEngine, ENGINE_CSS, panBasis, panCameraTarget, panCameraTargetByDrag, PAN_SPEED, PAN_SHIFT_BOOST, PAN_DRAG_FACTOR, SESSION_OPEN_KEY, makeNova, stepNovae, buildScenePure, FX_PRIORITY, FX_NOVA_DUR, FX_NOVA_PROTO_DUR, BOOT_DUR, isEditableTarget, boundingSphereOf, fitCameraOf, FILTER_RAMP_DUR, FILTER_SHIFT_DUR, FILTER_FIT_DUR, FILTER_FIT_MARGIN, WS_SHIFT_DUR, WS_BIRTH_HL_DUR, WS_SWITCH_FADE, GESTURE_SUPPRESS_MS, zoomSwitchVerdict, zoomFocusTargetOf, canvasPointOf, constellationBoundROf, constellationVitalityOf, wsSwitcherItemsOf, DIVE_REF, SWITCH_COOLDOWN_MS, CENTER_GATE_RATIO, DIVE_SAFE_MARGIN, FLYOUT_DIST_FLOOR_MULT, COMET_WANDER_R, STAR_FOCUS_DIST, STAR_FOCUS_DUR, SHOCK_SPEED, SHOCK_HOLD_MIN, SHOCK_HOLD_MAX, SHOCK_KICK_DUR, SHOCK_GLIDE_DUR, SHOCK_TOTAL_MAX, shockHitOf, shockEjectionAt, shockTotalDurOf, adoptTrailAcrossKinds, resolveBlastCoreOf, CAPTURE_DUR, COMET_WANDER_AMP, COMET_WANDER_FREQ, cometHeadingAt, orbitPointAt, orbitTangentAt, captureRingPointAt, capturePoseAt, TIP_GAP, TIP_LINE, tipLeaderOf, tipLineColorOf, DISMISS_CONFIRM_MS, NEBULA_ALPHA_BASE, NEBULA_ALPHA_SWING } from "../src/cosmos/engine.mjs";
+import { createCosmosEngine, ENGINE_CSS, panBasis, panCameraTarget, panCameraTargetByDrag, PAN_SPEED, PAN_SHIFT_BOOST, PAN_DRAG_FACTOR, SESSION_OPEN_KEY, makeNova, stepNovae, buildScenePure, FX_PRIORITY, FX_NOVA_DUR, FX_NOVA_PROTO_DUR, BOOT_DUR, isEditableTarget, boundingSphereOf, fitCameraOf, FILTER_RAMP_DUR, FILTER_SHIFT_DUR, FILTER_FIT_DUR, FILTER_FIT_MARGIN, WS_SHIFT_DUR, WS_BIRTH_HL_DUR, WS_SWITCH_FADE, GESTURE_SUPPRESS_MS, zoomSwitchVerdict, zoomFocusTargetOf, canvasPointOf, constellationBoundROf, constellationVitalityOf, wsSwitcherItemsOf, DIVE_REF, SWITCH_COOLDOWN_MS, CENTER_GATE_RATIO, DIVE_SAFE_MARGIN, FLYOUT_DIST_FLOOR_MULT, FLYOUT_DIST_FLOOR, ZOOM_RULER_TICK, ZOOM_RULER_DIST_MIN, ZOOM_RULER_DIST_MAX, ZOOM_METER_EPSILON, ZOOM_RULER_EASE_RATIO, ZOOM_RULER_EASE_MS, zoomMeterTrackOf, zoomRulerMotionOf, DIST_MIN, DIST_MAX, HOME_DIST, COMET_WANDER_R, STAR_FOCUS_DIST, STAR_FOCUS_DUR, SHOCK_SPEED, SHOCK_HOLD_MIN, SHOCK_HOLD_MAX, SHOCK_KICK_DUR, SHOCK_GLIDE_DUR, SHOCK_TOTAL_MAX, shockHitOf, shockEjectionAt, shockTotalDurOf, adoptTrailAcrossKinds, resolveBlastCoreOf, CAPTURE_DUR, COMET_WANDER_AMP, COMET_WANDER_FREQ, cometHeadingAt, orbitPointAt, orbitTangentAt, captureRingPointAt, capturePoseAt, TIP_GAP, TIP_LINE, tipLeaderOf, tipLineColorOf, UI_AVOID, normalizeUiRects, rectsIntersect, boxInRects, pointInRects, boundsBoxOf, tipBoxOf, tipAvoidanceOf, DISMISS_CONFIRM_MS, NEBULA_ALPHA_BASE, NEBULA_ALPHA_SWING, patSnapshotOf, patEmptySlotsOf } from "../src/cosmos/engine.mjs";
 import { createSkinD, createSkinDeepspace, SKIN_D_PALETTE } from "../src/cosmos/skin-d.mjs";
 import { COSMOS_SKINS, COSMOS_SKIN_IDS, createSkin } from "../src/cosmos/skin-registry.mjs";
 import { COSMOS_SETTINGS_DEFAULTS, COSMOS_SETTINGS_BOUNDS, COSMOS_SETTINGS_VERSION, sanitizeCosmosSettings, loadCosmosSettings, saveCosmosSettings, cosmosLayoutTokensOf } from "../src/settings.mjs";
@@ -94,7 +94,7 @@ const near = (v, w, eps = 1e-9) => Math.abs(v - w) < eps;
   assert.deepEqual(
     COSMOS_SETTINGS_DEFAULTS,
     {
-      panSpeed: 120, panShiftBoost: 3, skin: "rosepine", zoomDiveRatio: 100, zoomFlyOutRatio: 25,
+      panSpeed: 120, panShiftBoost: 3, skin: "rosepine",
       zoomPointerFocus: true, sessionPanelOpen: true, constPreflight: "float", dragPan: false,
       /* 界面尺寸 12 键（add-cosmos-layout-tuning D2）：缺省 = 引入配置面之前的现值。 */
       sessionPanelWidth: 260, sessionPanelHeight: 0, constPanelWidth: 187, constPanelHeight: 0,
@@ -102,12 +102,16 @@ const near = (v, w, eps = 1e-9) => Math.abs(v - w) < eps;
       constActionHeight: 40, searchWidth: 320, searchHeight: 0, wsTitleSize: 13,
       /* 全局快捷键四键（add-cosmos-shortcuts 2.1）：缺省遵用户裁决。 */
       shortcuts: { closePage: "Escape", goHome: "Backquote", togglePan: "KeyM", voiceToggle: "Ctrl+KeyQ" },
-      /* 入口打开方式（add-cosmos-standalone-window 1.1/D4）：缺省 embedded = 现状。 */
-      launchMode: "embedded"
+      /* 入口打开方式（add-cosmos-rightbar-dock）：缺省 embedded = 现状。 */
+      launchMode: "embedded",
+      /* 星座模板名显示（add-cosmos-template-name-toggle）：缺省关闭 ⇒ 默认渲染零变化。 */
+      templateNames: false
     },
-    "出厂默认（含默认皮肤、缩放导航三键、会话面板展开态、发送前编辑分支 float、拖拽平移关闭、界面尺寸 12 键 = 现值、快捷键四键、入口打开方式 embedded）"
+    "出厂默认（含默认皮肤、指针聚焦、会话面板展开态、发送前编辑分支 float、拖拽平移关闭、界面尺寸 12 键 = 现值、快捷键四键、入口打开方式 embedded、星座模板名关闭；缩放阈值两键已退场）"
   );
-  assert.equal(COSMOS_SETTINGS_VERSION, 9, "设置面 v9（v8 = shortcuts 子对象，v9 = launchMode）");
+  assert.equal(COSMOS_SETTINGS_VERSION, 12, "设置面 v12（v10 = launchMode/dock 迁移，v11 = templateNames，v12 = 删缩放阈值两键）");
+  assert.equal("zoomDiveRatio" in COSMOS_SETTINGS_DEFAULTS, false, "进入阈值设置键已退场（阈值 = 引擎常量）");
+  assert.equal("zoomFlyOutRatio" in COSMOS_SETTINGS_DEFAULTS, false, "返回阈值设置键已退场（距离单判常量）");
   assert.deepEqual(sanitizeCosmosSettings({}), COSMOS_SETTINGS_DEFAULTS, "空配置 → 默认");
   assert.deepEqual(
     sanitizeCosmosSettings({ panSpeed: 999, panShiftBoost: 0, hacker: 1 }),
@@ -115,8 +119,6 @@ const near = (v, w, eps = 1e-9) => Math.abs(v - w) < eps;
       panSpeed: COSMOS_SETTINGS_BOUNDS.panSpeed[1],
       panShiftBoost: COSMOS_SETTINGS_BOUNDS.panShiftBoost[0],
       skin: "rosepine",
-      zoomDiveRatio: 100,
-      zoomFlyOutRatio: 25,
       zoomPointerFocus: true,
       sessionPanelOpen: true,
       constPreflight: "float",
@@ -125,7 +127,8 @@ const near = (v, w, eps = 1e-9) => Math.abs(v - w) < eps;
       addBtnSize: 44, hudBtnSize: 44, actionBtnWidth: 112, actionBtnHeight: 40,
       constActionHeight: 40, searchWidth: 320, searchHeight: 0, wsTitleSize: 13,
       shortcuts: { closePage: "Escape", goHome: "Backquote", togglePan: "KeyM", voiceToggle: "Ctrl+KeyQ" },
-      launchMode: "embedded"
+      launchMode: "embedded",
+      templateNames: false
     },
     "越界落端点 + 未知键剥离"
   );
@@ -148,9 +151,9 @@ const near = (v, w, eps = 1e-9) => Math.abs(v - w) < eps;
       "actionBtnHeight", "actionBtnWidth", "addBtnSize", "constActionHeight",
       "constPanelHeight", "constPanelWidth", "hudBtnSize", "panShiftBoost",
       "panSpeed", "searchHeight", "searchWidth", "sessionPanelHeight",
-      "sessionPanelWidth", "wsTitleSize", "zoomDiveRatio", "zoomFlyOutRatio"
+      "sessionPanelWidth", "wsTitleSize"
     ],
-    "BOUNDS 保持纯数值形状（不混入枚举/布尔键；界面尺寸 12 键全为数值界）"
+    "BOUNDS 保持纯数值形状（不混入枚举/布尔键；界面尺寸 12 键全为数值界；缩放阈值两键已删）"
   );
   assert.equal(COSMOS_SKIN_IDS.length, 12, "枚举来源 = 注册表 12 套");
   /* 合法 id 透传（逐枚） */
@@ -229,7 +232,7 @@ const near = (v, w, eps = 1e-9) => Math.abs(v - w) < eps;
 
   /* v6 旧载荷（无尺寸键）→ 逐键补默认 */
   const v6 = {
-    panSpeed: 120, panShiftBoost: 3, skin: "rosepine", zoomDiveRatio: 100, zoomFlyOutRatio: 25,
+    panSpeed: 120, panShiftBoost: 3, skin: "rosepine",
     zoomPointerFocus: true, sessionPanelOpen: true, constPreflight: "float", dragPan: false
   };
   const migrated = sanitizeCosmosSettings(v6);
@@ -275,35 +278,43 @@ const near = (v, w, eps = 1e-9) => Math.abs(v - w) < eps;
   assert.equal(cosmosLayoutTokensOf({ wsTitleSize: "x" })["--cos-ws-title-size"], "13px", "非法值回落现值");
 }
 
-/* ── 缩放导航纯函数（add-cosmos-zoom-focus-nav 1.1/1.2/2.7）：阈值口径 / 闸门 /
-   滞回下限 / 模式隔离 / 守卫 / 聚焦 target 数学 ── */
+/* ── 缩放导航纯函数（add-cosmos-zoom-focus-nav 1.1/1.2/2.7；add-cosmos-zoom-ruler
+   1.1–1.3 口径收敛）：阈值口径 / 闸门 / 滞回下限 / 距离单判 / 模式隔离 / 守卫 /
+   标尺对数映射与缓动分型 ── */
 {
   const base = { minViewportPx: 600 };
+  const params = { diveRatio: 100 };
 
-  /* 进入：视距等价式（ratio 100 → vz ≤ 155；60 → 258.33；140 → 110.71），方向自洽 */
+  /* 进入：视距口径 = tick 155（阈值常量化，不再有设置键；直测传内部常量） */
   assert.equal(DIVE_REF, 155, "钻取参考视距常量");
   assert.equal(SWITCH_COOLDOWN_MS, 800, "切换冷却窗常量");
   assert.equal(CENTER_GATE_RATIO, 0.25, "屏心闸门系数常量");
   assert.equal(FLYOUT_DIST_FLOOR_MULT, 1.35, "返回滞回下限倍率常量");
+  assert.ok(near(FLYOUT_DIST_FLOOR, 209.25, 1e-9), "返回滞回下限距离常量 = 209.25");
+  assert.equal(ZOOM_RULER_TICK, 155, "标尺 tick = 钻取参考视距（双向同一刻度）");
+  assert.equal(ZOOM_RULER_DIST_MIN, 24, "标尺值域下限 = DIST_MIN");
+  assert.equal(ZOOM_RULER_DIST_MAX, 4200, "标尺值域上限 = DIST_MAX");
+  assert.equal(DIST_MIN, 24, "镜头距离下限常量");
+  assert.equal(DIST_MAX, 4200, "镜头距离上限常量");
+  assert.equal(ZOOM_METER_EPSILON, 0.005, "标尺通知门限 0.5%");
+  assert.equal(ZOOM_RULER_EASE_RATIO, 0.02, "跳变缓动门限 2%");
+  assert.equal(ZOOM_RULER_EASE_MS, 200, "缓动时长 200ms");
+  assert.equal(HOME_DIST, 3000, "银河首屏/归位视距常量 = 3000（首屏显示更多星座）");
   assert.deepEqual(
-    zoomSwitchVerdict({ mode: "galaxy", vz: 155, centerDistPx: 0, ...base }, { diveRatio: 100 }),
+    zoomSwitchVerdict({ mode: "galaxy", vz: 155, centerDistPx: 0, ...base }, params),
     { dive: true, flyOut: false },
-    "进入：ratio=100 → vz=155 恰好触发"
+    "进入：vz=155（tick）恰好触发"
   );
-  assert.equal(zoomSwitchVerdict({ mode: "galaxy", vz: 155.001, centerDistPx: 0, ...base }, { diveRatio: 100 }).dive, false, "vz 越过阈值 → 不触发");
-  assert.equal(zoomSwitchVerdict({ mode: "galaxy", vz: 155 / 0.6, centerDistPx: 0, ...base }, { diveRatio: 60 }).dive, true, "ratio=60 → 阈值 258.33（越小越早触发）");
-  assert.equal(zoomSwitchVerdict({ mode: "galaxy", vz: 155 / 0.6 + 0.001, centerDistPx: 0, ...base }, { diveRatio: 60 }).dive, false, "ratio=60 阈值外不触发");
-  assert.equal(zoomSwitchVerdict({ mode: "galaxy", vz: 155 / 1.4, centerDistPx: 0, ...base }, { diveRatio: 140 }).dive, true, "ratio=140 → 阈值 110.71");
-  assert.equal(zoomSwitchVerdict({ mode: "galaxy", vz: 110.8, centerDistPx: 0, ...base }, { diveRatio: 140 }).dive, false, "ratio=140 阈值外不触发");
+  assert.equal(zoomSwitchVerdict({ mode: "galaxy", vz: 155.001, centerDistPx: 0, ...base }, params).dive, false, "vz 越过 tick → 不触发");
   /* 屏心闸门：min(W,H)×0.25（600 → 150） */
   assert.equal(zoomSwitchVerdict({ mode: "galaxy", vz: 100, centerDistPx: 150, ...base }).dive, true, "闸门边界（≤150）参与");
   assert.equal(zoomSwitchVerdict({ mode: "galaxy", vz: 100, centerDistPx: 150.001, ...base }).dive, false, "闸门外不参与");
-  /* 模式隔离：galaxy 只可能 dive、drilled 只可能 flyOut */
+  /* 模式隔离：galaxy 只可能 dive、drilled 只可能 flyOut（距离单判，无需屏显参数） */
   assert.deepEqual(zoomSwitchVerdict({ mode: "galaxy", vz: 10, centerDistPx: 0, ...base }), { dive: true, flyOut: false });
   assert.deepEqual(
-    zoomSwitchVerdict({ mode: "drilled", vz: 10, centerDistPx: 0, dist: 5000, boundR: 0, f: 1000, ...base }),
+    zoomSwitchVerdict({ mode: "drilled", dist: 5000 }, params),
     { dive: false, flyOut: true },
-    "钻取态不会反向触发 dive"
+    "钻取态不会反向触发 dive（距离单判，不读视口/屏显尺寸）"
   );
   /* 守卫早退：blocked 双 false（即使口径全部满足） */
   assert.deepEqual(
@@ -311,22 +322,42 @@ const near = (v, w, eps = 1e-9) => Math.abs(v - w) < eps;
     { dive: false, flyOut: false },
     "blocked → 早退（滚轮补间/拖拽/手势/冷却）"
   );
-  assert.deepEqual(
-    zoomSwitchVerdict({ mode: "drilled", blocked: true, dist: 5000, boundR: 0, f: 1000, ...base }),
-    { dive: false, flyOut: false }
+  assert.deepEqual(zoomSwitchVerdict({ mode: "drilled", blocked: true, dist: 5000 }), { dive: false, flyOut: false });
+  /* 返回：距离单判 dist ≥ 209.25（屏显直径条件已删除——大星座同一距离口径） */
+  assert.equal(zoomSwitchVerdict({ mode: "drilled", dist: FLYOUT_DIST_FLOOR }, params).flyOut, true, "滞回下限处可返回");
+  assert.equal(zoomSwitchVerdict({ mode: "drilled", dist: FLYOUT_DIST_FLOOR - 0.01 }, params).flyOut, false, "刚进入（dist=155）绝不误返回");
+  assert.equal(zoomSwitchVerdict({ mode: "drilled", dist: 155 }, params).flyOut, false, "进入落点（tick）不满足返回");
+  /* 大星座单判用例：旧口径 `2·boundR·f/dist ≤ 25%×min(W,H)` 在滞回下限处 ≈11470px ≫ 150px
+     → 旧实现不返回；新实现（删除屏显直径条件）照常返回——行为变化显式接受。 */
+  assert.equal(
+    zoomSwitchVerdict({ mode: "drilled", dist: FLYOUT_DIST_FLOOR, boundR: 400, f: 3000 }, { flyOutRatio: 25 }).flyOut,
+    true,
+    "大星座在滞回下限照常飞回（屏显直径条件已删除）"
   );
-  /* 返回：屏显直径 2·boundR·f/dist ≤ ratio×min(W,H)，且 dist ≥ 155×1.35（显式滞回） */
-  const f = (600 * 1.1) / (2 * Math.tan((60 * Math.PI) / 360));
-  const floor = DIVE_REF * FLYOUT_DIST_FLOOR_MULT;
-  assert.equal(zoomSwitchVerdict({ mode: "drilled", dist: floor, boundR: 12, f, ...base }, { flyOutRatio: 25 }).flyOut, true, "滞回下限处可返回（直径已远小于阈值）");
-  assert.equal(zoomSwitchVerdict({ mode: "drilled", dist: floor - 0.01, boundR: 12, f, ...base }, { flyOutRatio: 25 }).flyOut, false, "刚进入（dist=155）绝不误返回");
-  assert.equal(zoomSwitchVerdict({ mode: "drilled", dist: 800, boundR: 100, f, ...base }, { flyOutRatio: 25 }).flyOut, true, "直径 ≤ 25% 短边 → 返回");
-  assert.equal(zoomSwitchVerdict({ mode: "drilled", dist: 700, boundR: 100, f, ...base }, { flyOutRatio: 25 }).flyOut, false, "直径仍大于阈值 → 不返回");
-  assert.equal(zoomSwitchVerdict({ mode: "drilled", dist: 2000, boundR: 100, f, ...base }, { flyOutRatio: 10 }).flyOut, true, "ratio=10（60px 上限）→ 返回");
-  assert.equal(zoomSwitchVerdict({ mode: "drilled", dist: 1500, boundR: 100, f, ...base }, { flyOutRatio: 10 }).flyOut, false, "ratio=10 上限外不返回");
-  assert.equal(zoomSwitchVerdict({ mode: "drilled", dist: 0, boundR: 12, f, ...base }).flyOut, false, "非法 dist → false");
-  assert.equal(zoomSwitchVerdict({ mode: "drilled", dist: 800, boundR: 100, f: 0, ...base }).flyOut, false, "非法 f → false");
+  assert.equal(zoomSwitchVerdict({ mode: "drilled", dist: 0 }, params).flyOut, false, "非法 dist → false");
+  assert.equal(zoomSwitchVerdict({ mode: "drilled", dist: "x" }, params).flyOut, false, "非数字 dist → false");
+  assert.equal(zoomSwitchVerdict({ mode: "galaxy", vz: 1, centerDistPx: 0 }).dive, false, "缺视口 → galaxy 不判定");
   assert.deepEqual(zoomSwitchVerdict(null, null), { dive: false, flyOut: false }, "空入参防御");
+
+  /* 标尺对数映射四点位（add-cosmos-zoom-ruler D1）：4200→0%、430≈44%、155≈64%、24→100% */
+  const trackAt = (dist) => zoomMeterTrackOf(dist);
+  assert.ok(near(trackAt(4200), 0, 1e-12), "4200 → 0%（银河缩到最小）");
+  assert.ok(near(trackAt(430), Math.log(4200 / 430) / Math.log(4200 / 24), 1e-12), "430 = 对数映射公式");
+  assert.ok(near(trackAt(430), 0.4413, 1e-3), "430 ≈ 44%（飞回常驻落点）");
+  assert.ok(near(trackAt(155), Math.log(4200 / 155) / Math.log(4200 / 24), 1e-12), "155 = 对数映射公式");
+  assert.ok(near(trackAt(155), 0.6389, 1e-3), "155（tick）≈ 64%");
+  assert.ok(near(trackAt(24), 1, 1e-12), "24 → 100%（钻取态最大缩放）");
+  assert.equal(trackAt(0), 0, "非法 dist → 0（不产生 NaN）");
+  assert.equal(zoomMeterTrackOf(430, 100, 50), 0, "退化值域 → 0（安全落位）");
+  assert.equal(zoomMeterTrackOf(10), 1, "越界近端 → clamp 到 1");
+  assert.equal(zoomMeterTrackOf(99999), 0, "越界远端 → clamp 到 0");
+
+  /* 缓动分型（D5）：≥2% 位移走 ease，连续小步 snap（零可感迟滞） */
+  assert.equal(zoomRulerMotionOf(0.1, 0.13), "ease", "位移 3% → ease（跳变门控）");
+  assert.equal(zoomRulerMotionOf(0.1, 0.119), "snap", "位移 1.9% → snap（连续小步直接落位）");
+  assert.equal(zoomRulerMotionOf(undefined, 0.5), "snap", "首次落位 → snap（无起点不缓动）");
+  assert.equal(zoomRulerMotionOf(0.1, NaN), "snap", "非法目标 → snap");
+  assert.ok(zoomMeterTrackOf(155) - zoomMeterTrackOf(430) > ZOOM_RULER_EASE_RATIO, "430→155 单步位移属跳变带（dive/flyOut 补间落点走缓动）");
 }
 
 /* ── 指针聚焦 target 数学（add-cosmos-zoom-focus-nav 1.2/D3）：收敛式 / 端点冻结 /
@@ -394,39 +425,39 @@ const near = (v, w, eps = 1e-9) => Math.abs(v - w) < eps;
   assert.deepEqual(canvasPointOf("600", "300", rect), { x: 500, y: 250 }, "数值字符串按数处理（Number 口径）");
 }
 
-/* ── 缩放导航设置净房（add-cosmos-zoom-focus-nav 1.3）+ 会话面板展开态（add-cosmos-session-list-panel 3.3）：
-   三键默认/界/布尔独立分支/越界与非法净化/旧载荷补默认/持久化读回 ── */
+/* ── 缩放导航设置退场（add-cosmos-zoom-ruler 3.1/3.3）+ 指针聚焦保留：
+   两阈值键从 defaults / bounds / sanitize 全面删除；v11 及更早存量两键读出即弃
+   （无迁移动作、无报错）；zoomPointerFocus 布尔净化照旧 ── */
 {
-  assert.deepEqual(COSMOS_SETTINGS_BOUNDS.zoomDiveRatio, [60, 140], "进入阈值界 60–140");
-  assert.deepEqual(COSMOS_SETTINGS_BOUNDS.zoomFlyOutRatio, [10, 50], "返回阈值界 10–50");
-  assert.equal(sanitizeCosmosSettings({ zoomDiveRatio: 80 }).zoomDiveRatio, 80, "合法进入阈值透传");
-  assert.equal(sanitizeCosmosSettings({ zoomDiveRatio: 9999 }).zoomDiveRatio, 140, "越界进入阈值落上端");
-  assert.equal(sanitizeCosmosSettings({ zoomDiveRatio: 1 }).zoomDiveRatio, 60, "越界进入阈值落下端");
-  assert.equal(sanitizeCosmosSettings({ zoomDiveRatio: 80.6 }).zoomDiveRatio, 81, "进入阈值取整（clampTo 口径）");
-  assert.equal(sanitizeCosmosSettings({ zoomDiveRatio: "nope" }).zoomDiveRatio, 100, "非法进入阈值落默认");
-  assert.equal(sanitizeCosmosSettings({ zoomFlyOutRatio: 5 }).zoomFlyOutRatio, 10, "越界返回阈值落下端");
-  assert.equal(sanitizeCosmosSettings({ zoomFlyOutRatio: 51 }).zoomFlyOutRatio, 50, "越界返回阈值落上端");
-  assert.equal(sanitizeCosmosSettings({ zoomFlyOutRatio: null }).zoomFlyOutRatio, 25, "非法返回阈值落默认");
+  assert.equal("zoomDiveRatio" in COSMOS_SETTINGS_BOUNDS, false, "进入阈值界已删除");
+  assert.equal("zoomFlyOutRatio" in COSMOS_SETTINGS_BOUNDS, false, "返回阈值界已删除");
+  assert.equal("zoomDiveRatio" in COSMOS_SETTINGS_DEFAULTS, false, "进入阈值缺省已删除");
+  assert.equal("zoomFlyOutRatio" in COSMOS_SETTINGS_DEFAULTS, false, "返回阈值缺省已删除");
+  /* 旧键（任意值）不进入净房结果：无键、无迁移动作、SHALL NOT 抛错 */
+  const legacy = sanitizeCosmosSettings({ zoomDiveRatio: 80, zoomFlyOutRatio: 40 });
+  assert.equal("zoomDiveRatio" in legacy, false, "进入阈值旧键读出即弃");
+  assert.equal("zoomFlyOutRatio" in legacy, false, "返回阈值旧键读出即弃");
+  assert.deepEqual(legacy, COSMOS_SETTINGS_DEFAULTS, "仅含旧键的载荷净化为出厂默认");
+  assert.deepEqual(
+    sanitizeCosmosSettings({ zoomDiveRatio: 9999, zoomFlyOutRatio: "x", zoomPointerFocus: "yes" }),
+    { ...COSMOS_SETTINGS_DEFAULTS, zoomPointerFocus: true },
+    "旧键非法值同样弃用；zoomPointerFocus 非布尔净化照旧"
+  );
   assert.equal(sanitizeCosmosSettings({ zoomPointerFocus: false }).zoomPointerFocus, false, "布尔 false 透传");
   for (const bad of ["no", 0, 1, null, undefined, {}, []]) {
     assert.equal(sanitizeCosmosSettings({ zoomPointerFocus: bad }).zoomPointerFocus, true, "非布尔独立分支回落 true：" + String(bad));
   }
-  /* v4 会话面板展开态：独立布尔净化分支（缺省展开；非布尔一律回落 true，不进 bounds） */
-  assert.equal(sanitizeCosmosSettings({ sessionPanelOpen: false }).sessionPanelOpen, false, "展开态 false 透传（持久收起）");
-  for (const bad of ["no", 0, 1, null, undefined, {}, []]) {
-    assert.equal(sanitizeCosmosSettings({ sessionPanelOpen: bad }).sessionPanelOpen, true, "非布尔独立分支回落展开：" + String(bad));
-  }
-  assert.equal("sessionPanelOpen" in COSMOS_SETTINGS_BOUNDS, false, "布尔键不进数值界表");
+  assert.equal("zoomPointerFocus" in COSMOS_SETTINGS_BOUNDS, false, "布尔键不进数值界表");
   /* v2/v3 载荷（无新键）→ 补默认；既有键不回归 */
   const v2 = sanitizeCosmosSettings({ panSpeed: 180, panShiftBoost: 2, skin: "lotus" });
   assert.equal(v2.panSpeed, 180, "v2 载荷 panSpeed 保持");
   assert.equal(v2.skin, "lotus", "v2 载荷 skin 保持");
   assert.deepEqual(
-    [v2.zoomDiveRatio, v2.zoomFlyOutRatio, v2.zoomPointerFocus, v2.sessionPanelOpen],
-    [100, 25, true, true],
-    "v2 载荷补缩放导航默认与会话面板展开态"
+    [v2.zoomPointerFocus, v2.sessionPanelOpen],
+    [true, true],
+    "v2 载荷补指针聚焦默认与会话面板展开态"
   );
-  /* 持久化：写 → 读回；落盘为 v3 净房结果（未知键剥离） */
+  /* v11 存量（含两阈值键 + templateNames）→ 净房弃两键、其余保留；落盘不再含两键 */
   const store = new Map();
   globalThis.localStorage = {
     getItem: (key) => (store.has(key) ? store.get(key) : null),
@@ -434,26 +465,28 @@ const near = (v, w, eps = 1e-9) => Math.abs(v - w) < eps;
     removeItem: (key) => store.delete(key)
   };
   try {
-    const saved = saveCosmosSettings({ zoomDiveRatio: 80, zoomFlyOutRatio: 40, zoomPointerFocus: false, hacker: 1 });
+    store.set("dsh-v-cosmos:settings", JSON.stringify({
+      zoomDiveRatio: 80, zoomFlyOutRatio: 40, zoomPointerFocus: false,
+      templateNames: true, panSpeed: 150
+    }));
+    const loaded = loadCosmosSettings();
     assert.deepEqual(
-      [saved.zoomDiveRatio, saved.zoomFlyOutRatio, saved.zoomPointerFocus],
-      [80, 40, false],
-      "写侧净房保留三键"
+      [loaded.panSpeed, loaded.zoomPointerFocus, loaded.templateNames],
+      [150, false, true],
+      "v11 存量：两阈值键读出即弃，其余键原样保留"
     );
+    assert.equal("zoomDiveRatio" in loaded, false, "读面结果不含进入阈值键");
+    assert.equal("zoomFlyOutRatio" in loaded, false, "读面结果不含返回阈值键");
+    const saved = saveCosmosSettings({ zoomPointerFocus: true });
+    assert.deepEqual(
+      [saved.zoomPointerFocus, saved.templateNames],
+      [true, true],
+      "写侧净房保留指针聚焦与模板名键"
+    );
+    const disk = JSON.parse(store.get("dsh-v-cosmos:settings"));
+    assert.equal("zoomDiveRatio" in disk, false, "落盘形状不含进入阈值键（无迁移动作）");
+    assert.equal("zoomFlyOutRatio" in disk, false, "落盘形状不含返回阈值键");
     assert.deepEqual(loadCosmosSettings(), saved, "读回同一设置");
-    assert.equal("hacker" in JSON.parse(store.get("dsh-v-cosmos:settings")), false, "未知键写侧剥离");
-    /* 会话面板展开态持久化（3.3 同一存储通道）：收起 → 读回收起。 */
-    const collapsed = saveCosmosSettings({ sessionPanelOpen: false });
-    assert.equal(collapsed.sessionPanelOpen, false, "收起写侧保留");
-    assert.equal(loadCosmosSettings().sessionPanelOpen, false, "重开读回收起态（布局偏好持久化）");
-    assert.equal(saveCosmosSettings({ sessionPanelOpen: true }).sessionPanelOpen, true, "展开写侧保留");
-    saveCosmosSettings({ zoomDiveRatio: 9999, zoomFlyOutRatio: "x", zoomPointerFocus: "yes" });
-    const clean = loadCosmosSettings();
-    assert.deepEqual(
-      [clean.zoomDiveRatio, clean.zoomFlyOutRatio, clean.zoomPointerFocus],
-      [140, 25, true],
-      "非法持久值读面净化（无报错）"
-    );
   } finally {
     delete globalThis.localStorage;
   }
@@ -2583,17 +2616,20 @@ const EXPECTED_FIT_DIST = FILTER_FIT_MARGIN / Math.tan(Math.PI / 6) * 1.1;
   fire(chip, "click", {});
   assert.equal(input().dives, divesBeforeChip + 1, "chip 单指点按 dive 单次触发（不重不叠）");
 
-  /* 右键：屏蔽原生菜单，且 MUST NOT 触发拾取/dive（此前 pointerup 会误 dive） */
+  /* 右键：屏蔽原生菜单，且 MUST NOT 触发拾取/dive（此前 pointerup 会误 dive）。
+     add-cosmos-rightdrag-pan：鼠标右键在 canvas 起手改为捕获指针（右键拖拽越界不中断，
+     D6）；覆盖元素起手仍不捕获（下方「右键拖拽平移」分组覆盖）。 */
   let ctxPrevented = false;
   fire(rootEl, "contextmenu", { preventDefault() { ctxPrevented = true; } });
   assert.equal(ctxPrevented, true, "容器级 contextmenu 屏蔽浏览器原生右键菜单");
   capCalls.length = 0;
   const divesBeforeRight = input().dives;
-  fire(rootEl, "pointerdown", { pointerId: 7, button: 2, clientX: hitPt.x, clientY: hitPt.y, target: canvasEl, preventDefault() {} });
-  assert.deepEqual(capCalls, [], "右键起指不捕获指针");
-  fire(rootEl, "pointerup", { pointerId: 7, button: 2, clientX: hitPt.x, clientY: hitPt.y, target: canvasEl });
+  fire(rootEl, "pointerdown", { pointerId: 7, button: 2, clientX: hitPt.x, clientY: hitPt.y, pointerType: "mouse", target: canvasEl, preventDefault() {} });
+  assert.deepEqual(capCalls, [7], "鼠标右键 canvas 起手捕获指针（右键拖拽越界不中断，D6）");
+  fire(rootEl, "pointerup", { pointerId: 7, button: 2, clientX: hitPt.x, clientY: hitPt.y, pointerType: "mouse", target: canvasEl });
   assert.equal(input().dives, divesBeforeRight, "右键抬指不触发拾取/dive");
   assert.equal(input().pointers, 0, "右键不遗留指针追踪（防下一次单指误判捏合）");
+  assert.equal(input().rdrag, false, "右键点按（无位移）不进入右键拖拽态");
 
   /* 双指捏合（D2）：第二指落下切 pinch、指距比例驱动 dist、接管即取消补间 */
   const distBase = cam().dist;
@@ -3145,10 +3181,203 @@ const EXPECTED_FIT_DIST = FILTER_FIT_MARGIN / Math.tan(Math.PI / 6) * 1.1;
   eng.dispose();
 }
 
-/* ── 捏合越阈切平移，收束仍补判阈值导航（spec「捏合越阈切平移收束仍补判」） ── */
+/* ── 右键拖拽平移（add-cosmos-rightdrag-pan：常开零设置 / 仅 mouse / 独立 E.rdrag /
+   共享 hover·光标·缩放阈值守卫 / 共按优先级与锚点交接 / 起手域与指针捕获） ── */
 {
   const before = createdEls.length;
   const eng = createCosmosEngine({ container: stubEl("div"), style: createSkinD() });
+  eng.setScene(miniScene(), "rebuild");
+  rafQ.length = 0;
+  eng.start();
+  let tNow = 130000;
+  const step = (n = 1) => { for (let i = 0; i < n; i++) { tNow += 50; stepFrame(tNow); } };
+  step(27); // 过冷启动序曲
+
+  const mine = createdEls.slice(before);
+  const rootEl = mine.find((el) => el.className === "cos-root");
+  const canvasEl = rootEl._by[".cos-canvas"];
+  const cardEl = rootEl._by[".cos-card"];
+  const chip = mine.filter((el) => String(el.className).startsWith("cos-chip")).pop();
+  assert.ok(rootEl && chip && cardEl, "右键用例前提：根容器 / 星座卡片 / 信息卡齐备");
+  const fire = (el, type, ev) => { for (const fn of el.listeners[type] ?? []) fn(ev); };
+  const cam = () => eng.inspectFilter().camera;
+  const input = () => eng.inspectInput();
+  const starScr = () => Object.entries(eng.inspectScreens()).find(([k]) => k.startsWith("star:"))?.[1];
+  const down2 = (id, x, y, target = canvasEl) => fire(rootEl, "pointerdown", { pointerId: id, button: 2, clientX: x, clientY: y, pointerType: "mouse", target, preventDefault() {} });
+  const move2 = (id, x, y, buttons = 2, target = canvasEl) => fire(rootEl, "pointermove", { pointerId: id, clientX: x, clientY: y, buttons, pointerType: "mouse", target });
+  const up2 = (id, x, y) => fire(rootEl, "pointerup", { pointerId: id, button: 2, clientX: x, clientY: y, pointerType: "mouse", target: canvasEl });
+  /* 期望 target：同一纯函数（三指平移 / 开关平移 / 右键平移单源）、同一系数口径 */
+  const expectedPan = (snapshot, dx, dy) => {
+    const expected = { target: snapshot.target.slice(), yaw: snapshot.yaw, pitch: snapshot.pitch };
+    panCameraTargetByDrag(expected, dx, dy, snapshot.dist);
+    return expected.target;
+  };
+  const nearTarget = (actual, expected, msg) => assert.ok(
+    actual.length === expected.length && actual.every((v, i) => near(v, expected[i])),
+    msg
+  );
+  const star0 = starScr();
+  assert.ok(star0, "星体屏幕投影可读（hover / 拾取用例前提）");
+
+  /* 3.6 共享反馈（D5）：hover 探针抑制 + grabbing 光标按「左键或右键拖拽态任一在场」判定。
+     出/回对称拖拽（增量抵消）→ 相机与天体屏幕位置复原，可严格断言抑制而非位置漂移。 */
+  fire(rootEl, "pointermove", { pointerId: 90, clientX: star0.x, clientY: star0.y, buttons: 0, target: canvasEl });
+  step(1);
+  assert.ok(cardEl.dataset.sig, "起手前：指针在天体上 → hover 命中已写入（探针基线）");
+  const sigBeforeDrag = String(cardEl.dataset.sig);
+  const camHover = cam();
+  down2(61, star0.x, star0.y);
+  move2(61, star0.x + 8, star0.y);       // 越 4px 阈值 → 进入右键拖拽态（平移 8px）
+  move2(61, star0.x, star0.y);           // 拖回原位：增量平移抵消 → 天体回到指针下
+  assert.equal(input().rdrag, true, "越阈 → 右键拖拽态独立成字段（E.rdrag）");
+  assert.equal(input().dragging, false, "右键拖拽全程不写 E.dragging（状态隔离，D5）");
+  cardEl.dataset.sig = "";               // 重置标记：抑制成立则本帧不回写签名
+  step(1);
+  assert.equal(String(cardEl.dataset.sig), "", "右键拖拽中 hover 探针暂停（不因拖拽路经天体改写命中）");
+  assert.equal(String(canvasEl.style.cursor), "grabbing", "右键拖拽中光标呈 grabbing（共享反馈）");
+  up2(61, star0.x, star0.y);
+  assert.equal(input().rdrag, false, "右键抬起 → 拖拽态收束（pointerup(button=2)）");
+  step(1);
+  assert.equal(String(cardEl.dataset.sig), sigBeforeDrag, "松开后 hover 探针恢复（同一命中）");
+  assert.notEqual(String(canvasEl.style.cursor), "grabbing", "松开后光标脱离 grabbing");
+  assert.deepEqual(cam().target, camHover.target, "出/回对称拖拽 → target 增量抵消（增量锚点模型）");
+
+  /* 3.1 平移数学单源 + 常开（无开关）：默认关闭态下右键拖拽即平移（不依赖 dragPan 开关） */
+  const capCalls = [];
+  canvasEl.setPointerCapture = (id) => { capCalls.push(id); };
+  const cam0 = cam();
+  down2(62, 100, 500);
+  assert.deepEqual(capCalls, [62], "3.7 非覆盖元素（canvas）起手 → setPointerCapture（拖出窗口边缘不中断）");
+  move2(62, 140, 530);
+  assert.equal(cam().yaw, cam0.yaw, "右键平移 MUST NOT 改 yaw");
+  assert.equal(cam().pitch, cam0.pitch, "右键平移 MUST NOT 改 pitch");
+  nearTarget(cam().target, expectedPan(cam0, 40, 30), "3.1 右键平移与三指/开关平移同一纯函数、同一换算（target 逐位一致）");
+  const camOut = cam();
+  move2(62, 900, 300); // 指针移出画布右缘（宽 800）→ 捕获语义下平移不中断
+  nearTarget(cam().target, expectedPan(camOut, 760, -230), "3.7 拖出窗口边缘继续平移（指针捕获生效、无边界截断）");
+  up2(62, 900, 300);
+  assert.equal(input().rdrag, false, "越过窗口边缘松开 → 拖拽态完全收束");
+
+  /* 3.2 阈值与让位（D4）：≤4px 松开 = no-op；进入拖拽态即打断在途补间 */
+  const camTap = cam();
+  const divesTap = input().dives;
+  down2(63, 400, 300);
+  move2(63, 402, 301);
+  assert.deepEqual(cam().target, camTap.target, "位移 ≤4px：未进入拖拽态 → target 不动");
+  assert.equal(input().rdrag, false, "位移 ≤4px：不进拖拽态（阈值口径同左键）");
+  up2(63, 402, 301);
+  assert.deepEqual(cam().target, camTap.target, "3.2 低于阈值松开为 no-op（相机不动）");
+  assert.equal(input().dives, divesTap, "3.2 低于阈值松开不拾取（普通右键点按无任何动作）");
+  assert.equal(eng.diveToWs("ws1"), true, "启动在途补间");
+  assert.ok(eng.inspectFilter().tween, "补间在途");
+  down2(64, 200, 420);
+  move2(64, 240, 420);
+  assert.equal(eng.inspectFilter().tween, null, "3.2 右键平移进入拖拽态 → 在途补间立即让位（cancelTween 同语义）");
+  up2(64, 240, 420);
+  fakeNow += 1400;
+  step(1);
+
+  /* 3.3 共按优先级 + 锚点交接（D3/D7）：左键先按下、再按右键（规范不派发第二个
+     pointerdown）→ 由 pointermove 的 buttons 位图补锚定并接管；右键松开沿（仍为
+     pointermove）重锚左键起点，后续旋转不吃进右键期间位移（无跳变）。 */
+  const camCo = cam();
+  const yawCo = camCo.yaw;
+  fire(rootEl, "pointerdown", { pointerId: 65, button: 0, clientX: 300, clientY: 200, pointerType: "mouse", target: canvasEl, preventDefault() {} });
+  move2(65, 360, 200, 3); // buttons = 左|右：补锚定（不越阈 → 仅登记）
+  assert.equal(input().rdrag, false, "共按首个 move 只补锚定（未越阈）");
+  assert.equal(cam().yaw, yawCo, "右键按下当帧不旋转（右键接管）");
+  const camCoMid = cam();
+  move2(65, 420, 200, 3); // 右键拖拽 60px（左键仍按着）
+  nearTarget(cam().target, expectedPan(camCoMid, 60, 0), "3.3 右键按住期间相机按平移语义移动");
+  assert.equal(cam().yaw, yawCo, "3.3 右键按住期间左键拖拽不旋转（共按优先级）");
+  const yawRelease = cam().yaw;
+  move2(65, 420, 200, 1); // 右键松开（左键仍按着）：释放切换沿 → 重锚 sx/sy
+  assert.equal(input().rdrag, false, "释放切换沿 → 右键拖拽态清（不依赖 pointerup）");
+  assert.equal(cam().yaw, yawRelease, "释放切换沿本帧 dx/dy 归零 → 不旋转");
+  move2(65, 440, 200, 1); // 左键继续移动 20px
+  assert.ok(near(cam().yaw, yawRelease + 20 * 0.005), "3.3 右键释放后左键旋转仅按后续 20px 生效（MUST NOT 吃进右键期间 60px 位移）");
+  fire(rootEl, "pointerup", { pointerId: 65, button: 0, clientX: 440, clientY: 200, pointerType: "mouse", target: canvasEl });
+
+  /* 3.4 作用域排除（D2）：pen 笔杆键（button=2 + pointerType=pen）不平移不旋转；
+     触屏单指仍为旋转（三自由度手势矩阵零变化） */
+  const camPen = cam();
+  fire(rootEl, "pointerdown", { pointerId: 70, button: 2, clientX: 200, clientY: 400, pointerType: "pen", target: canvasEl, preventDefault() {} });
+  fire(rootEl, "pointermove", { pointerId: 70, clientX: 300, clientY: 460, buttons: 2, pointerType: "pen", target: canvasEl });
+  assert.deepEqual(cam().target, camPen.target, "3.4 pen 笔杆键不平移（作用域仅 mouse）");
+  assert.equal(cam().yaw, camPen.yaw, "pen 笔杆键不旋转（既有行为零变化）");
+  assert.equal(input().rdrag, false, "pen 不进入右键拖拽态");
+  fire(rootEl, "pointerup", { pointerId: 70, button: 2, pointerType: "pen", target: canvasEl });
+  const camTouch = cam();
+  fire(rootEl, "pointerdown", { pointerId: 71, button: 0, clientX: 200, clientY: 400, pointerType: "touch", target: canvasEl, preventDefault() {} });
+  fire(rootEl, "pointermove", { pointerId: 71, clientX: 240, clientY: 400, buttons: 1, pointerType: "touch", target: canvasEl });
+  assert.notEqual(cam().yaw, camTouch.yaw, "3.4 触屏单指拖拽仍为旋转（触屏行为零变化）");
+  fire(rootEl, "pointerup", { pointerId: 71, button: 0, clientX: 240, clientY: 400, pointerType: "touch", target: canvasEl });
+
+  /* 3.7 起手域与捕获（D6/D8）：覆盖元素起手同样平移、MUST NOT 捕获；非捕获指针离场
+     走幽灵清理收束（防拖拽态残留卡住 hover/光标） */
+  const camOv = cam();
+  const capOv = [];
+  canvasEl.setPointerCapture = (id) => { capOv.push(id); };
+  fire(rootEl, "pointerdown", { pointerId: 72, button: 2, clientX: 760, clientY: 560, pointerType: "mouse", target: chip, preventDefault() {} });
+  assert.deepEqual(capOv, [], "3.7 覆盖元素起手 MUST NOT setPointerCapture（捕获会吞 click 派发）");
+  move2(72, 780, 570, 2, chip);
+  assert.equal(input().rdrag, true, "覆盖元素起手上的右键拖拽同样进入拖拽态");
+  nearTarget(cam().target, expectedPan(camOv, 20, 10), "3.7 覆盖元素起手同样平移（任意起指目标既例）");
+  fire(rootEl, "pointerleave", {});
+  assert.equal(input().rdrag, false, "非捕获指针离开容器 → 右键拖拽态收束（幽灵清理兜底）");
+
+  /* 3.5 拾取链不受污染：右键拖拽收束后左键点击照常拾取（rdrag 独立、不吞 wasDrag） */
+  const starLater = starScr();
+  assert.ok(starLater, "星体屏幕投影可读（拾取用例前提）");
+  const divesPick = input().dives;
+  fire(rootEl, "pointerdown", { pointerId: 73, button: 0, clientX: starLater.x, clientY: starLater.y, pointerType: "mouse", target: canvasEl, preventDefault() {} });
+  fire(rootEl, "pointerup", { pointerId: 73, button: 0, clientX: starLater.x, clientY: starLater.y, pointerType: "mouse", target: canvasEl });
+  assert.equal(input().dives, divesPick + 1, "3.5 右键拖拽后左键点击照常拾取（wasDrag 链未被污染）");
+
+  /* 3.7 覆盖元素自身点击语义不受影响（chip click 既有链路照常 dive 一次） */
+  const divesChip = input().dives;
+  fire(chip, "click", {});
+  assert.equal(input().dives, divesChip + 1, "3.7 覆盖元素点击语义不受影响（chip 单次 dive）");
+
+  eng.stop();
+  eng.dispose();
+}
+
+/* ── 右键拖拽期间缩放阈值导航守卫（add-cosmos-rightdrag-pan D5：zoomSwitchBlocked 含
+   E.rdrag；滚轮逐次判定口径不变） ── */
+{
+  const container = stubEl("div");
+  const eng = createCosmosEngine({ container, style: createSkinD(), settings: { zoomPointerFocus: false }, homeDist: 430 });
+  eng.setScene(zoomScene(), "rebuild");
+  const rootEl = container.children[0];
+  const canvasEl = rootEl._by[".cos-canvas"];
+  const fire = (el, type, ev) => { for (const fn of el.listeners[type] ?? []) fn(ev); };
+  const fireWheel = (deltaY) => fire(rootEl, "wheel", { preventDefault() {}, deltaY, clientX: 400, clientY: 300, target: canvasEl });
+  rafQ.length = 0;
+  fakeNow = 160000;
+  let tNow = 160000;
+  const step = () => { tNow += 50; stepFrame(tNow); };
+  eng.start();
+  step();
+  assert.equal(eng.inspectInput().dives, 0, "初始银河态无钻取");
+
+  fire(rootEl, "pointerdown", { pointerId: 81, button: 2, clientX: 300, clientY: 300, pointerType: "mouse", target: canvasEl, preventDefault() {} });
+  fire(rootEl, "pointermove", { pointerId: 81, clientX: 320, clientY: 310, buttons: 2, pointerType: "mouse", target: canvasEl });
+  assert.equal(eng.inspectInput().rdrag, true, "右键拖拽态在场");
+  for (let i = 0; i < 7; i++) fireWheel(-120);
+  assert.ok(eng.getCamera().dist < DIVE_REF, "滚轮已把 dist 压进钻取阈值带");
+  assert.equal(eng.inspectInput().dives, 0, "3.6 右键拖拽进行中不触发 dive/flyOut（zoomSwitchBlocked 含 E.rdrag）");
+  fire(rootEl, "pointerup", { pointerId: 81, button: 2, clientX: 320, clientY: 310, pointerType: "mouse", target: canvasEl });
+  assert.equal(eng.inspectInput().rdrag, false, "pointerup(button=2) 收束右键拖拽态");
+  fireWheel(-120);
+  assert.equal(eng.inspectInput().dives, 1, "3.6 松开后同一滚轮照常判定 → 自动 dive（守卫不残留）");
+  eng.dispose();
+}
+
+/* ── 捏合越阈切平移，收束仍补判阈值导航（spec「捏合越阈切平移收束仍补判」） ── */
+{
+  const before = createdEls.length;
+  const eng = createCosmosEngine({ container: stubEl("div"), style: createSkinD(), homeDist: 430 });
   eng.setScene(zoomScene(), "rebuild");
   eng.setTuning({ zoomPointerFocus: false }); // 聚焦关闭：target 不动，闸门保持屏心（判定链隔离）
   rafQ.length = 0;
@@ -3265,7 +3494,7 @@ const EXPECTED_FIT_DIST = FILTER_FIT_MARGIN / Math.tan(Math.PI / 6) * 1.1;
    捏合收束判定 / 返回阈值 / diveFrom 安全化 / 冷却锚点双写 / 振荡红线 ── */
 {
   const container = stubEl("div");
-  const eng = createCosmosEngine({ container, style: createSkinD(), settings: { zoomPointerFocus: false } });
+  const eng = createCosmosEngine({ container, style: createSkinD(), settings: { zoomPointerFocus: false }, homeDist: 430 });
   eng.setScene(zoomScene(), "rebuild");
   const root = container.children[0];
   const fireWheel = (deltaY, x = 400, y = 300) => {
@@ -3280,8 +3509,18 @@ const EXPECTED_FIT_DIST = FILTER_FIT_MARGIN / Math.tan(Math.PI / 6) * 1.1;
   eng.start();
   step();
   assert.equal(eng.inspectInput().dives, 0, "初始银河态无钻取");
-  assert.equal(eng.inspectZoomNav().ws[0].boundR, 12, "空星座 boundR = 星云下限 12");
+  assert.equal(eng.inspectZoomNav().ws[0].boundR, 12, "空星座 boundR = 星云下限 12（保留为引擎数据/观测面字段）");
   assert.ok(eng.inspectZoomNav().ws[0].proj, "首帧渲染产出星座投影（最近星座选择前提）");
+  /* 观测面改形（add-cosmos-zoom-ruler 1.3）：标尺几何 + 指针聚焦；阈值设置字段退场 */
+  const navShape = eng.inspectZoomNav();
+  assert.deepEqual(
+    [navShape.tickDist, navShape.flyOutFloorDist, navShape.distMin, navShape.distMax],
+    [155, 209.25, 24, 4200],
+    "inspectZoomNav 暴露标尺几何（tick / 滞回下限 / 值域端点）"
+  );
+  assert.deepEqual(navShape.tuning, { pointerFocus: false }, "tuning 仅含指针聚焦（阈值设置字段退场）");
+  assert.equal("diveRatio" in navShape.tuning, false, "观测面不含进入阈值设置字段");
+  assert.equal("flyOutRatio" in navShape.tuning, false, "观测面不含返回阈值设置字段");
 
   /* 进入：7 次滚轮放大后 dist 144.8 < 155 → 自动 dive（滚轮逐次判定） */
   for (let i = 0; i < 6; i++) fireWheel(-120);
@@ -3307,7 +3546,7 @@ const EXPECTED_FIT_DIST = FILTER_FIT_MARGIN / Math.tan(Math.PI / 6) * 1.1;
   assert.equal(eng.inspectFilter().tween, null, "冷却窗内不触发切换补间");
   assert.equal(eng.inspectZoomNav().switchAt, fakeNow, "冷却锚点未被冷却窗内输入改写");
 
-  /* 冷却过期后继续缩小：越过 dist 下限（209.25）+ 屏显直径阈值 → 自动 flyOut */
+  /* 冷却过期后继续缩小：越过 dist 滞回下限 209.25（距离单判，不问屏显尺寸）→ 自动 flyOut */
   fakeNow += SWITCH_COOLDOWN_MS + 100;
   fireWheel(120);
   fireWheel(120);
@@ -3321,12 +3560,100 @@ const EXPECTED_FIT_DIST = FILTER_FIT_MARGIN / Math.tan(Math.PI / 6) * 1.1;
   eng.dispose();
 }
 
+/* ── 标尺数据通道（add-cosmos-zoom-ruler 1.2/D4）：订阅 / 0.5% 门限 / 模式变化 /
+   载荷形状 / 卸载 / dispose 清理 ── */
+{
+  const container = stubEl("div");
+  const eng = createCosmosEngine({ container, style: createSkinD(), settings: { zoomPointerFocus: false }, homeDist: 430 });
+  eng.setScene(zoomScene(), "rebuild");
+  rafQ.length = 0;
+  fakeNow = 72500;
+  let tNow = 72500;
+  const step = () => { tNow += 50; stepFrame(tNow); };
+  const events = [];
+  const off = eng.onZoomMeter((meter) => events.push(meter));
+  assert.equal(typeof off, "function", "onZoomMeter 返回卸载函数");
+  eng.start();
+  step();
+  assert.equal(events.length, 1, "订阅后首帧强制补发当前标尺值（冷启动即有位置）");
+  assert.deepEqual(Object.keys(events[0]).sort(), ["dist", "distMax", "distMin", "tickDist"], "载荷形状 = dist/tickDist/distMin/distMax");
+  assert.deepEqual(
+    [events[0].tickDist, events[0].distMin, events[0].distMax],
+    [155, 24, 4200],
+    "载荷几何常量与引擎单源一致"
+  );
+  assert.ok(near(events[0].dist, 430, 1e-9), "初始距离 = 银河常驻落点 430");
+  const before = events.length;
+  step();
+  assert.equal(events.length, before, "轨道位置未变 → 不重复通知（无逐帧写）");
+  /* 大幅滚轮（轨道位移 ≫0.5%）→ 下一帧通知一次 */
+  eng.zoomBy(400); // 430 → ≈636（judge:false，不触发阈值导航）
+  step();
+  assert.equal(events.length, before + 1, "轨道位移 ≥0.5% → 通知一次");
+  assert.ok(events[events.length - 1].dist > 430, "载荷距离反映实际相机距离");
+  /* 亚门限小步（≈0.02% 轨道位）→ 不通知 */
+  const beforeSmall = events.length;
+  eng.zoomBy(1);
+  step();
+  assert.equal(events.length, beforeSmall, "轨道位移 <0.5% → 不通知（门限挡住高频无谓写）");
+  /* 模式变化（银河 → 钻取）→ 派发一次（标尺双模式共用同一刻度） */
+  const beforeMode = events.length;
+  eng.diveToWs("z1");
+  step();
+  assert.equal(events.length, beforeMode + 1, "模式变化 → 派发（双模式同刻度，切换时订阅方同步）");
+  /* 卸载后不再回调 */
+  off();
+  const beforeOff = events.length;
+  eng.zoomBy(-400);
+  step();
+  assert.equal(events.length, beforeOff, "卸载函数生效（不再回调）");
+  /* 回调异常不中断引擎帧循环（console.warn 吞掉） */
+  const origWarn = console.warn;
+  const warnings = [];
+  console.warn = (...args) => warnings.push(args.map(String).join(" "));
+  const offThrow = eng.onZoomMeter(() => { throw new Error("meter boom"); });
+  eng.zoomBy(400);
+  step();
+  console.warn = origWarn;
+  assert.ok(warnings.some((line) => line.includes("zoom meter listener failed")), "回调异常按 console.warn 记录（不中断帧循环）");
+  offThrow();
+  eng.dispose();
+  const afterDispose = events.length;
+  assert.equal(typeof eng.onZoomMeter(() => {}), "function", "dispose 后订阅返回空卸载函数（不抛错）");
+  assert.equal(events.length, afterDispose, "dispose 后无回调");
+}
+
+/* ── 银河首屏视距（HOME_DIST=3000）：进入 Cosmos 页面默认拉开到整座星座天球可见 ── */
+{
+  /* 天球壳半径口径（merge.constellationPositions）：150 × (0.9 + √|S| × 0.55)；
+     88 座松弛前 ≈909、松弛后壳顶实测 ≈1117 世界单位。首屏垂直半幅 =
+     tan(fov/2) × HOME_DIST ≈ 1732 > 1117（88 座投影全部落屏；旧 430 仅 19 座落屏）。 */
+  const shellRadius88 = 150 * (0.9 + Math.sqrt(88) * 0.55);
+  assert.ok(Math.tan((60 / 2) * Math.PI / 180) * HOME_DIST > 1117, "首屏垂直半幅覆盖松弛后的整座星座天球（88 座壳顶 ≈1117）");
+  assert.ok(HOME_DIST > shellRadius88, "首屏视距位于天球壳外（整壳可入画）");
+  assert.ok(430 < shellRadius88, "旧首屏 430 位于天球壳内 → 只能看到部分星座（本改动动机）");
+
+  const def = createCosmosEngine({ container: stubEl("div"), style: createSkinD() });
+  assert.equal(def.getCamera().dist, HOME_DIST, "默认初始镜头距离 = HOME_DIST（3000）");
+  assert.deepEqual(def.getCamera().target, [0, 0, 0], "初始 target = 天球中心（原点）");
+  def.dispose();
+  const custom = createCosmosEngine({ container: stubEl("div"), style: createSkinD(), homeDist: 430 });
+  assert.equal(custom.getCamera().dist, 430, "homeDist 构造覆盖（测试夹具 / 自定义首屏）");
+  custom.dispose();
+  const clamped = createCosmosEngine({ container: stubEl("div"), style: createSkinD(), homeDist: 99999 });
+  assert.equal(clamped.getCamera().dist, DIST_MAX, "homeDist 越界 clamp 到 DIST_MAX");
+  clamped.dispose();
+  const bad = createCosmosEngine({ container: stubEl("div"), style: createSkinD(), homeDist: "x" });
+  assert.equal(bad.getCamera().dist, HOME_DIST, "非法 homeDist 回落 HOME_DIST");
+  bad.dispose();
+}
+
 /* ── 空星座同样自动进入（spec scenario）：仅 chip、无恒星/行星/彗星，boundR = 下限 12 ── */
 {
   const data = zoomScene();
   data.workspaces[0].stars = [];
   const container = stubEl("div");
-  const eng = createCosmosEngine({ container, style: createSkinD(), settings: { zoomPointerFocus: false } });
+  const eng = createCosmosEngine({ container, style: createSkinD(), settings: { zoomPointerFocus: false }, homeDist: 430 });
   eng.setScene(data, "rebuild");
   const root = container.children[0];
   const fireWheel = (deltaY) => {
@@ -3419,13 +3746,16 @@ const EXPECTED_FIT_DIST = FILTER_FIT_MARGIN / Math.tan(Math.PI / 6) * 1.1;
   eng.zoomBy(-120, { clientX: 600, clientY: 300 });
   assert.deepEqual(eng.getCamera().target, targetOff, "关闭后动作条带坐标同样回落屏心（开关守卫沿用）");
 
-  /* getTuning 扩键（2.6） */
-  eng.setTuning({ zoomDiveRatio: 80, zoomFlyOutRatio: 40 });
+  /* getTuning（add-cosmos-zoom-ruler 1.1/D3）：只暴露平移调参与指针聚焦；
+     旧阈值键入参被忽略（阈值已常量化，SHALL NOT 报错） */
+  eng.setTuning({ zoomDiveRatio: 80, zoomFlyOutRatio: 40, zoomPointerFocus: false });
   assert.deepEqual(
     eng.getTuning(),
-    { panSpeed: 120, panShiftBoost: 3, zoomDiveRatio: 80, zoomFlyOutRatio: 40, zoomPointerFocus: false },
-    "setTuning/getTuning 扩三键（部分写语义）"
+    { panSpeed: 120, panShiftBoost: 3, zoomPointerFocus: false },
+    "setTuning/getTuning 不再含阈值字段（旧键入参被忽略）"
   );
+  assert.equal("zoomDiveRatio" in eng.getTuning(), false, "getTuning 不含进入阈值");
+  assert.equal("zoomFlyOutRatio" in eng.getTuning(), false, "getTuning 不含返回阈值");
   eng.dispose();
 }
 
@@ -3464,7 +3794,7 @@ const EXPECTED_FIT_DIST = FILTER_FIT_MARGIN / Math.tan(Math.PI / 6) * 1.1;
 {
   /* 捏合收束判定（2.3/2.4）：手势进行中不判定，收束以最终 dist 补判一次 → 自动 dive */
   const container = stubEl("div");
-  const eng = createCosmosEngine({ container, style: createSkinD(), settings: { zoomPointerFocus: false } });
+  const eng = createCosmosEngine({ container, style: createSkinD(), settings: { zoomPointerFocus: false }, homeDist: 430 });
   eng.setScene(zoomScene(), "rebuild");
   const root = container.children[0];
   const canvas = root._by[".cos-canvas"];
@@ -3494,7 +3824,7 @@ const EXPECTED_FIT_DIST = FILTER_FIT_MARGIN / Math.tan(Math.PI / 6) * 1.1;
    带坐标多步滚动逐步向指针聚焦收敛（渐进，MUST NOT 一次到位） ── */
 {
   const container = stubEl("div");
-  const eng = createCosmosEngine({ container, style: createSkinD() });
+  const eng = createCosmosEngine({ container, style: createSkinD(), homeDist: 430 });
   eng.setScene(zoomScene(), "rebuild");
   const root = container.children[0];
   const fireWheel = (deltaY, x = 400, y = 300) => {
@@ -4195,7 +4525,7 @@ function goldLiteralsOutsideVarFallback(source) {
   /* 星↔星提案连线解除（two-use-cosmos-template-star-layout）：relLast 无 links 面，
      提案 links 段（ra↔rb）不再绘制、不再聚焦点亮——直线通道让位图样连线。 */
   assert.equal(rel.last.links, undefined, "星↔星提案虚线点亮解除（relLast 无 links 面）");
-  assert.deepEqual(eng.inspectPatternLines(), [], "提案 links 不进图样线通道（fixture 无 patternLines）");
+  assert.deepEqual(eng.inspectPatternLines(), [], "提案 links 不进图样线通道（fixture 无 ws.pattern）");
   let entry = rel.mix.find((m) => m.key === "rel1|star:ra");
   assert.ok(entry && entry.dir === "in", "新聚焦键 in 坡道");
   assert.ok(entry.alpha > 0 && entry.alpha < 1, "0.2s 窗口内处于淡入中（MUST NOT 瞬间跳变）");
@@ -4460,7 +4790,7 @@ function goldLiteralsOutsideVarFallback(source) {
     drawBody() {}
   });
   const container = stubEl("div");
-  const eng = createCosmosEngine({ container, style: stubStyle("#00ff88") });
+  const eng = createCosmosEngine({ container, style: stubStyle("#00ff88"), homeDist: 430 });
   try {
     const rootEl = container.children[0];
     const overlayEl = rootEl._by[".cos-overlay"];
@@ -4579,9 +4909,8 @@ function goldLiteralsOutsideVarFallback(source) {
     /* 折线为 45° 斜出段（横向跨距 = 纵向落差）+ 不短于 tail 的水平段 */
     const cardGeo = tipLeaderOf(cardLine);
     assert.equal(cardGeo.pts.length, 3, "信息卡引线 = 两段折线（45° 斜出 + 水平）");
-    assert.equal(
-      Math.abs(cardGeo.pts[1].x - cardGeo.pts[0].x),
-      Math.abs(cardGeo.pts[1].y - cardGeo.pts[0].y),
+    assert.ok(
+      near(Math.abs(cardGeo.pts[1].x - cardGeo.pts[0].x), Math.abs(cardGeo.pts[1].y - cardGeo.pts[0].y), 1e-9),
       "斜出段 45°：|dx| === |dy|（缓存端点的几何换算）"
     );
     assert.ok(cardGeo.pts[2].x - cardGeo.pts[1].x >= TIP_LINE.tail - 1e-9, "水平段不短于 TIP_LINE.tail");
@@ -4694,6 +5023,353 @@ function goldLiteralsOutsideVarFallback(source) {
     eng.stop();
     eng.dispose();
     ctxFactory = stubCtx2d;
+  }
+}
+
+/* ── 浮签与 UI 铬件的遮挡避让与命中隔离（polish-cosmos-tip-ui-avoidance 1.1–1.3 / 2.x /
+      3.x / 4.x / 5.1–5.5） ──
+   覆盖：① 矩形契约纯函数（规范化 / 点-盒相交谓词 / 避让决策序列：短轴推出 → 翻转 →
+   钳回容器 → 降级；空集与非法入参回落）；② 引擎集成（公共面发布与矩形缺席回落、chip
+   相交隐藏且不产引线、信息卡 UI 感知钳位与 `pe:none` 降级、pointerdown 门禁 + click
+   复检、引擎自建 HUD 兜底与自遮挡排除、逐帧可逆无点击死区）。 */
+
+/* A. 纯函数：规范化 / 谓词 / 避让决策（1.1–1.3 / 5.1，无 DOM） */
+{
+  /* 矩形规范化：反序坐标归一、零尺寸/非法/残缺条目丢弃、kind 归一 */
+  const rects = normalizeUiRects([
+    { left: 10, top: 20, right: 110, bottom: 120, kind: "panel" },
+    { left: 110, top: 120, right: 10, bottom: 20 }, // 反序 → 归一
+    { left: 0, top: 0, right: 0, bottom: 50 }, // 零宽（未布局）→ 丢弃
+    { left: 5, top: 5, right: 50, bottom: 5 }, // 零高 → 丢弃
+    { left: NaN, top: 0, right: 10, bottom: 10 }, // 非法数 → 丢弃
+    null, "x", { left: 1, top: 2 }, // 残缺 → 丢弃
+    { left: -50, top: -20, right: 20, bottom: 10, kind: "home" } // 容器内负坐标合法（整页偏移）
+  ]);
+  assert.equal(rects.length, 3, "规范化：合法矩形入列、反序归一、零尺寸/非法残缺丢弃");
+  assert.deepEqual(rects[0], { left: 10, top: 20, right: 110, bottom: 120, kind: "panel" }, "矩形字段与类别原样保留");
+  assert.deepEqual(rects[1], { left: 10, top: 20, right: 110, bottom: 120, kind: "" }, "反序坐标归一（min/max），缺 kind → 空串");
+  assert.deepEqual(rects[2], { left: -50, top: -20, right: 20, bottom: 10, kind: "home" }, "容器内负坐标合法（引擎容器 ≠ 窗口原点）");
+  assert.deepEqual(normalizeUiRects(null), [], "非数组 → 零矩形集（契约缺席回落）");
+  assert.deepEqual(normalizeUiRects([]), [], "空集 → 零矩形集");
+
+  /* 相交谓词：盒 = 开边界（贴边不算重叠）、点 = 闭区间（边缘也算命中） */
+  const box = { left: 100, top: 100, right: 200, bottom: 200 };
+  assert.equal(rectsIntersect(box, { left: 200, top: 100, right: 300, bottom: 200 }), false, "盒仅边缘相贴 → 不相交");
+  assert.equal(rectsIntersect(box, { left: 199, top: 100, right: 300, bottom: 200 }), true, "盒 1px 重叠 → 相交");
+  assert.equal(boxInRects({ left: 300, top: 300, right: 400, bottom: 400 }, rects), false, "盒与矩形集不相交");
+  assert.equal(boxInRects(box, [{ left: 150, top: 150, right: 160, bottom: 160, kind: "add" }]), true, "盒包住小矩形 → 相交");
+  assert.equal(boxInRects(box, [{ left: 150, top: 150, right: 160, bottom: 160, kind: "home" }], "home"), false,
+    "ignoreKinds：自遮挡排除（浮签自身族矩形不参与）");
+  assert.equal(boxInRects(box, [{ left: 150, top: 150, right: 160, bottom: 160, kind: "home" }], ["home"]), false,
+    "ignoreKinds 接受数组形态");
+  assert.equal(pointInRects(200, 200, [{ left: 0, top: 0, right: 200, bottom: 200, kind: "panel" }]), true, "点落在矩形右/下边缘 → 命中（闭区间）");
+  assert.equal(pointInRects(200.5, 120, [{ left: 0, top: 0, right: 200, bottom: 200, kind: "panel" }]), false, "点越界 → 未命中");
+  assert.equal(pointInRects(120, 120, []), false, "空矩形集 → 恒未命中（契约缺席）");
+  assert.equal(pointInRects(NaN, 120, rects), false, "非法点 → 未命中（MUST NOT 抛错）");
+  assert.equal(pointInRects(15, 25, [{ left: 10, top: 20, right: 110, bottom: 120, kind: "panel" }], "panel"), false,
+    "ignoreKinds 生效于点谓词");
+
+  /* 边界盒与候选位包围盒（定位点口径与 DOM transform 单点同源） */
+  assert.deepEqual(boundsBoxOf({ W: 800, H: 600 }), { left: 0, top: 0, right: 800, bottom: 600 }, "boundsBoxOf：{W,H} → 容器盒");
+  assert.deepEqual(boundsBoxOf({ width: 320, height: 240 }), { left: 0, top: 0, right: 320, bottom: 240 }, "boundsBoxOf：宽高别名");
+  assert.equal(boundsBoxOf(null), null, "bounds 缺席 → null（不约束）");
+  assert.deepEqual(tipBoxOf({ kind: "chip", x: 100, y: 50, w: 96, h: 26 }), { left: 52, top: 24, right: 148, bottom: 50 },
+    "chip 盒：定位点 = 底缘中点（translate(-50%,-100%)）");
+  assert.deepEqual(tipBoxOf({ kind: "card", x: 300, y: 100, w: 240, h: 96, dir: 1 }), { left: 300, top: 100, right: 540, bottom: 196 },
+    "card 盒（未翻转）：定位点 = 左缘上角");
+  assert.deepEqual(tipBoxOf({ kind: "card", x: 300, y: 100, w: 240, h: 96, dir: -1 }), { left: 60, top: 100, right: 300, bottom: 196 },
+    "card 盒（翻转）：定位点 = 右缘上角（translateX(-100%)）");
+  assert.equal(tipBoxOf({ kind: "chip", x: NaN, y: 0 }), null, "非法候选位 → null（不参与判定）");
+
+  /* 决策：chip 相交 → hide；空集/不相交/非法 → keep */
+  const chipRects = [{ left: 60, top: 10, right: 160, bottom: 60, kind: "actions" }];
+  const chipDecision = tipAvoidanceOf({ kind: "chip", x: 100, y: 50, w: 96, h: 26 }, chipRects, { W: 800, H: 600 });
+  assert.equal(chipDecision.action, "hide", "chip 与铬件矩形相交 → hide（锚定语义优先，不钳位）");
+  assert.equal(chipDecision.degraded, false, "hide 不是降级（chip 无 pe 态）");
+  assert.equal(tipAvoidanceOf({ kind: "chip", x: 100, y: 50, w: 96, h: 26 }, [], { W: 800, H: 600 }).action, "keep",
+    "空矩形集 → keep（契约缺席 = 现状回落）");
+  assert.equal(tipAvoidanceOf({ kind: "chip", x: 400, y: 50, w: 96, h: 26 }, chipRects, { W: 800, H: 600 }).action, "keep",
+    "不相交 → keep");
+  assert.equal(tipAvoidanceOf(null, chipRects, null).action, "keep", "非法候选位 → keep（MUST NOT 抛错）");
+
+  /* 决策：card 短轴推出（相交带在上方 → 向下推出最小位移） */
+  const pushDecision = tipAvoidanceOf(
+    { kind: "card", x: 300, y: 100, w: 240, h: 147, dir: 1 },
+    [{ left: 300, top: 40, right: 540, bottom: 140, kind: "actions" }],
+    { W: 800, H: 600 }
+  );
+  assert.equal(pushDecision.action, "place", "卡相交 → place（几何避让，非隐藏）");
+  assert.equal(pushDecision.degraded, false, "推出成功 → 不降级");
+  assert.equal(pushDecision.y, 140, "沿卡体短轴（纵向）推出最小位移：卡顶 = 矩形下缘");
+  assert.equal(pushDecision.x, 300, "推出只动短轴，横向锚点不变");
+  assert.equal(pushDecision.dir, 1, "推出不改伸展方向");
+
+  /* 决策：纵向推出无解（全高面板）→ 翻转（镜像候选位自由） */
+  const flipDecision = tipAvoidanceOf(
+    { kind: "card", x: 600, y: 200, w: 240, h: 147, dir: 1, altX: 300 },
+    [{ left: 600, top: 0, right: 800, bottom: 600, kind: "panel" }],
+    { W: 800, H: 600 }
+  );
+  assert.equal(flipDecision.action, "place", "纵向全高遮挡 → place（翻转路径）");
+  assert.equal(flipDecision.dir, -1, "翻转：伸展方向取反（调用方缀 translateX(-100%)）");
+  assert.equal(flipDecision.x, 300, "翻转位 = 镜像候选位原样落位");
+  assert.equal(flipDecision.degraded, false, "翻转到自由区 → 不降级");
+
+  /* 决策：推出/翻转皆无解（极窄容器 + 整屏遮挡）→ 钳回容器并降级 */
+  const degradeDecision = tipAvoidanceOf(
+    { kind: "card", x: 40, y: 200, w: 240, h: 147, dir: 1, altX: 300 },
+    [{ left: 0, top: 0, right: 320, bottom: 600, kind: "panel" }],
+    { W: 320, H: 600 }
+  );
+  assert.equal(degradeDecision.action, "place", "无自由空间仍给落位（视觉保留）");
+  assert.equal(degradeDecision.degraded, true, "无自由空间 → degraded（调用方整卡 pe:none）");
+  assert.ok(degradeDecision.x >= UI_AVOID.margin && degradeDecision.x + 240 <= 320 - UI_AVOID.margin + 0.01,
+    "降级态卡盒仍钳在容器留白内（可读，不出画）");
+}
+
+/* B. 引擎集成：矩形发布 / chip 隐藏 / 卡避让与降级 / 命中门禁 / HUD 兜底（2.x–4.x / 5.2–5.5） */
+{
+  const container = stubEl("div");
+  let openedSessions = 0;
+  const eng = createCosmosEngine({
+    container,
+    style: createSkinD(),
+    homeDist: 430,
+    onOpenSession: () => { openedSessions += 1; }
+  });
+  try {
+    const rootEl = container.children[0];
+    const overlayEl = rootEl._by[".cos-overlay"];
+    const canvasEl = rootEl._by[".cos-canvas"];
+    const cardEl = rootEl._by[".cos-card"];
+    const fire = (el, type, ev) => { for (const fn of el.listeners[type] ?? []) fn(ev); };
+    const parseTranslate = (value) => {
+      const m = /translate\(\s*(-?[\d.]+)px,\s*(-?[\d.]+)px\s*\)/.exec(String(value));
+      return m ? { x: Number(m[1]), y: Number(m[2]) } : null;
+    };
+    /** 世界坐标 → 屏幕点（与引擎 project 同式：fov 60 / 视口 800×600 桩）。 */
+    const screenPoint = (world) => {
+      const cam = eng.getCamera();
+      const W = 800, H = 600;
+      let v = [world[0] - cam.target[0], world[1] - cam.target[1], world[2] - cam.target[2]];
+      const cy = Math.cos(-cam.yaw), sy = Math.sin(-cam.yaw);
+      v = [v[0] * cy + v[2] * sy, v[1], -v[0] * sy + v[2] * cy];
+      const cx = Math.cos(-cam.pitch), sx = Math.sin(-cam.pitch);
+      v = [v[0], v[1] * cx - v[2] * sx, v[1] * sx + v[2] * cx];
+      const f = (H * 1.1) / (2 * Math.tan(60 * Math.PI / 360));
+      const s = f / (v[2] + cam.dist);
+      return { x: W / 2 + v[0] * s, y: H / 2 - v[1] * s };
+    };
+    const starOf = (id) => ({
+      id, name: id, lifecycle: "executed", setBy: null, at: null,
+      tasks: [1, 1], age: "刚刚", act: 0, off: [0, 0, 0]
+    });
+    const twoWsScene = (ws1Pos = [0, 0, 0]) => ({
+      workspaces: [
+        { id: "ws1", name: "ws-one", pos: ws1Pos.slice(), stars: [starOf("add-a")], links: [], planets: [], comets: [], archives: 0, satelliteCount: 0 },
+        { id: "ws2", name: "ws-two", pos: [150, 40, -30], stars: [starOf("add-b")], links: [], planets: [], comets: [], archives: 0, satelliteCount: 0 }
+      ]
+    });
+    const falseBtn = (action, sessionId) => ({
+      classList: { contains: (name) => name === "cd-btn" },
+      getAttribute: (name) => (name === "data-action" ? action : name === "data-session" ? sessionId : null)
+    });
+    const tips = () => eng.inspectTipLines();
+    const uiRects = () => eng.inspectUiRects();
+
+    eng.setScene(twoWsScene(), "rebuild");
+    rafQ.length = 0;
+    eng.start();
+    let tNow = 90000;
+    const step = (n = 1) => { for (let i = 0; i < n; i++) { tNow += 50; stepFrame(tNow); } };
+    step(27); // 过冷启动序曲
+
+    const chipEl = overlayEl.children.find((el) => String(el.className).startsWith("cos-chip"));
+    assert.ok(chipEl, "银河态 chip 已建树（避让集成前置）");
+
+    /* ① 矩形契约缺席：零矩形集 → 行为回落现状（chip 可见、无 pe、无报错） */
+    assert.deepEqual(uiRects(), { rects: [], origin: { x: 0, y: 0 } }, "① 未发布 → 零矩形集（契约缺席）");
+    step(1);
+    assert.ok(chipEl.classList.contains("on"), "① 契约缺席：chip 照常可见（现状回落）");
+    assert.equal(chipEl.style.pointerEvents, undefined, "① 契约缺席：chip 无内联 pe 改写");
+    assert.ok(tips().some((line) => line.kind === "chip"), "① 契约缺席：chip 引线照常产出");
+
+    /* ② 场景 A（spec「chip 压在动作条按钮上被隐藏」）：投影落进动作条矩形 → chip 隐藏、无引线 */
+    const chipAt0 = parseTranslate(chipEl.style.transform);
+    assert.ok(chipAt0, "① chip 已有定位（DOM transform）");
+    const chipLines0 = tips().filter((line) => line.kind === "chip").length;
+    assert.equal(chipLines0, 2, "① 银河态两个星座各一条 chip 引线（夹具确认）");
+    const chipRect = { kind: "actions", left: chipAt0.x - 60, top: chipAt0.y - 40, right: chipAt0.x + 60, bottom: chipAt0.y + 40 };
+    assert.equal(eng.setUiChromeRects({ rects: [chipRect], origin: { x: 0, y: 0 } }), true, "② 公共面接受发布");
+    assert.deepEqual(uiRects().rects, [chipRect], "② 矩形集入缓存（引擎侧只比对数组）");
+    step(1);
+    assert.ok(!chipEl.classList.contains("on"), "② chip 与动作条矩形相交 → 本帧淡出隐藏");
+    assert.equal(chipEl.style.opacity, "", "② 隐藏帧清内联 opacity（与既有显隐路径同一条，无残影）");
+    assert.equal(tips().filter((line) => line.kind === "chip").length, chipLines0 - 1,
+      "② 隐藏帧该 chip 不产引线条目（引线随可见性同帧不画）");
+
+    /* ③ 命中门禁（spec「命中门禁兜底竞态帧」）：pointerdown 落点门禁 + click 一次性消费 */
+    const dives0 = eng.inspectInput().dives;
+    fire(chipEl, "pointerdown", { clientX: chipAt0.x, clientY: chipAt0.y - 10 });
+    eng.setUiChromeRects({ rects: [], origin: { x: 0, y: 0 } }); // 矩形瞬时空（模拟重发布的窗口）
+    fire(chipEl, "click", { clientX: chipAt0.x, clientY: chipAt0.y - 10 });
+    assert.equal(eng.inspectInput().dives, dives0, "③ pointerdown 命中铬件 → 随后 click 被一次性抑制（竞态帧不 dive）");
+    /* click 复检单独生效（无 pointerdown 布防）：落点仍在矩形内 → 不 dive */
+    eng.setUiChromeRects({ rects: [chipRect], origin: { x: 0, y: 0 } });
+    step(1);
+    fire(chipEl, "click", { clientX: chipAt0.x, clientY: chipAt0.y - 10 });
+    assert.equal(eng.inspectInput().dives, dives0, "③ click 落点复检：矩形更新窗口内同样不 dive");
+    /* 一次性抑制自愈：下一次独立点击不被误杀 */
+    eng.setUiChromeRects({ rects: [], origin: { x: 0, y: 0 } });
+    step(1);
+
+    /* ④ 逐帧可逆（spec「chip 随相机漂移即时收敛」）：移除矩形 → 复现；再发布 → 再隐藏 */
+    assert.ok(chipEl.classList.contains("on"), "④ 矩形移除后下一帧复现（逐帧可逆）");
+    const chipAt1 = parseTranslate(chipEl.style.transform);
+    eng.setUiChromeRects({ rects: [{ kind: "panel", left: chipAt1.x - 60, top: chipAt1.y - 40, right: chipAt1.x + 60, bottom: chipAt1.y + 40 }], origin: { x: 0, y: 0 } });
+    step(1);
+    assert.ok(!chipEl.classList.contains("on"), "④ 再次落入矩形 → 再次隐藏（无滞回、无记忆）");
+    /* 相机/布局漂移把 chip 移出固定矩形 → 同一帧链上复现 */
+    eng.setScene(twoWsScene([220, 0, 0]), "rebuild");
+    step(2);
+    const chipAt2 = parseTranslate(chipEl.style.transform);
+    assert.ok(chipEl.classList.contains("on"), "④ 投影漂移离开矩形 → 复现（相机连续性）");
+    assert.ok(chipAt2.x > chipAt1.x + 80, "④ 夹具确认：chip 确实移开（世界 +220 → 屏显右移）");
+
+    /* ⑤ 信息卡 UI 感知钳位（spec「信息卡钳位到自由区」+「浮签不拦截铬件命中」） */
+    eng.setScene(twoWsScene(), "rebuild"); // 回到原点星座：卡的自然侧 = 右（翻转 MUST 由面板引起）
+    step(16); // 等重建后的星座中心滑移补间收尾（投影稳定后再取 hover 点）
+    const starWorld = eng.inspectEntities("ws1").stars[0].wp;
+    const starScreen = screenPoint(starWorld);
+    const hoverStar = () => { fire(rootEl, "pointermove", { pointerId: 71, clientX: starScreen.x, clientY: starScreen.y, buttons: 0, target: canvasEl }); };
+    hoverStar();
+    step(3);
+    assert.ok(cardEl.classList.contains("on"), "⑤ hover 恒星 → 信息卡呈现（避让前置）");
+    const cardAt0 = parseTranslate(cardEl.style.transform);
+    assert.ok(!String(cardEl.style.transform).includes("translateX(-100%)"), "⑤ 无铬件时卡在星右侧（自然形态，翻转断言归因前置）");
+    const panelRect = { kind: "panel", left: Math.round(starScreen.x), top: 0, right: 800, bottom: 600 };
+    eng.setUiChromeRects({ rects: [panelRect], origin: { x: 0, y: 0 } });
+    step(2);
+    const cardAt1 = parseTranslate(cardEl.style.transform);
+    assert.ok(String(cardEl.style.transform).includes("translateX(-100%)"), "⑤ 全高面板遮挡 → 卡翻转至面板另一侧（dir 取反）");
+    assert.ok(cardAt1.x <= panelRect.left, "⑤ 翻转后卡右缘落在面板左缘之外（自由区落位）");
+    assert.ok(cardAt1.x !== cardAt0.x, "⑤ 落位确实被避让改写（非原候选位）");
+    const cardLine1 = tips().find((line) => line.kind === "card");
+    assert.ok(cardLine1, "⑤ 钳位帧仍有引线（不画空线）");
+    assert.equal(cardLine1.x, cardAt1.x, "⑤ 引线止点 = 避让后 DOM translate 的同一组数（端点同源）");
+    assert.ok(cardLine1.x < cardLine1.hx, "⑤ 翻转侧引线自星左缘折向卡右近缘（起笔随卡侧）");
+    const tipGeo = tipLeaderOf(cardLine1);
+    assert.ok(tipGeo && tipGeo.pts.length >= 2, "⑤ 引线折点可用（引线连续不截断）");
+    /* 面板行/按钮不被抢：落点在面板矩形内的卡内按钮点击 MUST NOT 执行动作 */
+    const openedBefore = openedSessions;
+    fire(cardEl, "click", { target: falseBtn("open", "sess-1"), clientX: 600, clientY: 300 });
+    assert.equal(openedSessions, openedBefore, "⑤ 落点在铬件矩形内 → 卡内动作被门禁拦截（面板行不被抢）");
+    /* 离开相交（矩形撤除）→ 点击直达（事件级判定、无持久 DOM 改写） */
+    eng.setUiChromeRects({ rects: [], origin: { x: 0, y: 0 } });
+    step(2);
+    fire(cardEl, "click", { target: falseBtn("open", "sess-1"), clientX: 600, clientY: 300 });
+    assert.equal(openedSessions, openedBefore + 1, "⑤ 矩形撤除后同一按钮点击直达 onOpenSession（无死区残留）");
+
+    /* ⑥ 场景 C（spec「极端窄容器降级放行」+「矩形契约缺席安全降级」） */
+    eng.setUiChromeRects({ rects: [{ kind: "panel", left: 0, top: 0, right: 800, bottom: 600 }], origin: { x: 0, y: 0 } });
+    step(2);
+    assert.equal(cardEl.style.pointerEvents, "none", "⑥ 无自由空间 → 整卡 pe:none 降级（命中放行）");
+    assert.ok(cardEl.classList.contains("on"), "⑥ 降级帧卡体仍呈现（可读）");
+    assert.ok(tips().some((line) => line.kind === "card"), "⑥ 降级帧引线仍在（视觉保留）");
+    eng.setUiChromeRects({ rects: [], origin: { x: 0, y: 0 } });
+    step(2);
+    assert.equal(cardEl.style.pointerEvents, "", "⑥ 离开相交 → 恢复 pe:auto（内联单点清回）");
+    assert.ok(!cardEl.style.pointerEvents, "⑥ 恢复为内联空值（回落到 CSS 的 pe:auto）");
+    assert.equal(eng.setUiChromeRects(null), true, "⑥ 公共面接受 null = 清空矩形集（安全降级）");
+    assert.deepEqual(uiRects().rects, [], "⑥ null → 零矩形集");
+    assert.equal(eng.setUiChromeRects({ rects: "bad" }), false, "⑥ 非法载荷 → false 且不抛错");
+    assert.deepEqual(uiRects().rects, [], "⑥ 非法载荷不改缓存");
+
+    /* ⑦ 复现后点击 chip 直达 dive（无死区残留；随后进入钻取态供 HUD 兜底断言） */
+    eng.setUiChromeRects({ rects: [], origin: { x: 0, y: 0 } });
+    step(2);
+    const chipAt3 = parseTranslate(chipEl.style.transform);
+    const dives1 = eng.inspectInput().dives;
+    assert.ok(chipEl.classList.contains("on"), "⑦ 契约撤除后 chip 可见（复现）");
+    fire(chipEl, "click", { clientX: chipAt3.x, clientY: chipAt3.y - 10 });
+    assert.equal(eng.inspectInput().dives, dives1 + 1, "⑦ 复现后点击 chip 直达 dive（无持久命中死区）");
+
+    /* ⑧ 引擎自建 HUD 兜底（3.3）：切换条目相交退场 / 自遮挡排除 / 离开恢复 */
+    fakeNow += 1300;
+    step(3);
+    const rightSide = rootEl._by['.cos-wsbar-side[data-side="right"]'];
+    const wsItem = rightSide?.children?.[0];
+    assert.ok(wsItem, "⑧ 钻取态切换条目已建树");
+    assert.ok(wsItem.classList.contains("on"), "⑧ 钻取态：另一星座条目挂载可见");
+    const selfRect = { kind: "wsbar-right", left: 100, top: 10, right: 300, bottom: 60 };
+    eng.setUiChromeRects({ rects: [selfRect], origin: { x: 0, y: 0 } });
+    step(1);
+    assert.ok(wsItem.classList.contains("on"), "⑧ 只有自身槽矩形 → 自遮挡排除生效（条目未与自己相交）");
+    eng.setUiChromeRects({
+      rects: [selfRect, { kind: "panel", left: 0, top: 0, right: 400, bottom: 100 }],
+      origin: { x: 0, y: 0 }
+    });
+    step(1);
+    assert.ok(!wsItem.classList.contains("on"), "⑧ 条目槽与面板矩形相交 → 该侧条目退场（兜底）");
+    eng.setUiChromeRects({
+      rects: [selfRect, { kind: "panel", left: 600, top: 0, right: 800, bottom: 100 }],
+      origin: { x: 0, y: 0 }
+    });
+    step(1);
+    assert.ok(wsItem.classList.contains("on"), "⑧ 离开相交 → 条目恢复（幂等、可逆）");
+
+    /* ⑨ 回到银河 / 拖拽开关：相交让位（class 单点）+ 命中门禁 */
+    const homeEl = overlayEl.children.find((el) => String(el.className).startsWith("cos-home-btn"));
+    const dragEl = overlayEl.children.find((el) => String(el.className).startsWith("cos-dragpan-btn"));
+    assert.ok(homeEl && dragEl, "⑨ 引擎自建 HUD 已建树");
+    const homeRect = { kind: "home", left: 700, top: 500, right: 744, bottom: 544 };
+    eng.setUiChromeRects({
+      rects: [homeRect, { kind: "actions", left: 600, top: 520, right: 800, bottom: 600 }],
+      origin: { x: 0, y: 0 }
+    });
+    step(1);
+    assert.ok(homeEl.classList.contains("cos-hud-occluded"), "⑨ home 与动作条矩形相交 → 遮挡让位（视觉退场 + 命中放行）");
+    assert.ok(!dragEl.classList.contains("cos-hud-occluded"), "⑨ dragpan 自身矩形未发布 → 不参与（按未命中）");
+    for (let i = 0; i < 80 && eng.inspectFilter().tween; i += 1) { fakeNow += 120; step(1); }
+    assert.equal(eng.inspectFilter().tween, null, "⑨ 钻取补间已收尾（门禁断言前置）");
+    fire(homeEl, "click", { clientX: 720, clientY: 530 });
+    assert.equal(eng.inspectFilter().tween, null, "⑨ 遮挡态点击 home 不执行 flyOut（门禁兜底，键盘 Esc 仍在）");
+    eng.setUiChromeRects({
+      rects: [homeRect, { kind: "actions", left: 0, top: 0, right: 100, bottom: 100 }],
+      origin: { x: 0, y: 0 }
+    });
+    step(1);
+    assert.ok(!homeEl.classList.contains("cos-hud-occluded"), "⑨ 离开相交 → home 恢复");
+    fire(homeEl, "click", { clientX: 720, clientY: 530 });
+    assert.ok(eng.inspectFilter().tween, "⑨ 恢复后点击 home 正常 flyOut（补间已启动）");
+  } finally {
+    eng.stop();
+    eng.dispose();
+  }
+}
+
+/* C. 浮窗模态等价覆盖（D2 / 「矩形契约缺席安全降级」等价面）：`isFloatOpen` 探针为真
+      ⇒ `.dsh-cosmos-const-float`（inset:0 + z-9998 全屏 backdrop）的「矩形」恒等于整屏，
+      浮签整体让位——零矩形通道、零开合订阅。 */
+{
+  const container = stubEl("div");
+  const eng = createCosmosEngine({ container, style: createSkinD(), isFloatOpen: () => true });
+  try {
+    const rootEl = container.children[0];
+    const overlayEl = rootEl._by[".cos-overlay"];
+    eng.setScene(miniScene(), "rebuild");
+    rafQ.length = 0;
+    eng.start();
+    let t = 30000;
+    for (let i = 0; i < 28; i += 1) { t += 50; stepFrame(t); }
+    const chipEl = overlayEl.children.find((el) => String(el.className).startsWith("cos-chip"));
+    assert.ok(chipEl, "⑩ 模态引擎：chip 已建树");
+    assert.ok(!chipEl.classList.contains("on"), "⑩ 浮窗模态 → chip 让位（等价整屏矩形，零矩形发布）");
+    assert.ok(!eng.inspectTipLines().some((line) => line.kind === "chip"), "⑩ 模态态不产 chip 引线");
+    assert.deepEqual(eng.inspectUiRects().rects, [], "⑩ 模态态不必发布矩形（探针即整屏）");
+  } finally {
+    eng.stop();
+    eng.dispose();
   }
 }
 
@@ -4822,7 +5498,7 @@ function goldLiteralsOutsideVarFallback(source) {
     container,
     style: createSkinD(),
     settings: {
-      panSpeed: 120, panShiftBoost: 3, zoomDiveRatio: 100, zoomFlyOutRatio: 25,
+      panSpeed: 120, panShiftBoost: 3,
       zoomPointerFocus: true, dragPan: false,
       shortcuts: { closePage: "Escape", goHome: "Backquote", togglePan: "KeyM", voiceToggle: "Ctrl+KeyQ" }
     },
@@ -5712,9 +6388,34 @@ function goldLiteralsOutsideVarFallback(source) {
   rafQ.length = 0;
 }
 
-/* ── 图样连线呈现与星↔星提案连线解除（two-use-cosmos-template-star-layout 3.x / 4.6） ── */
+/* ── 全量图样 + 空槽装饰点（add-cosmos-template-figure-display 2.x / 3.x / 4.3）：
+   `ws.pattern` 纯消费（统一弱 α、星座级淡入淡出、无逐段坡道）、空槽判定纯函数确定性、
+   空槽装饰点（α 恒低于图样线、门控同源、不叠加被占槽位）、旧字段容忍、观测面新形态
+   （segIndex / slotIndex）。 ── */
 {
-  /** 夹具：单星座三星（patternLines 相邻对 + 提案 links 跨接对，两通道刻意异构）。 */
+  /* ① 空槽判定纯函数（3.1）：前 min(N, L) 个内核槽位被占，余下为空；边界档位确定。 */
+  const patOf = (n) => ({ slots: Array.from({ length: n }, (_, k) => [k * 10, 0, 0]), lines: [] });
+  assert.deepEqual(patEmptySlotsOf(patOf(7), 3), [3, 4, 5, 6], "前 3 颗占前序槽位 → 空槽 = 3..6（升序）");
+  assert.deepEqual(patEmptySlotsOf(patOf(7), 7), [], "满员 → 零空槽");
+  assert.deepEqual(patEmptySlotsOf(patOf(7), 9), [], "溢出环恒星不参与内核槽位判定（L > N 仍无空槽）");
+  assert.deepEqual(patEmptySlotsOf(patOf(7), 0), [0, 1, 2, 3, 4, 5, 6], "零恒星 → 全部内核槽位为空");
+  assert.deepEqual(patEmptySlotsOf(patOf(7), 1), [1, 2, 3, 4, 5, 6], "1 颗恒星 → 首槽被占（规范序前序占位）");
+  assert.deepEqual(patEmptySlotsOf(null, 3), [], "图样缺席 → 零空槽（不抛错）");
+  assert.deepEqual(patEmptySlotsOf({}, 3), [], "缺 slots 字段 → 零空槽（不抛错）");
+  assert.deepEqual(patEmptySlotsOf(patOf(2), -1), [0, 1], "非法恒星数 → 按 0 兜底（防御）");
+
+  /* ② 图样快照容忍（2.5）：缺席 / 空 / 畸形按无图样处理；结构性损坏索引对剔除。 */
+  assert.equal(patSnapshotOf(undefined), null, "pattern 缺席 → null（旧场景快照互读安全）");
+  assert.equal(patSnapshotOf(null), null, "pattern = null → null");
+  assert.equal(patSnapshotOf({}), null, "缺 slots → null（按无图样处理）");
+  assert.equal(patSnapshotOf({ slots: [] }), null, "空 slots → null");
+  assert.deepEqual(
+    patSnapshotOf({ slots: [[1, 2, 3], 'bad'], lines: [[0, 1], [1, 1], [0, 9], 'x', [0, 1]] }),
+    { slots: [[1, 2, 3], [Number.NaN, Number.NaN, Number.NaN]], lines: [[0, 1], [0, 1]] },
+    "畸形槽位归一 NaN（渲染期跳过）、自环/越界/非法索引对剔除（不抛错）"
+  );
+
+  /** 夹具：单星座三星（5 内核槽位 → 2 空槽；图样含空-空段 [3,4]，提案 links 跨接对刻意异构）。 */
   const patternScene = () => ({
     workspaces: [{
       id: "pat1", name: "pat-one", pos: [0, 0, 0],
@@ -5723,7 +6424,10 @@ function goldLiteralsOutsideVarFallback(source) {
         { id: "pb", name: "pb", lifecycle: "created", setBy: null, at: null, tasks: [0, 0], age: "刚刚", act: 0, off: [0, 0, 8] },
         { id: "pc", name: "pc", lifecycle: "created", setBy: null, at: null, tasks: [0, 0], age: "刚刚", act: 0, off: [20, 0, 0] }
       ],
-      patternLines: [[0, 1], [1, 2]],
+      pattern: {
+        slots: [[-22, 0, 0], [0, 0, 10], [22, 0, 0], [0, 0, -12], [14, 0, -14]],
+        lines: [[0, 1], [1, 2], [3, 4]]
+      },
       links: [[0, 2]], // 提案关联数据面保留（面板投影消费）；引擎不再绘制
       planets: [], comets: [], archives: 0, satelliteCount: 0
     }]
@@ -5735,51 +6439,205 @@ function goldLiteralsOutsideVarFallback(source) {
   eng.start();
   let tNow = 9000;
   const step = (n = 1) => { for (let i = 0; i < n; i++) { tNow += 50; stepFrame(tNow); } };
-  step(1); // 首帧：段淡入坡道起点
+  step(1);
 
-  const keyOf = (row) => [row.aId, row.bId].sort().join("|");
-
-  /* 4.6 段集合：patternLines → 端点恒星 id 对；星↔星提案 links 段缺席（通道解除） */
+  /* ③ 段集合与统一亮度（2.1/2.2）：模板 lines 逐对投影（含空-空段 [3,4]）；
+     段 α 恒 = PAT_LINE_DIM（首帧即稳态——无逐段淡入坡道）；星↔星提案 links 段缺席。 */
   let rows = eng.inspectPatternLines();
-  assert.deepEqual(rows.map(keyOf).sort(), ["pa|pb", "pb|pc"], "图样连线段 = patternLines 端点恒星对");
-  assert.ok(!rows.some((r) => keyOf(r) === "pa|pc"), "提案 links（pa↔pc）不再绘制（星↔星直线通道让位图样线）");
-  assert.ok(rows.every((r) => r.alpha > 0 && r.alpha <= 0.5), `段 α 弱化（≤0.5 = PAT_LINE_DIM × 坡道，实际 ${rows.map((r) => r.alpha.toFixed(2))}）`);
-
-  /* 淡入坡道（8.1 复用）：0.4s 内渐入到稳态弱化 α */
-  step(2);
-  const early = eng.inspectPatternLines().find((r) => keyOf(r) === "pa|pb").alpha;
-  assert.ok(early > 0 && early <= 0.5, "坡道在途 α 有界");
-  step(10); // 累计 > LINK_FADE_DUR（0.4s）
+  assert.deepEqual(rows.map((r) => r.segIndex), [0, 1, 2], "图样段 = 模板 lines 全量（含空-空段，segIndex = lines 序号）");
+  assert.ok(rows.every((r) => Math.abs(r.alpha - 0.5) < 1e-9), "统一弱化 α（0.5 = PAT_LINE_DIM；有星段与空槽段同一亮度）");
+  assert.ok(rows.every((r) => !('aId' in r) && !('bId' in r)), "观测面新形态（2.4）：槽位段无星 id 键");
+  assert.equal(rows.length, 3, "提案 links（pa↔pc）不进图样段（星↔星直线通道已解除）");
+  step(6); // 累计 > 旧 LINK_FADE_DUR（0.4s）：静态几何不受时间影响
   rows = eng.inspectPatternLines();
-  assert.ok(rows.every((r) => Math.abs(r.alpha - 0.5) < 1e-9), "坡道播完 → 稳态弱化 α（0.5 = DIM 因子，弱于恒星本体与轨道环）");
+  assert.ok(rows.every((r) => Math.abs(r.alpha - 0.5) < 1e-9), "无逐段坡道：稳态 α 恒 0.5（星座级 α 另行缩放）");
 
-  /* 端点跟随（3.4）：patch 改恒星 off → 段集合不变（无幽灵、无闪烁），端点随落位承接 */
+  /* ④ 空槽装饰点（3.1–3.3）：occupied = min(N, L) = 3 → 空槽 = [3, 4]；
+     α 恒低于图样线；被占槽位不叠加。 */
+  let dots = eng.inspectPatternDots();
+  assert.deepEqual(dots.map((r) => r.slotIndex), [3, 4], "空槽 = 前 min(N, L) 槽位之后的余下内核槽位");
+  assert.ok(dots.every((r) => r.alpha > 0 && r.alpha < 0.5), `装饰点 α MUST 低于图样线（${dots.map((r) => r.alpha)} < 0.5）`);
+  assert.ok(!dots.some((r) => r.slotIndex < 3), "被占槽位不叠加装饰点（恒星本体覆盖）");
+
+  /* ⑤ patch 不重播、段/点恒等（2.1/D2）：恒星 off 滑位只改恒星落位，图样为模板静态几何。 */
   const shifted = patternScene();
   shifted.workspaces[0].stars[0].off = [-40, 0, 6];
   eng.setScene(shifted, "patch");
   step(2);
-  rows = eng.inspectPatternLines();
-  assert.deepEqual(rows.map(keyOf).sort(), ["pa|pb", "pb|pc"], "patch 滑位 → 段集合不变（端点恒等槽位重投影）");
-  assert.ok(rows.every((r) => Math.abs(r.alpha - 0.5) < 1e-9), "patch 不重播淡入（无闪烁）");
+  assert.deepEqual(eng.inspectPatternLines(), rows, "patch 滑位 → 段集合/α 恒等（图样端点恒等槽位坐标）");
+  assert.deepEqual(eng.inspectPatternDots().map((r) => r.slotIndex), [3, 4], "patch 滑位 → 空槽集合不变");
 
-  /* 移除段渐熄幽灵（3.4）：rebuild 收缩 patternLines → 移除段 'out' 渐熄、余段稳态 */
-  const shrunk = patternScene();
-  shrunk.workspaces[0].patternLines = [[0, 1]];
-  eng.setScene(shrunk, "rebuild");
+  /* ⑥ 门控与恒星数联动（3.1）：恒星降至 1 颗 → 空槽扩为 [1..4]；图样段不变（模板派生）。 */
+  const sparse = patternScene();
+  sparse.workspaces[0].stars = [sparse.workspaces[0].stars[0]];
+  eng.setScene(sparse, "rebuild");
   step(1);
-  rows = eng.inspectPatternLines();
-  assert.deepEqual(rows.map(keyOf).sort(), ["pa|pb", "pb|pc"], "移除段以幽灵在册（渐熄中）");
-  const ghostRow = rows.find((r) => keyOf(r) === "pb|pc");
-  const steadyRow = rows.find((r) => keyOf(r) === "pa|pb");
-  assert.ok(ghostRow.alpha < 0.5 && steadyRow.alpha >= 0.49, "幽灵 α 递减、余段稳态不重播淡入");
-  step(10); // > LINK_FADE_DUR
-  rows = eng.inspectPatternLines();
-  assert.deepEqual(rows.map(keyOf), ["pa|pb"], "幽灵播完自灭（无残留段），余段照常");
+  assert.deepEqual(eng.inspectPatternDots().map((r) => r.slotIndex), [1, 2, 3, 4], "恒星数下降 → 空槽按 min(N, L) 扩增");
+  assert.deepEqual(eng.inspectPatternLines().map((r) => r.segIndex), [0, 1, 2], "图样段仅由模板派生（与恒星集合无关）");
+
+  /* ⑦ 空槽判定确定性（3.1）：同恒星集合以不同数组序重放 → 空槽集合与顺序完全一致。 */
+  const shuffled = patternScene();
+  shuffled.workspaces[0].stars = [shuffled.workspaces[0].stars[1], shuffled.workspaces[0].stars[2], shuffled.workspaces[0].stars[0]];
+  eng.setScene(shuffled, "rebuild");
+  step(1);
+  assert.deepEqual(eng.inspectPatternDots().map((r) => r.slotIndex), [3, 4], "乱序重放 → 空槽集合确定性一致（与装配顺序无关）");
+
+  /* ⑧ 旧字段容忍（2.5）：pattern 缺席 / 显式旧字段 patternLines → 零图样、不抛错。 */
+  const legacy = patternScene();
+  delete legacy.workspaces[0].pattern;
+  legacy.workspaces[0].patternLines = [[0, 1], [1, 2]]; // 旧场景快照字段（已退役，按无图样忽略）
+  eng.setScene(legacy, "rebuild");
+  step(1);
+  assert.deepEqual(eng.inspectPatternLines(), [], "pattern 缺席 → 零图样段（不抛错）");
+  assert.deepEqual(eng.inspectPatternDots(), [], "pattern 缺席 → 零装饰点");
+  assert.equal(eng.getScene().workspaces[0].patternLines.length, 2, "旧字段原样留在 sceneData（引擎不消费、不清理）");
+
+  /* ⑨ 门控关闭（无恒星 / 空图样）→ 零图样（呈现与引入本能力前一致）。 */
+  const noStars = patternScene();
+  noStars.workspaces[0].stars = [];
+  eng.setScene(noStars, "rebuild");
+  step(1);
+  assert.deepEqual(eng.inspectPatternLines(), [], "无恒星 → 零图样段（门控）");
+  assert.deepEqual(eng.inspectPatternDots(), [], "无恒星 → 零装饰点（门控同源）");
+  const emptyPattern = patternScene();
+  emptyPattern.workspaces[0].pattern = { slots: [], lines: [] };
+  eng.setScene(emptyPattern, "rebuild");
+  step(1);
+  assert.deepEqual(eng.inspectPatternLines(), [], "空 slots → 零图样（按无图样处理）");
+
+  /* ⑩ 真实绘制面（4.4 机器可验证部分）：图样线 / 装饰点确实进入皮肤 drawBody（引擎不旁路
+     渲染）；段 α 统一、点弱化因子恒低于段 α、点半径为正（屏幕可辨）。皮肤经 setSkin 热换
+     为探针包装（不触碰 DOM、不重建场景）——兼验「切皮肤无破图」的条目形状契约。 */
+  const seen = [];
+  const baseSkin = createSkinD();
+  eng.setSkin({
+    ...baseSkin,
+    drawBody(ctx, it, view) { seen.push(it); return baseSkin.drawBody(ctx, it, view); }
+  });
+  eng.setScene(patternScene(), "rebuild");
+  step(1);
+  const patLines = seen.filter((it) => it.kind === 'constline' && it.pat === true);
+  const patDots = seen.filter((it) => it.kind === 'patdot');
+  assert.equal(patLines.length, 1, "图样线段条目到达皮肤（单条 constline、pat 装饰层标记）");
+  assert.deepEqual(patLines[0].segs.map((s) => s.alpha), [0.5, 0.5, 0.5], "统一弱化 α（有星段与空-空段同亮度）");
+  assert.equal(patDots.length, 1, "空槽装饰点条目到达皮肤（patdot）");
+  assert.deepEqual(patDots[0].pts.map((p) => p.a), [0.22, 0.22], "点弱化因子恒低于段 α（0.22 < 0.5）");
+  assert.ok(patDots[0].pts.every((p) => p.r > 0), "装饰点半径为正（微点可辨）");
+  assert.equal(patDots[0].pts.length, 2, "装饰点数 = 空槽数（2）");
+  eng.setSkin(baseSkin);
 
   /* 观测面守卫：无场景实例 → 空数组不抛错 */
   const dead = createCosmosEngine({ container: stubEl("div"), style: createSkinD() });
-  assert.deepEqual(dead.inspectPatternLines(), [], "无场景 → 空观测面");
+  assert.deepEqual(dead.inspectPatternLines(), [], "无场景 → 空段观测面");
+  assert.deepEqual(dead.inspectPatternDots(), [], "无场景 → 空点观测面");
   dead.dispose();
+
+  eng.stop();
+  eng.dispose();
+  rafQ.length = 0;
+}
+
+/* ── 星座模板名呈现（add-cosmos-template-name-toggle 3.1–3.4 / 4.3 / D3/D4）：
+   装饰样式契约（10px 低 α 宽字距、皮肤令牌取色）；chip 副文本与钻取标牌副行的四象限
+   呈现判定（仅「开关开 ∩ tplZh 非空」出 DOM，其余三态零 DOM 且关闭态串逐字节如旧）；
+   escapeHtml 转义；`dataset.html` 差分守卫（值未变幂等零重写 / 换串重写）；
+   `setTuning` 热翻转：chip 显式刷新通道即时生效、badge 下一帧差分收敛；部分写语义。 ── */
+{
+  /* ① 装饰样式契约（3.4）：chip / badge 共用专用 class，浅/深色双主题走同一皮肤令牌。 */
+  const tplRule = /\.cos-chip \.cos-chip-tpl,\s*\.cos-badge \.cos-chip-tpl \{([^}]*)\}/.exec(ENGINE_CSS);
+  assert.ok(tplRule, "ENGINE_CSS 含 .cos-chip-tpl 装饰样式（chip + badge 共用槽）");
+  assert.ok(/font-size: 10px/.test(tplRule[1]), "副行 10px（chip 副行槽既有字号）");
+  assert.ok(/letter-spacing: 1\.6px/.test(tplRule[1]), "宽字距装饰口径");
+  assert.ok(/opacity: \.5/.test(tplRule[1]), "低 α（弱于计数/活力仪表串）");
+  assert.ok(/var\(--cos-ink-dim/.test(tplRule[1]), "取色走皮肤令牌 --cos-ink-dim（浅/深色主题同源，非硬编码）");
+
+  const container = stubEl("div");
+  const eng = createCosmosEngine({ container, style: createSkinD(), settings: { templateNames: true } });
+  const rootEl = container.children[0];
+  const overlayEl = rootEl._by[".cos-overlay"];
+  const badgeEl = rootEl._by[".cos-badge"];
+  const wsOf = (id, over) => ({
+    id, name: id, pos: [0, 0, 0], stars: [], links: [], planets: [], comets: [],
+    archives: 0, satelliteCount: 0, ...over
+  });
+  const scene = {
+    workspaces: [
+      wsOf("ws-named", { tplZh: "猎户座" }),
+      wsOf("ws-plain", { tplZh: null }),
+      wsOf("ws-escape", { tplZh: '<img src=x onerror=1>&"' })
+    ]
+  };
+  const chipOf = (id) => overlayEl.children.find((el) =>
+    String(el.className).startsWith("cos-chip") && String(el.dataset.html).includes("<b>" + id + "<"));
+
+  eng.setScene(scene, "rebuild");
+  rafQ.length = 0;
+  eng.start();
+  fakeNow = 400000;
+  let tNow = 400000;
+  const step1 = (n = 1) => { for (let i = 0; i < n; i++) { tNow += 50; fakeNow += 50; stepFrame(tNow); } };
+  step1(3);
+
+  /* ② 四象限呈现在 chip：开+有 → 副行；开+null → 无副行；关闭态（后续翻转覆盖）
+     + 有/null 均无副行，且关闭态串与既有格式逐字节一致。 */
+  const namedChip = chipOf("ws-named");
+  const plainChip = chipOf("ws-plain");
+  assert.ok(namedChip && plainChip, "两个星座 chip 均已创建");
+  assert.ok(String(namedChip.dataset.html).includes('<span class="cos-chip-tpl">猎户座</span>'),
+    "开 + tplZh 非空 → 名称行后追加模板名副行");
+  assert.ok(!String(plainChip.dataset.html).includes("cos-chip-tpl"), "开 + tplZh null → 不渲染副行（防御一致性）");
+  assert.match(String(plainChip.dataset.html), /^<b>ws-plain<i class="cos-chip-life (active|sleep)"><\/i><\/b>$/,
+    "无模板名时 chip 串 = 引入本设置前的逐字节格式（零 DOM 变化）");
+
+  /* ③ 转义纪律：模板名入 HTML 串前经既有 escapeHtml（不注入标签/属性）。 */
+  const escapeChip = chipOf("ws-escape");
+  assert.ok(escapeChip, "含特殊字符模板名的 chip 已创建");
+  assert.ok(!String(escapeChip.dataset.html).includes("<img"), "模板名中的标签被转义（不注入元素）");
+  assert.ok(String(escapeChip.dataset.html).includes("&lt;img src=x onerror=1&gt;&amp;&quot;"),
+    "转义与引擎统一 escapeHtml 同源");
+
+  /* ④ 关闭态：chip 立即换串（setTuning 显式触发 updateChipText），且 badge 下一帧差分收敛。 */
+  eng.setTuning({ templateNames: false });
+  assert.ok(!String(namedChip.dataset.html).includes("cos-chip-tpl"), "关闭 → chip 副行即时退场（无需等待下一帧）");
+  assert.match(String(namedChip.dataset.html), /^<b>ws-named<i class="cos-chip-life (active|sleep)"><\/i><\/b>$/,
+    "关闭 → chip 串回落逐字节旧格式");
+  eng.setTuning({ templateNames: true });
+  assert.ok(String(namedChip.dataset.html).includes("猎户座"), "再开 → chip 副行即时回归");
+
+  /* ⑤ 部分写 / 幂等：非布尔入参忽略；同值布尔入参不触达 DOM（差分守卫 + 值变才动作）。 */
+  eng.setTuning({ templateNames: "off" });
+  assert.ok(String(namedChip.dataset.html).includes("猎户座"), "非布尔入参被忽略（部分写语义）");
+  namedChip.innerHTML = "MARKER";
+  eng.setTuning({ templateNames: true });
+  assert.equal(namedChip.innerHTML, "MARKER", "同值布尔入参幂等（不刷新 chip）");
+  namedChip.innerHTML = String(namedChip.dataset.html);
+
+  /* ⑥ 钻取标牌副行（3.3）：计数行后追加同形副行；关闭后下一帧差分收敛；计数仪表不动。 */
+  assert.equal(eng.diveToWs("ws-named"), true, "钻取命中模板名的星座");
+  fakeNow += 1300;
+  step1(2);
+  assert.ok(String(badgeEl.dataset.html).includes('<span class="cos-chip-tpl">猎户座</span>'),
+    "开 + tplZh 非空 → 钻取标牌计数行后追加模板名副行");
+  assert.ok(/<span>✦0 ●0 ◇0 ☄0 ☁0<\/span>/.test(String(badgeEl.dataset.html)), "计数仪表串逐字不变");
+  eng.setTuning({ templateNames: false });
+  step1(1);
+  assert.ok(!String(badgeEl.dataset.html).includes("cos-chip-tpl"), "关闭 → 标牌副行随下一帧差分退场");
+  assert.ok(/<span>✦0 ●0 ◇0 ☄0 ☁0<\/span>/.test(String(badgeEl.dataset.html)), "关闭后计数仪表仍照常");
+  eng.setTuning({ templateNames: true });
+  step1(1);
+  assert.ok(String(badgeEl.dataset.html).includes("猎户座"), "再开 → 标牌副行随差分回归");
+
+  /* ⑦ 冷启动镜像：缺省（未显式 true）→ 关闭 = 默认渲染零变化（同一场景另起实例）。 */
+  const offContainer = stubEl("div");
+  const offEngine = createCosmosEngine({ container: offContainer, style: createSkinD() });
+  const offRoot = offContainer.children[0];
+  const offOverlay = offRoot._by[".cos-overlay"];
+  offEngine.setScene(scene, "rebuild");
+  const offChips = offOverlay.children.filter((el) => String(el.className).startsWith("cos-chip"));
+  assert.ok(offChips.length > 0, "缺省实例 chip 已创建");
+  assert.ok(offChips.every((el) => !String(el.dataset.html).includes("cos-chip-tpl")),
+    "缺省关闭 → 不渲染任何模板名副行（渲染与引入前一致）");
+  offEngine.dispose();
 
   eng.stop();
   eng.dispose();

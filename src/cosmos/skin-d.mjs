@@ -12,7 +12,9 @@
  *  - 卫星：实心圆点（四态色向灰蓝 dim 35%）、子轨道虚线 `[3,5]`、待决策迷你光柱；
  *  - 彗星 `#cfeaff` 白芯长尾；流星暖白 `#ffe9cf`；
  *  - 星云尘埃双色 `#5a6ea0`/`#7a6ea0`；
- *  - 连线虚线 `[2,4]` 金色 0.28α；轨道环虚线 `[4,6]` 金色 0.20α。
+ *  - 连线虚线 `[2,4]` 金色 0.28α；轨道环虚线 `[4,6]` 金色 0.20α；图样全量线同 0.28α
+ *    基线（引擎 `PAT_LINE_DIM` 自缩）；空槽装饰点 `patdot` 取同色 0.28α 基线 × 点弱化
+ *    因子（恒低于图样线，add-cosmos-template-figure-display 3.2）。
  *
  * 转场编排消费面（add-transition-choreography）：birth 出生绘制（恒星淡入+微爆闪 /
  * 星胚轮廓坡道 / 行星滑入 α / 彗星游入尾迹先现核后亮 / 卫星 born 半径+α 坡道）、
@@ -30,7 +32,7 @@
 const TAU = Math.PI * 2;
 
 /* 共享低开销尘埃原语（add-cosmos-render-budget D2）：缓存 sprite + 分色分组。 */
-import { makeDustSprite, dustBatchDraw } from './skin-kit.mjs';
+import { makeDustSprite, dustBatchDraw, patDotDraw } from './skin-kit.mjs';
 
 function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
 function lerp(a, b, t) { return a + (b - a) * t; }
@@ -281,6 +283,13 @@ export function createSkinDeepspace() {
           ctx.stroke();
         });
         ctx.setLineDash([]);
+        return;
+      }
+      if (it.kind === 'patdot') {
+        /* 空槽装饰点（add-cosmos-template-figure-display 3.2）：图样线顶点的微点——
+           取线与行星环同源的暖金，基线 0.28 × 点弱化因子（引擎 pt.a < PAT_LINE_DIM），
+           恒弱于本皮肤的图样线段；纯装饰（不进 picks / 无 hover / 无名牌）。 */
+        patDotDraw(ctx, it, '#ffd696', 0.28);
         return;
       }
       if (it.kind === 'orbit') {

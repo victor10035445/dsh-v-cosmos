@@ -5,7 +5,11 @@
  * 版本 v3 → v4；add-cosmos-native-composer 1.1：星座动作「发送前编辑」呈现分支
  * 版本 v4 → v5；add-cosmos-drag-pan-toggle 1.1：右下角「拖拽平移」开关布尔键
  * 版本 v5 → v6；add-cosmos-layout-tuning 1.1：界面尺寸 12 键（面板 / 按钮 / 动作条 /
- * 搜索框 / 星座标题字号）版本 v6 → v7）。
+ * 搜索框 / 星座标题字号）版本 v6 → v7；add-cosmos-shortcuts 2.1：快捷键子对象
+ * v7 → v8；add-cosmos-rightbar-dock：`launchMode` v9 → v10；
+ * add-cosmos-template-name-toggle 1.1：星座模板名显示布尔键 `templateNames`
+ * 版本 v10 → v11；add-cosmos-zoom-ruler 3.1：删缩放阈值两键 `zoomDiveRatio` /
+ * `zoomFlyOutRatio`（阈值收敛为引擎常量、由顶部缩放标尺呈现），版本 v11 → v12）。
  *
  * 独立模块——client.jsx 消费（store 装载/引擎注入）、test/engine-smoke.mjs /
  * test/settings-panel-smoke.mjs 冒烟直测。
@@ -13,13 +17,15 @@
  * （Node/隐私模式缺席 → 缺省），键 `dsh-v-cosmos:settings`（旧名 `dsh-cosmos:settings`
  * 存量读取回落迁移，写入恒走新键）。
  *
- * 设置面（version 9，add-cosmos-standalone-window 1.1 引入 `launchMode` v8 → v9；
- * v8 = add-cosmos-shortcuts 2.1 的 `shortcuts` 子对象，版本号只进不退）：
+ * 设置面（version 12，add-cosmos-zoom-ruler 引入 v11 → v12：删除缩放阈值两键——
+ * 阈值已收敛为引擎常量并向顶部缩放标尺开放，设置面不再有对应控件；v11 =
+ * add-cosmos-template-name-toggle 的 `templateNames` 布尔键 v10 → v11；
+ * v10 = add-cosmos-rightbar-dock 的 `launchMode` 两档 v9 → v10；v9 = 历史独立窗口变更的
+ * `embedded` / `window` 两档，v10 把历史 `window` 值迁移为 `dock`；v8 =
+ * add-cosmos-shortcuts 2.1 的 `shortcuts` 子对象，版本号只进不退）：
  *  - panSpeed：WASD 基础平移速度（世界单位/秒），缺省 120；
  *  - panShiftBoost：Shift 加速倍率，缺省 3；
  *  - skin：内置皮肤 id（枚举 = `COSMOS_SKIN_IDS`），缺省 `rosepine`（design D2）；
- *  - zoomDiveRatio：银河态缩放进入阈值的参考尺寸百分比（界 60–140），缺省 100；
- *  - zoomFlyOutRatio：钻取态缩放返回阈值的屏幕短边百分比（界 10–50），缺省 25；
  *  - zoomPointerFocus：缩放以指针为焦点（布尔），缺省 true；
  *  - sessionPanelOpen：左缘会话列表面板展开态（布尔，布局偏好），缺省 true
  *    （add-cosmos-session-list-panel 3.3：与皮肤/导航同级持久化，**非**会话态——
@@ -45,11 +51,15 @@
  *    togglePan, voiceToggle }`，缺省 `Escape` / `Backquote` / `KeyM` / `Ctrl+KeyQ`）。
  *    净房口径 = `shortcutsOf`（键位池校验回落缺省 + 读面固定优先序冲突回落，恒无重复），
  *    纯逻辑在 `shortcuts.mjs`；v7 及更早载荷读出补默认（零迁移）。
- *  - launchMode：Cosmos 入口打开方式（add-cosmos-standalone-window 1.1/D4）——
- *    枚举 `COSMOS_LAUNCH_MODES`：`embedded`（缺省，现状：shell.overlay 内嵌整页）/
- *    `window`（同源独立窗口，语义见 src/standalone.mjs）。净房 = 枚举校验回落缺省；
- *    v8 及更早载荷读出补缺省（零迁移，渲染零变化）。桌面形态（非 http(s) 协议）的降级判定
- *    不落在设置面（持久值照存，读取侧按协议分流，见 standalone.mjs）。
+ *  - launchMode：Cosmos 入口打开方式（add-cosmos-rightbar-dock；历史独立窗口变更引入）——
+ *    枚举 `COSMOS_LAUNCH_MODES`：`embedded`（缺省，现状：shell.overlay 内嵌
+ *    整页）/ `dock`（宿主右栏停靠 tab，与左侧会话主栏并排）。净房 = 枚举校验回落缺省；
+ *    v10 迁移步把**历史** `window` 值重映射为 `dock`（旧独立窗口形态退役，历史意图 = 与
+ *    会话并排的 Cosmos）；v8 及更早载荷读出补缺省（零迁移，渲染零变化）。
+ *  - templateNames：星座模板名显示（布尔，纯装饰偏好），缺省 **false**（默认渲染零变化）。
+ *    merge 层随场景装配交付每个工作区命中模板的中文名 `ws.tplZh`（模板分配契约单一出处）；
+ *    开启时在银河星座 chip 副文本与钻取态标牌副行两处呈现，关闭或 `tplZh` 为 null 时
+ *    不渲染任何额外 DOM（add-cosmos-template-name-toggle 1.1/D1/D3）。
  * 后续设置 UI 直接调 `saveCosmosSettings`（写侧净房内置），引擎经 `engine.setTuning` /
  * `engine.setShortcuts` / `engine.setSkin` 热更新（无需重开整页）。
  */
@@ -61,18 +71,24 @@ const SETTINGS_KEY = "dsh-v-cosmos:settings";
 /** 品牌更名前的 localStorage 键（仅读取回落，SHALL NOT 写入）。 */
 const LEGACY_SETTINGS_KEY = "dsh-cosmos:settings";
 export const COSMOS_SETTINGS_KEY = SETTINGS_KEY;
-/** 设置面版本（v9 = add-cosmos-standalone-window 新增 `launchMode`；v8 = 快捷键子对象；
-    v1–v8 载荷读出补默认）。 */
-export const COSMOS_SETTINGS_VERSION = 9;
+/** 设置面版本（v12 = add-cosmos-zoom-ruler：删缩放阈值两键；v11 =
+    add-cosmos-template-name-toggle：新增 `templateNames` 布尔键；v10 =
+    add-cosmos-rightbar-dock：`launchMode` 改 `embedded`/`dock` 两档并迁移历史
+    `window` 值；v9 = 历史独立窗口变更新增 `launchMode`；v8 = 快捷键子对象；
+    v1–v11 载荷读出补默认）。 */
+export const COSMOS_SETTINGS_VERSION = 12;
 
 /**
- * Cosmos 入口打开方式枚举（add-cosmos-standalone-window D4）：
+ * Cosmos 入口打开方式枚举（add-cosmos-rightbar-dock）：
  *  - `embedded`（缺省）：shell.overlay 内嵌整页（现状，渲染零变化）；
- *  - `window`：同源独立窗口（`window.open(origin + "/?cosmos=window")`）。
+ *  - `dock`：宿主右栏停靠 tab（`ctx.sidebarRight.openTab`，与左侧会话主栏并排）。
  */
-export const COSMOS_LAUNCH_MODES = Object.freeze(["embedded", "window"]);
+export const COSMOS_LAUNCH_MODES = Object.freeze(["embedded", "dock"]);
 /** 该键的缺省值（净房与入口分流同源；默认保持现状 = 内嵌）。 */
 export const COSMOS_DEFAULT_LAUNCH_MODE = "embedded";
+/** v10 迁移：旧独立窗口形态的持久值 → 意图最接近的并排形态（右栏停靠）。 */
+export const COSMOS_LEGACY_LAUNCH_MODE_WINDOW = "window";
+export const COSMOS_MIGRATED_LAUNCH_MODE = "dock";
 
 /**
  * 「发送前编辑」呈现分支枚举（add-cosmos-native-composer D1/D5；rework 语义重注）：
@@ -88,8 +104,6 @@ export const COSMOS_SETTINGS_DEFAULTS = Object.freeze({
   panSpeed: 120,
   panShiftBoost: 3,
   skin: COSMOS_DEFAULT_SKIN,
-  zoomDiveRatio: 100,
-  zoomFlyOutRatio: 25,
   zoomPointerFocus: true,
   sessionPanelOpen: true,
   constPreflight: COSMOS_DEFAULT_PREFLIGHT,
@@ -114,20 +128,22 @@ export const COSMOS_SETTINGS_DEFAULTS = Object.freeze({
      `closePage=Escape` / `goHome=Backquote` / `togglePan=KeyM` / `voiceToggle=Ctrl+KeyQ`；
      净房走 `shortcutsOf`（池校验 + 读面冲突固定优先序回落），子对象冻结防误改。 ── */
   shortcuts: Object.freeze({ ...SHORTCUT_DEFAULTS }),
-  /* ── 入口打开方式（add-cosmos-standalone-window 1.1/D4）：缺省 embedded = 现状
-     （内嵌整页，渲染零变化）；`window` = 同源独立窗口（仅 web 形态可用）。 ── */
-  launchMode: COSMOS_DEFAULT_LAUNCH_MODE
+  /* ── 入口打开方式（add-cosmos-rightbar-dock）：缺省 embedded = 现状（内嵌整页，渲染
+     零变化）；`dock` = 宿主右栏停靠 tab（v10 起；历史 `window` 值经迁移重映射）。 ── */
+  launchMode: COSMOS_DEFAULT_LAUNCH_MODE,
+  /* ── 星座模板名显示（add-cosmos-template-name-toggle D1）：缺省关闭 ⇒ 默认渲染零变化
+     （chip / 钻取标牌不追加模板名 DOM）；开启后经 merge 交付的 `ws.tplZh` 呈现中文名。 ── */
+  templateNames: false
 });
 
 /** 界（写侧 400 的前置净房界；越界值落回界内端点，SHALL NOT 抛错）。
     保持纯数值 `[min,max]` 形状——枚举界（skin）以 `COSMOS_SKIN_IDS` 表达、布尔键
-    （zoomPointerFocus / sessionPanelOpen / dragPan）以独立净化分支表达，不混入本表。
-    界面尺寸键全部为数值界（含高度类 `0` 端点 = 自适应）。 */
+    （zoomPointerFocus / sessionPanelOpen / dragPan / templateNames）以独立净化分支表达，
+    不混入本表。界面尺寸键全部为数值界（含高度类 `0` 端点 = 自适应）。
+    v12 起缩放下钻阈值两键已删除（阈值 = 引擎常量，由顶部缩放标尺呈现）。 */
 export const COSMOS_SETTINGS_BOUNDS = Object.freeze({
   panSpeed: [20, 600],
   panShiftBoost: [1, 10],
-  zoomDiveRatio: [60, 140],
-  zoomFlyOutRatio: [10, 50],
   sessionPanelWidth: [200, 420],
   sessionPanelHeight: [0, 2000],
   constPanelWidth: [140, 360],
@@ -171,8 +187,9 @@ function skinOf(value) {
 }
 
 /**
- * 布尔键净房（zoomPointerFocus / sessionPanelOpen / dragPan）：`typeof === "boolean"` 之外
- * 一律回落该键的出厂默认（独立净化分支，与 skin 枚举分支同构，SHALL NOT 抛错）。
+ * 布尔键净房（zoomPointerFocus / sessionPanelOpen / dragPan / templateNames）：
+ * `typeof === "boolean"` 之外一律回落该键的出厂默认（独立净化分支，与 skin 枚举分支
+ * 同构，SHALL NOT 抛错）。
  * @param {unknown} value
  * @param {boolean} fallback 该键的出厂默认
  * @returns {boolean}
@@ -194,12 +211,15 @@ function preflightOf(value) {
 }
 
 /**
- * 入口打开方式净房（add-cosmos-standalone-window 1.1）：枚举外值（含缺失、非字符串、
- * 未知 id）一律回落缺省 `embedded`，与 `skinOf` / `preflightOf` 枚举分支同构，SHALL NOT 抛错。
+ * 入口打开方式净房（add-cosmos-rightbar-dock）：**v10 迁移步**——历史 `window` 值（旧
+ * 独立窗口形态退役）重映射为 `dock`（历史意图 = 不覆盖会话的并排 Cosmos）；其余枚举外值
+ * （含缺失、非字符串、未知 id）一律回落缺省 `embedded`，与 `skinOf` / `preflightOf` 枚举
+ * 分支同构，SHALL NOT 抛错。
  * @param {unknown} value
- * @returns {"embedded"|"window"}
+ * @returns {"embedded"|"dock"}
  */
 function launchModeOf(value) {
+  if (value === COSMOS_LEGACY_LAUNCH_MODE_WINDOW) return COSMOS_MIGRATED_LAUNCH_MODE;
   return typeof value === "string" && COSMOS_LAUNCH_MODES.includes(value)
     ? value
     : COSMOS_DEFAULT_LAUNCH_MODE;
@@ -209,9 +229,11 @@ function launchModeOf(value) {
  * 设置净房（纯函数）：未知键剥离、非法/越界值落回缺省或界内端点。
  * @param {unknown} raw 原始设置对象（v1 载荷无 `skin` 键、v2 载荷无缩放导航三键、
  *        v3 载荷无会话面板展开态、v4 载荷无 `constPreflight`、v5 载荷无 `dragPan`、
- *        v6 载荷无界面尺寸 12 键、v7 载荷无 `shortcuts` 子对象、v8 载荷无 `launchMode` →
- *        逐键补默认）
- * @returns {{ panSpeed: number, panShiftBoost: number, skin: string, zoomDiveRatio: number, zoomFlyOutRatio: number, zoomPointerFocus: boolean, sessionPanelOpen: boolean, constPreflight: "native"|"float", dragPan: boolean, sessionPanelWidth: number, sessionPanelHeight: number, constPanelWidth: number, constPanelHeight: number, addBtnSize: number, hudBtnSize: number, actionBtnWidth: number, actionBtnHeight: number, constActionHeight: number, searchWidth: number, searchHeight: number, wsTitleSize: number, shortcuts: {closePage: string, goHome: string, togglePan: string, voiceToggle: string}, launchMode: "embedded"|"window" }}
+ *        v6 载荷无界面尺寸 12 键、v7 载荷无 `shortcuts` 子对象、v8 载荷无 `launchMode`、
+ *        v9 载荷的历史独立窗口值守恒重映射为 `dock`、v10 载荷无 `templateNames`；
+ *        v11 及更早载荷的 `zoomDiveRatio` / `zoomFlyOutRatio`（v12 已删键）读出即弃
+ *        ——净房投影天然不认识两键，无迁移动作）
+ * @returns {{ panSpeed: number, panShiftBoost: number, skin: string, zoomPointerFocus: boolean, sessionPanelOpen: boolean, constPreflight: "native"|"float", dragPan: boolean, sessionPanelWidth: number, sessionPanelHeight: number, constPanelWidth: number, constPanelHeight: number, addBtnSize: number, hudBtnSize: number, actionBtnWidth: number, actionBtnHeight: number, constActionHeight: number, searchWidth: number, searchHeight: number, wsTitleSize: number, shortcuts: {closePage: string, goHome: string, togglePan: string, voiceToggle: string}, launchMode: "embedded"|"dock", templateNames: boolean }}
  */
 export function sanitizeCosmosSettings(raw) {
   const source = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
@@ -219,8 +241,6 @@ export function sanitizeCosmosSettings(raw) {
     panSpeed: clampTo("panSpeed", source.panSpeed, COSMOS_SETTINGS_DEFAULTS.panSpeed),
     panShiftBoost: clampTo("panShiftBoost", source.panShiftBoost, COSMOS_SETTINGS_DEFAULTS.panShiftBoost),
     skin: skinOf(source.skin),
-    zoomDiveRatio: clampTo("zoomDiveRatio", source.zoomDiveRatio, COSMOS_SETTINGS_DEFAULTS.zoomDiveRatio),
-    zoomFlyOutRatio: clampTo("zoomFlyOutRatio", source.zoomFlyOutRatio, COSMOS_SETTINGS_DEFAULTS.zoomFlyOutRatio),
     zoomPointerFocus: boolOf(source.zoomPointerFocus, COSMOS_SETTINGS_DEFAULTS.zoomPointerFocus),
     sessionPanelOpen: boolOf(source.sessionPanelOpen, COSMOS_SETTINGS_DEFAULTS.sessionPanelOpen),
     constPreflight: preflightOf(source.constPreflight),
@@ -245,14 +265,18 @@ export function sanitizeCosmosSettings(raw) {
        非字符串 / 空串逐键回落缺省，读面冲突按固定优先序回落（返回表恒无重复）；v7 及更早
        载荷（无该子对象）补默认，旧配置零迁移。 */
     shortcuts: shortcutsOf(source.shortcuts),
-    /* 入口打开方式（add-cosmos-standalone-window 1.1/D4）：枚举净房；v8 及更早载荷
-       （无该键）补缺省 `embedded`，默认行为与渲染零变化。 */
-    launchMode: launchModeOf(source.launchMode)
+    /* 入口打开方式（add-cosmos-rightbar-dock）：枚举净房 + v10 迁移（历史 `window` →
+       `dock`）；v8 及更早载荷（无该键）补缺省 `embedded`，默认行为与渲染零变化。 */
+    launchMode: launchModeOf(source.launchMode),
+    /* 星座模板名显示（add-cosmos-template-name-toggle 1.1/D1）：布尔键同构净房——字符串
+       `"on"` / 数字 `1` / null 等手工坏值一律回落缺省 false（SHALL NOT 抛错）；v10 及更早
+       载荷（无该键）补缺省 false，呈现零变化。 */
+    templateNames: boolOf(source.templateNames, COSMOS_SETTINGS_DEFAULTS.templateNames)
   };
 }
 
 /**
- * `storage` 事件 → 设置投影（add-cosmos-standalone-window 2.1；跨窗口即时生效的纯函数面）。
+ * `storage` 事件 → 设置投影（add-cosmos-rightbar-dock 4.1；跨窗口即时生效的纯函数面）。
  *
  * 同源 localStorage 是全部窗口共享的唯一设置面：窗口 A 的「通用」页签写入后，窗口 B
  * 收到 `storage` 事件——本函数只负责「是否与本设置面相关 + 净房后的完整设置」，

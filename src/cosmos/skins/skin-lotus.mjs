@@ -32,7 +32,7 @@ import {
   TAU, clamp, lerp, easeOutK, mix, hexA, hashSeed, hashRand,
   makeGlowCache, trailStroke, sessColor, mixFade, viewKOf, birthAlphaOf, segAlphaOf,
   dustBornK, satBornKOf, createVesselGuard, vesselAnchor,
-  makeDustSprite, dustBatchDraw
+  makeDustSprite, dustBatchDraw, patDotDraw
 } from '../skin-kit.mjs';
 
 /* 荷塘色谱（demo 血统）：水色冷青 = 已创建冷亮域（demo draft 的藕荷粉属暖域，按「皮肤语义
@@ -533,6 +533,14 @@ export function createSkinLotus() {
           ctx.stroke();
         });
         ctx.setLineDash([]);
+        return;
+      }
+
+      if (it.kind === 'patdot') {
+        /* 空槽装饰点（add-cosmos-template-figure-display 3.2）：涟漪顶点微露——
+           取月白、基线 0.22（= 本皮肤涟漪虚线基线），点弱化因子由引擎下发；
+           纯装饰（不进 picks / 无 hover / 无名牌）。 */
+        patDotDraw(ctx, it, MOON, 0.22);
         return;
       }
 

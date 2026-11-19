@@ -36,7 +36,7 @@ import {
   TAU, clamp, lerp, easeOutK, mix, hexA, hashSeed, hashRand,
   makeGlowCache, trailStroke, sessColor, mixFade, viewKOf, birthAlphaOf,
   segAlphaOf, dustBornK, satBornKOf, createVesselGuard, vesselAnchor,
-  makeDustSprite, dustBatchDraw
+  makeDustSprite, dustBatchDraw, patDotDraw
 } from '../skin-kit.mjs';
 
 /* 谱金（demo `complete`）——本皮肤唯一的高光色：总谱的暖黑谱金主调。 */
@@ -369,6 +369,14 @@ export function createSkinFermata() {
           ctx.quadraticCurveTo(mx, my, b.x, b.y);
           ctx.stroke();
         });
+        return;
+      }
+
+      if (it.kind === 'patdot') {
+        /* 空槽装饰点（add-cosmos-template-figure-display 3.2）：谱线顶点微点符——
+           取谱线色、基线 0.26（= 本皮肤连句线基线），点弱化因子由引擎下发；
+           纯装饰（不进 picks / 无 hover / 无名牌）。 */
+        patDotDraw(ctx, it, STAFF, 0.26);
         return;
       }
 

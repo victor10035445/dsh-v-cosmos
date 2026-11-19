@@ -22,8 +22,14 @@
  *  - 星座 pos = 命中模板中心 (ra,dec) 的天球投影（three-use-cosmos-template-sky-layout；
  *    Fibonacci 球壳保留为降级路径）；
  *  - 恒星 off = 星座模板图样落位（two-use-cosmos-template-star-layout：按 (at,id) 规范序
- *    占图样主星位、溢出环形外扩，随落位交付图样连线索引对 patternLines；模板命中缺席
- *    按星座粒度回退确定性哈希散布 starOffset——提案增删不打乱其余恒星槽位）。
+ *    占图样主星位、溢出环形外扩；模板命中缺席按星座粒度回退确定性哈希散布 starOffset——
+ *    提案增删不打乱其余恒星槽位）；
+ *  - 图样 `ws.pattern = { slots, lines }`（add-cosmos-template-figure-display D1/D2）：模板
+ *    derived 静态几何（全部内核槽位世界坐标 + 模板 lines 原样索引对，端点可为空槽位），
+ *    交付门控 = 本星座 `stars` 非空（正式提案 ∪ 星胚 proto）；无恒星不装配、无图样。
+ *    与骨架 `ws.links`（提案关联数据面）相互独立；
+ *  - 模板中文名 = 命中模板条目的 `zh`（add-cosmos-template-name-toggle 2.1/D2）随场景
+ *    装配为 `ws.tplZh`（单一出处 = 本层模板分配；命中缺席 / 缺 `zh` / 非字符串归一 null）。
  */
 
 import { allTemplates, TEMPLATE_COUNT } from "./cosmos/templates.mjs";
@@ -152,6 +158,18 @@ export function templateForWorkspace(wsId) {
   } catch {
     return null;
   }
+}
+
+/**
+ * 模板中文名（add-cosmos-template-name-toggle 2.1/D2）：命中条目的 `zh` 为**非空字符串**
+ * 才交付，命中缺席（防御性）/ 缺 `zh` / 非字符串一律归一为 null（呈现端按无名称处理，
+ * SHALL NOT 抛错）。
+ * @param {object|null} template `templateForWorkspace` 命中产物
+ * @returns {string|null} 中文名（如「猎户座」）或 null
+ */
+export function templateZhOf(template) {
+  const zh = template && typeof template === "object" ? template.zh : null;
+  return typeof zh === "string" && zh ? zh : null;
 }
 
 /** 模板模块整体可用性（three-use-cosmos-template-sky-layout D5）：不可用 → 整层回退。 */
@@ -502,17 +520,22 @@ export const PATTERN_SLOT_GAP = 12;
  *    环容量按弦距公式精确取（2·radius·sin(π/n) ≥ PATTERN_SLOT_GAP），恒星按规范序
  *    顺序占环（第 r 环满员才进第 r+1 环）；环内槽位均分圆周、环相位由该环首个占位
  *    恒星 id 哈希确定性派生（同集合恒同布局）。
- *  - **图样连线交付**（2.6 / req 图样连线呈现）：模板 `lines`（槽位下标对）→ 传入
- *    数组（= 场景最终 stars 数组）下标对；槽位无恒星（恒星数 < 图样位）→ 该对端点
- *    缺席不出线。与骨架 `ws.links`（提案关联数据面）相互独立、原样独立。
+ *  - **图样全量交付**（add-cosmos-template-figure-display 1.1 / D1/D2）：`slots` = 全部
+ *    内核主星位世界坐标（下标 = 模板 `stars` 下标；派生式与恒星内核槽位同源同式），
+ *    `lines` = 模板 `lines` **原样**索引对（下标入 `slots`，端点可为空槽位）——
+ *    MUST NOT 再按端点有无恒星过滤（恒星存在性过滤退役）；非整数/自环/越界索引对的
+ *    结构性损坏防御保留（模板 spec 已冒烟锁定索引合法，防御正常不可达）。
  *  - **降级**（D5）：template 为 null / 图样数据损坏（坐标非有限、stars 缺失）→
  *    返回 null（调用方按星座粒度回退 `starOffset(id, 26)`），MUST NOT 抛错。
  *
  * @param {object|null} template 模板条目（`templateForWorkspace` 命中产物；可为 null）
  * @param {Array<{id: unknown, at?: unknown}>} stars 星座恒星清单（场景最终数组序，
  *        正式提案 ∪ 星胚 proto，元素多余字段被忽略）
- * @returns {{offs: Map<string, [number, number, number]>, lines: Array<[number, number]>}|null}
- *          offs 键 = String(star.id)；null = 本星座回退旧散布
+ * @returns {{offs: Map<string, [number, number, number]>,
+ *            slots: Array<[number, number, number]>,
+ *            lines: Array<[number, number]>}|null}
+ *          offs 键 = String(star.id)；slots 下标 = 模板 stars 下标；lines 下标入 slots；
+ *          null = 本星座回退旧散布
  */
 export function starPatternLayout(template, stars) {
   const list = Array.isArray(stars) ? stars : [];
@@ -545,13 +568,15 @@ export function starPatternLayout(template, stars) {
   const TAU = Math.PI * 2;
   const kernel = tplStars.length;
   const offs = new Map();
-  /* 内核槽位（k < N）：归一化坐标 − 包围盒中心，× 尺度，水平面（y=0）。 */
+  /* 内核槽位坐标（全量、模板派生）：归一化坐标 − 包围盒中心，× 尺度，水平面（y=0）。
+     与下方「被占内核槽位」同源同式（恒星 off 即取本数组前序项）。 */
+  const slots = tplStars.map((s) => [
+    (Number(s.x) - cx) * PATTERN_SCALE, 0, (Number(s.y) - cy) * PATTERN_SCALE
+  ]);
+  /* 被占内核槽位（k < N）：规范序第 k 颗占 slots[k]。 */
   const coreCount = Math.min(kernel, ordered.length);
   for (let k = 0; k < coreCount; k++) {
-    const s = tplStars[k];
-    offs.set(String(ordered[k].star?.id), [
-      (Number(s.x) - cx) * PATTERN_SCALE, 0, (Number(s.y) - cy) * PATTERN_SCALE
-    ]);
+    offs.set(String(ordered[k].star?.id), slots[k].slice());
   }
   /* 溢出环形外扩（k ≥ N）：环容量弦距精确解 → 规范序顺序占环 → 环内均分 + 首占者相位。 */
   if (ordered.length > kernel) {
@@ -583,19 +608,17 @@ export function starPatternLayout(template, stars) {
       offs.set(String(a.star?.id), [Math.cos(angle) * radius, 0, Math.sin(angle) * radius]);
     }
   }
-  /* 图样连线交付（2.6）：模板 lines（槽位下标对）→ 场景 stars 数组下标对；
-     槽位无恒星 → 端点缺失不出线（弱化连线恒等恒星槽位落位的部分前提）。 */
-  const indexById = new Map(list.map((star, i) => [String(star?.id), i]));
-  const slotToIndex = ordered.map((item) => indexById.get(String(item.star?.id)));
+  /* 图样全量索引对（add-cosmos-template-figure-display 1.1 / D1）：模板 lines 原样
+     交付，下标入 `slots`（端点可为空槽位——恒星存在性过滤已退役）。仅保留结构性损坏
+     防御：非整数 / 自环 / 越界索引对剔除（模板 spec 已锁索引合法，防御正常不可达）。 */
   const lines = [];
   for (const pair of tplLines) {
     const a = Number(pair?.[0]), b = Number(pair?.[1]);
     if (!Number.isInteger(a) || !Number.isInteger(b) || a === b) continue;
-    const ia = slotToIndex[a], ib = slotToIndex[b];
-    if (ia == null || ib == null || ia === ib) continue;
-    lines.push([ia, ib]);
+    if (a < 0 || b < 0 || a >= kernel || b >= kernel) continue;
+    lines.push([a, b]);
   }
-  return { offs, lines };
+  return { offs, slots, lines };
 }
 
 /** 星云密度上限（demo 引擎常量沿用；合并层只透传 archives 数值，引擎负责 cap）。 */
@@ -762,16 +785,28 @@ export function mergeScene({ skeleton, sessions, workspaces, statuses = null, no
         act: 0
       });
     }
-    /* 恒星图样落位（two-use-cosmos-template-star-layout 2.x / D6 交付口径不变）：
-       星座级纯函数派生槽位 off 与图样连线索引对——patternLines 引用场景最终 stars
-       数组下标（含星胚槽位），与骨架 `links`（提案关联数据面）相互独立、原样独立。
+    /* 恒星图样落位 + 图样全量交付（two-use-cosmos-template-star-layout 2.x /
+       add-cosmos-template-figure-display 1.2 / D1-D2）：星座级纯函数派生槽位 off 与
+       模板派生静态图样 `{ slots, lines }`——图样仅依赖 ws.id（模板分配确定性），与恒星
+       集合无关，**交付门控 = 本星座 stars 非空**（正式提案 ∪ 星胚 proto；无提案星座
+       不交付任何图样数据，呈现与引入本能力前一致）。与骨架 `links`（提案关联数据面）
+       相互独立、原样独立。
        模板命中缺席 → 该星座整体回退旧 starOffset 散布（D5 降级路径，按星座粒度、
-       不抛错、不中断装配；正常路径不可达）。 */
-    const layout = starPatternLayout(templateForWorkspace(ws.id), stars);
-    let patternLines = [];
+       不抛错、不中断装配；正常路径不可达）→ 无图样。
+       **命中结果复用**（add-cosmos-template-name-toggle D2）：下方 `tplZh` 消费同一次
+       查询结果，使「模板分配契约单一出处」在装配内字面成立（MUST NOT 二次查询）。 */
+    const template = templateForWorkspace(ws.id);
+    const layout = starPatternLayout(template, stars);
+    let pattern = null;
     if (layout) {
       for (const star of stars) star.off = layout.offs.get(star.id) ?? starOffset(star.id, 26);
-      patternLines = layout.lines;
+      /* 冻结快照形态（沿既有交付纪律）：二维数组逐项拷贝，场景间不共享引用。 */
+      if (stars.length > 0) {
+        pattern = {
+          slots: layout.slots.map((slot) => slot.slice()),
+          lines: layout.lines.map((pair) => pair.slice())
+        };
+      }
     } else {
       for (const star of stars) star.off = starOffset(star.id, 26);
     }
@@ -870,9 +905,14 @@ export function mergeScene({ skeleton, sessions, workspaces, statuses = null, no
       pos,
       stars,
       links,
-      /* 图样连线索引对（two 2.6）：引用本数组 stars 下标（含星胚槽位）；引擎据此绘制
-         弱化图样连线（背景层、纯装饰），与 links（提案关联数据面）相互独立。 */
-      patternLines,
+      /* 图样全量几何（add-cosmos-template-figure-display 1.2/D2）：`{ slots, lines }`，
+         由 ws.id 命中模板确定性派生、恒不变；门控 = stars 非空——无提案星座**不装配**
+         本字段（零交付 → 引擎不绘制任何图样线或槽位点）。与 links（提案关联数据面）
+         相互独立。 */
+      ...(pattern ? { pattern } : {}),
+      /* 星座模板中文名（add-cosmos-template-name-toggle 2.1/D2）：由 ws.id 命中模板确定性
+         派生（恒不变），开关开启时供 chip 副文本与钻取标牌副行呈现；命中缺席归 null。 */
+      tplZh: templateZhOf(template),
       planets: planets.sort(byUpdatedAtDesc),
       comets: comets.sort(byUpdatedAtDesc),
       archives: Math.max(0, Math.round(Number(ws.archives) || 0)),
@@ -948,10 +988,13 @@ export function todoBadgeOf(summary) {
  *    （add-celestial-states 3.5：卫星走属性补丁路径，subagent 起停不触发场景级重建）；
  *    相对时间文本（age/when）必须计入：否则「仅时间桶变化」会被误判为 none，
  *    客户端为刷新文本只能全量重建（画面闪烁）。
- *  - "rebuild"：任一集合/连线/图样连线/位置变化——引擎全量重建（dust 重播散、覆盖层
- *    增量对齐、同 id 天体的尾迹按中心继承）。图样连线（two 2.6）与 links 同级：集合
- *    不变时其内容由落位管线确定性派生、理论上恒等；纳入守卫是防御不变量（patternLines
- *    变化而恒星集合不变 = 不可能态，出现即整场重建以恢复一致性）。
+ *  - "rebuild"：任一集合/连线/图样存在性/模板名/位置变化——引擎全量重建（dust 重播散、
+ *    覆盖层增量对齐、同 id 天体的尾迹按中心继承）。图样全量几何 `ws.pattern`
+ *    （add-cosmos-template-figure-display 1.3/D2）由 ws.id 确定性派生恒不变：其**存在性**
+ *    仅随交付门控翻转（星座获得首星 → 装配；失去末星 → 移除），而门控与恒星集合变化
+ *    天然同帧（`sameIdList` 守卫先触发 rebuild）——本守卫是防御不变量，正常路径零触发、
+ *    MUST NOT 引入新判级等级。图样自身内容不进比较面（恒定数据，无逐帧开销）。模板中文名
+ *    `tplZh`（add-cosmos-template-name-toggle 2.1）同属确定性派生字段，同款防御不变量。
  *
  * @param {object|null} prev 上一帧 scene
  * @param {object} next 下一帧 scene
@@ -969,7 +1012,16 @@ export function sceneDiffLevel(prev, next) {
     if (!sameVec(a.pos, b.pos)) return "rebuild";
     if (!sameIdList(a.stars, b.stars) || !sameIdList(a.planets, b.planets) || !sameIdList(a.comets, b.comets)) return "rebuild";
     if (!sameLinks(a.links, b.links)) return "rebuild";
-    if (!sameLinks(a.patternLines, b.patternLines)) return "rebuild";
+    /* 图样存在性守卫（add-cosmos-template-figure-display 1.3/D2）：ws.pattern 仅由
+       ws.id 派生、恒不变，存在性只在门控翻转（首星装配 / 末星移除）时变化——该翻转与
+       恒星集合变化同帧（上方 sameIdList 已 return "rebuild"）。本行是**防御不变量**：
+       同恒星集合而存在性不一致 = 不可能态（正常路径零触发）。内容不比较（恒定数据）。 */
+    if (!a.pattern !== !b.pattern) return "rebuild";
+    /* 模板中文名（add-cosmos-template-name-toggle 2.1/D2）：由 ws.id 确定性派生 ⇒ 同 id
+       值恒等；不一致 = 不可能态 → 整场重建以恢复一致性（沿图样存在性守卫先例的**防御
+       不变量**，正常路径零触发）。MUST NOT 并入 patch 属性签名（恒不变字段判 patch 是
+       误判面：切换模板名属呈现层开关，不进场景差分）。 */
+    if ((a.tplZh ?? null) !== (b.tplZh ?? null)) return "rebuild";
     /* 名称/路径是面板与 chip 的可见字段（重命名、工作区迁移），必须触发 patch——
        否则会被判 none 而在客户端早退，界面文本停留在旧值。 */
     if (a.name !== b.name || a.path !== b.path) patch = true;

@@ -188,6 +188,9 @@ function itemsOf(ws) {
          未适配皮肤忽略标记回落普通段（本条让 12 套皮肤都执行到带标记的形状）。 */
       { a: { x: 2, y: 2 }, b: { x: 7, y: 4 }, alpha: 1, rel: true, relAlpha: 0.6 }
     ], ws, alpha: 1 },
+    /* 空槽装饰点（add-cosmos-template-figure-display 3.2）：`patdot` 装饰层条目——
+       12 套皮肤各自母语取色/基线落地，α 恒低于同皮肤图样线段。 */
+    { kind: "patdot", z: 0, pts: [{ x: 3, y: 4, r: 1.4, a: 0.22 }, { x: 7, y: 8, r: 1.1, a: 0.22 }], ws, alpha: 1, pat: true },
     { kind: "orbit", z: 0, orbitPts: [{ x: 0, y: 0 }, { x: 5, y: 5 }, { x: 9, y: 2 }], ws, alpha: 1, data: {}, rel: true, relAlpha: 0.7 },
     /* 恒星：四态 × fx/birth 组合 */
     { kind: "star", z: 0, x: 3, y: 3, r: 6, alpha: 1, hovered: true, selected: false, ws, fx: { type: "surge", t0: 0, dur: 1.2 }, birth: { alpha: 0.6, k: 0.4, degraded: false, trailAlpha: 0.6 }, data: { id: "s-exec", lifecycle: "executed", act: 1, starIndex: 0 } },

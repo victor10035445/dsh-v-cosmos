@@ -23,7 +23,7 @@ which deletes a single anchor).
 | **In-place actions** | Info cards: open session, archive session (running work is skipped, never stopped), dismiss embryo (two-click confirm, removes only the anchor file) |
 | **Navigation** | 1.3s dive-in from a constellation chip / star, layered Esc; search filter; WASD pan (Shift boost), wheel / pinch zoom, drag-pan toggle |
 | **Look & config** | 12 built-in skins; six settings tabs (General / Quick actions / Constellation actions / Skins / Interface / Shortcuts); configurable global keys and UI sizes |
-| **Standalone window** | Same-origin `?cosmos=window` window that can sit beside the main shell with live data |
+| **Split pane** | Dock Cosmos in the DSH right sidebar beside the conversation; actions keep full semantics in the same window (fresh session / explicit binding / model switch / auto-send), identically on web and desktop |
 | **Zero intrusion** | Always read-only toward `openspec/` (sole write exception: the user-clicked embryo dismissal; zero-write asserted by smoke suites); no official DSH package is modified |
 
 ## Installation

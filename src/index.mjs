@@ -5,12 +5,25 @@
  *  - GET  /api/dsh-v-cosmos/scene  星空骨架 JSON（星座/恒星/连线/星云/关联边；
  *                                 **会话不在其列**——会话事实走浏览器半区官方镜像）
  *  - GET  /api/dsh-v-cosmos/events SSE 轻帧广播：`proposals-changed` /
- *                                 `associations-changed`（帧体不带载荷，客户端收到
- *                                 后自行重拉 scene——hive 同款；心跳注释防代理断连）。
- *                                 另：`role=cosmos-window` 连接 = Cosmos 独立窗口占位
- *                                 （add-cosmos-standalone-window D2），占位计数经
- *                                 `cosmos-presence-changed` 帧（`{type, count}`，计数即
- *                                 载荷）在连接建立/增量/断开时广播；断开自动清位。
+ *                                 `associations-changed` / `queue-changed`（帧体不带载荷，
+ *                                 客户端收到后自行重拉 scene / queue——hive 同款；心跳注释
+ *                                 防代理断连）。
+ *  - 提案动作自动执行队列（add-cosmos-action-queue 4.1 / design D6）：
+ *                                 `GET /queue` 全量快照（每星座 `{paused, pausedAt, counts,
+ *                                 entries}`；条目投影不含 prompt 正文，executing 子态
+ *                                 `running|waiting` 由调度器活动信号推导）；
+ *                                 `POST /queue/enqueue` `{wsId, proposalId, buttonName}`
+ *                                 （按当前按钮配置落快照；入队时刻复验 `actionButtonVisible`
+ *                                 同谓词，400 gate；重复/超限 400 duplicate|limit）；
+ *                                 `POST /queue/reorder|remove|clear|pause|resume`（操作矩阵
+ *                                 由 queue-store 校验，非法目标 400；写操作幂等）；变更后
+ *                                 广播 `queue-changed` 轻帧。队列服务端权威（持久化
+ *                                 `$DSH_HOME/storages/dsh-v-cosmos.queues.json`），执行走
+ *                                 进程内 `sessionController` 直投（create → selectModel →
+ *                                 rename → prompt(mode=queue)，见 session-executor.mjs），
+ *                                 完成判定用宿主 agent 事件面 + 冷读双源（活体 agents.get
+ *                                 优先 → sessionController.list 摘要）。
+ *                                 会话服务不可用 → 条目 failed + 队列暂停，**不回落** hero。
  *  - GET/PUT /api/dsh-v-cosmos/config 动作按钮配置（add-cosmos-proposal-actions）：
  *                                 GET 返回 `{status, revision, value, base, user, writable}`
  *                                 （base = 补丁层 entry config，user = 共享存储节，
@@ -97,7 +110,16 @@ import { existsSync, mkdirSync, openSync, readFileSync, readdirSync, closeSync, 
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildSkeleton } from "./scan.mjs";
+import { buildSkeleton, scanProposal } from "./scan.mjs";
+import { actionButtonVisible } from "./buttons.mjs";
+import {
+  createQueueStore,
+  proposalDirPath,
+  publicEntryOf,
+  publicSnapshotOf
+} from "./queue-store.mjs";
+import { createQueueScheduler } from "./queue-scheduler.mjs";
+import { createQueueDeliverer, createSessionReader } from "./session-executor.mjs";
 import { normalizeView, createConfigStore, resolveConfigStorePath } from "./configstore.mjs";
 import {
   normalizeArchiveRequest,
@@ -119,9 +141,6 @@ import {
   applyBinding,
   explicitBoundSessionIds
 } from "./associations.mjs";
-/* 独立窗口占位注册表（add-cosmos-standalone-window design D2）：纯逻辑模块，`/events` 的
-   `role=cosmos-window` 连接在此登记；计数帧经既有 SSE 通道广播（不另起通道）。 */
-import { createPresenceRegistry, isCosmosWindowRole, presenceFrameOf } from "./presence.mjs";
 /* cosmos-spec 技能 provider 纯逻辑（step3-cosmos-skill-provider-render 1.1/1.2）：
    扫描 / 令牌渲染 / 兜底反馈组合全部在纯逻辑模块，本文件只做宿主接线。 */
 import {
@@ -143,11 +162,15 @@ export const name = "dsh-v-cosmos";
  *
  * `tools`（step3-cosmos-skill-provider-render）：与 agents / sessions 同级核心服务
  * （恒在），供路径令牌读取兜底的 `tools/post-execute` 监听注册（design D5）。
+ * `sessionController`（swap-cosmos-queue-native-executor）：队列执行通道的宿主核心服务
+ * ——进程内建会话/选模型/改名/投递都经它（queen 同款必需引用，支持的宿主上恒在）。
+ * 声明而未挂载属宿主异常老化，插件与 queen 同命运；运行期仍对方法残缺做探测兜底
+ * （`session-executor.mjs`，D3），把「服务在但残缺」归显式失败而非抛穿。
  * `skills` **MUST NOT** 入顶层 inject——可选服务声明而未挂载会让整个插件在无 skills
  * 环境失活；provider 分支改走条件注入 `ctx.inject(['skills'], …)`：skills 缺席时仅
  * provider 不激活，其余插件能力照常（design D5 / spec「skills 服务缺席」场景）。
  */
-export const inject = ["webServer", "agents", "workspaceRegistry", "sessions", "tools"];
+export const inject = ["webServer", "agents", "sessionController", "workspaceRegistry", "sessions", "tools"];
 
 const API_PREFIX = "/api/dsh-v-cosmos";
 /** 旧插件名（品牌更名前的存储文件名，读取回落迁移用；写入恒走新名）。 */
@@ -421,10 +444,6 @@ export function apply(ctx, config, options = {}) {
   /** 已执行过至少一次全量扫描（懒启动门）。 */
   let scanned = false;
   const sseClients = new Set();
-  /* 独立窗口占位登记（add-cosmos-standalone-window D2）：token = 该窗口的 `/events`
-     连接对象，连接断开即清位（无崩溃残留、无 TTL）。计数经 `cosmos-presence-changed`
-     轻帧广播；主壳座位据此禁用（入口互斥）。 */
-  const presence = createPresenceRegistry();
   let heartbeat = null;
   /** 提案目录首次检测时刻（birthMs 取不到时规则 2 的回落基准）。 */
   const firstSeenMs = new Map();
@@ -444,9 +463,6 @@ export function apply(ctx, config, options = {}) {
       }
     }
   };
-
-  /** 占位计数全量帧广播（连接建立/占位增量/释放共用：客户端据此自愈，重连无需补发请求）。 */
-  const broadcastPresence = () => broadcast(presenceFrameOf(presence.count()));
 
   const startHeartbeat = () => {
     if (heartbeat) return;
@@ -588,6 +604,134 @@ export function apply(ctx, config, options = {}) {
       if (out.length >= HEURISTIC_SESSION_CAP) break;
     }
     return out;
+  };
+
+  /* ── 提案动作自动执行队列（add-cosmos-action-queue 4.1）：服务端权威 ──
+     队列状态与调度器是服务端单例（多窗口/独立窗口共享；页面全关也照常推进）；浏览器半区
+     纯投影（`queue-changed` 轻帧 → 客户端拉 `GET /queue` 对账）。
+
+     执行通道 = 进程内 `sessionController` 直投（swap-cosmos-queue-native-executor：零配置、
+     零外部插件；链 create → selectModel → rename → prompt(mode=queue) 见 session-executor.mjs）。
+     完成判定信号面 = 宿主 agent 事件面（`agent/status` + 两道交互瀑布，prepend 观测）+ 重启
+     冷读双源（活体 `ctx.agents.get(id).status` 优先 → 非活体 `sessionController.list()` 摘要）。 */
+
+  /** 队列存储（`$DSH_HOME/storages/dsh-v-cosmos.queues.json`，原子写）。 */
+  const queueStore = createQueueStore({ logger: ctx.logger ?? null });
+
+  /** 投递器（失败显式返回原因；MUST NOT 回落前台 hero 通道）。 */
+  const deliverQueuedEntry = createQueueDeliverer({
+    sessionController: ctx.sessionController,
+    agents: ctx.agents,
+    logger: ctx.logger ?? null
+  });
+
+  /** 冷读器（重启对账：活体 status 优先 → list 摘要；waiting 恒 false）。 */
+  const readQueueSession = createSessionReader({
+    sessionController: ctx.sessionController,
+    agents: ctx.agents
+  });
+
+  /**
+   * 该提案的「活动信号」（服务端口径）：关联存储中属于该提案的会话里，处于 running 或
+   * 等待决策的条数。与客户端 `act`（busy ∨ waiting ∨ 委托忙碌计数）同口径的**服务端可达
+   * 部分**——委托忙碌服务端不可见，按 0 计（spike-findings §1.3 已如实标注）。
+   */
+  const queueActivityActOf = (wsId, proposalId) => {
+    const workspacePath = workspacePathOf(wsId);
+    if (!workspacePath) return 0;
+    let act = 0;
+    for (const entry of entries) {
+      if (entry.workspace !== workspacePath || entry.proposal !== proposalId) continue;
+      const state = scheduler.sessionStateOf(entry.sessionId);
+      if (state !== null && (state.running === true || state.waiting > 0)) act += 1;
+    }
+    return act;
+  };
+
+  /** 执行时刻复验（与动作条渲染门控同一谓词 `actionButtonVisible`；不过 → skipped）。 */
+  const reverifyQueuedEntry = (entry) => {
+    const preState = typeof entry?.button?.preState === "string" ? entry.button.preState : "";
+    if (!preState) return { ok: true };
+    const proposal = scanProposal(entry.proposalId, entry.proposalDir, readers.readTasks, readers.readBirthMs, readers.readState);
+    const act = queueActivityActOf(entry.wsId, entry.proposalId);
+    return actionButtonVisible({ preState }, { lifecycle: proposal.lifecycle, act })
+      ? { ok: true }
+      : { ok: false, reason: "prestate-drift" };
+  };
+
+  /** 队列变更轻帧（帧体不带载荷）。 */
+  const broadcastQueue = () => broadcast({ type: "queue-changed" });
+
+  /** 调度器（单飞 / 暂停只挡 advance / 完成判定 / 重启对账）。 */
+  const scheduler = createQueueScheduler({
+    store: queueStore,
+    deliver: deliverQueuedEntry,
+    readSession: readQueueSession,
+    reverify: reverifyQueuedEntry,
+    isArchived: (sessionId) => archivedSessionIds().has(sessionId),
+    onChange: broadcastQueue,
+    notify: (message) => {
+      ctx.logger?.warn?.("[dsh-v-cosmos] 队列：%s", String(message));
+    },
+    logger: ctx.logger ?? null
+  });
+
+  /** 对外快照（`GET /queue`）：叠加调度器活动信号（executing → running/waiting 子态）。 */
+  const queueViewSnapshot = () => ({
+    ...publicSnapshotOf(queueStore.doc, (wsId, entry) => scheduler.activityOf(wsId, entry)),
+    revisedAt: queueStore.revisedAt
+  });
+
+  /**
+   * 宿主 agent 事件面 → 调度器：
+   *  - `agent/status`：running/idle 迁移（`payload.agent.id` = 会话 id）；
+   *  - `approval/request` / `user-questions/request`：**prepend** 观察者——`[实证]`
+   *    （add-cosmos-action-queue 探索）：有浏览器连接时 `dsh-api-remotes` 的转发监听者
+   *    会持有整条链直到人应答，非 prepend 监听者在该路径上永远收不到请求（本插件的主场景
+   *    正是浏览器常开）。观察者恒 `next()` 透传、`finally` 配对进出沿，绝不吞链、不改变
+   *    官方应答者行为。
+   * @returns {() => void} 卸载函数
+   */
+  const installQueueListeners = () => {
+    if (typeof ctx.on !== "function") return () => {};
+    const disposers = [];
+    disposers.push(
+      ctx.on("agent/status", (payload) => {
+        try {
+          scheduler.onAgentStatus({ sessionId: payload?.agent?.id, status: payload?.status });
+        } catch (error) {
+          ctx.logger?.warn?.("[dsh-v-cosmos] 队列 agent/status 归约失败: %s", String(error?.message || error));
+        }
+      })
+    );
+    const joinInteraction = (event) => {
+      disposers.push(
+        ctx.on(event, (request, next) => {
+          const sessionId = request?.agent?.session?.header?.id ?? request?.agent?.id;
+          if (!sessionId || typeof next !== "function") return typeof next === "function" ? next() : undefined;
+          scheduler.interactionEnter(sessionId);
+          let result;
+          try {
+            result = next();
+          } catch (error) {
+            scheduler.interactionExit(sessionId);
+            throw error;
+          }
+          return Promise.resolve(result).finally(() => scheduler.interactionExit(sessionId));
+        }, { prepend: true })
+      );
+    };
+    joinInteraction("approval/request");
+    joinInteraction("user-questions/request");
+    return () => {
+      for (const dispose of disposers) {
+        try {
+          dispose?.();
+        } catch {
+          /* ignore */
+        }
+      }
+    };
   };
 
   /** 启发式执行（单工作区）：规则 1（归属+slug）优先、规则 2（birthtime 窗口）兜底。
@@ -888,6 +1032,15 @@ export function apply(ctx, config, options = {}) {
       })
       : null;
 
+    /* ── 队列：装载 + 事件面挂接 + 重启对账/推进（add-cosmos-action-queue 4.1） ──
+       装载先于挂载（对账必须看到持久化条目）；`scheduler.start()` 冷读在途条目
+       （launching/executing）后逐队列推进。失败只告警（路由与投影不受影响）。 */
+    queueStore.load();
+    const disposeQueueListeners = installQueueListeners();
+    void scheduler.start().catch((error) => {
+      ctx.logger?.warn?.("[dsh-v-cosmos] 队列启动对账失败: %s", String(error?.message || error));
+    });
+
     const readJsonBody = async (req) => {
       const chunks = [];
       for await (const chunk of req) chunks.push(typeof chunk === "string" ? Buffer.from(chunk) : chunk);
@@ -1133,10 +1286,125 @@ export function apply(ctx, config, options = {}) {
             return;
           }
 
-          /* ── SSE 轻帧广播（add-cosmos-standalone-window D2 扩 `role` 角色连接） ──
-             独立窗口以 `?role=cosmos-window` 连接 → 登记占位；连接建立（含重连）即广播
-             当前全量计数（客户端自愈）；占位增量/释放（连接 close）再广播一次。既有心跳、
-             proposals/associations 帧机制零改动。 */
+          /* ── 动作执行队列（add-cosmos-action-queue 4.1 / design D6） ──
+             `GET /queue` 全量快照（UI 纯投影）；`POST /queue/*` 操作面：enqueue 按当前按钮
+             配置落快照（入队时刻复验与渲染门控同谓词）、reorder/remove/clear/pause/resume
+             由 queue-store 校验操作矩阵（非法目标 400）。每次成功变更广播 `queue-changed`
+             轻帧；返回体恒 `{ok:...}`（前端据此 toast）。 */
+          if (route === "/queue" && req.method === "GET") {
+            json(res, 200, { ok: true, queue: queueViewSnapshot() });
+            return;
+          }
+          if (route.startsWith("/queue/") && req.method === "POST") {
+            const action = route.slice("/queue/".length);
+            const body = await readJsonBody(req);
+            const wsId = typeof body?.wsId === "string" ? body.wsId.trim() : "";
+            if (!wsId) {
+              json(res, 400, { error: "invalid", reason: "缺少 wsId" });
+              return;
+            }
+            /* 工作区必须已在册（未知星座的队列操作一律拒绝，不落任何空队列）。 */
+            const workspacePath = workspacePathOf(wsId);
+            if (!workspacePath) {
+              json(res, 400, { error: "workspace/unknown" });
+              return;
+            }
+            if (action === "enqueue") {
+              const proposalId = typeof body?.proposalId === "string" ? body.proposalId.trim() : "";
+              const buttonName = typeof body?.buttonName === "string" ? body.buttonName.trim() : "";
+              if (!proposalId || !buttonName) {
+                json(res, 400, { error: "invalid", reason: "缺少 proposalId/buttonName" });
+                return;
+              }
+              const proposalDir = proposalDirPath(workspacePath, proposalId);
+              if (!proposalDir || !existsSync(proposalDir)) {
+                json(res, 400, { error: "proposal/unknown" });
+                return;
+              }
+              const view = configStore.snapshot(baseView);
+              /* `view.value.buttons` 已是 `normalizeButtons` 归一化后的数组（读面容错）。 */
+              const buttonList = Array.isArray(view?.value?.buttons) ? view.value.buttons : [];
+              const button = buttonList.find((item) => item.name === buttonName);
+              if (!button) {
+                json(res, 400, { error: "button/unknown" });
+                return;
+              }
+              /* 入队复验（spec「入队链路与前置状态复验」）：与动作条渲染门控同一谓词。 */
+              const proposal = scanProposal(proposalId, proposalDir, readers.readTasks, readers.readBirthMs, readers.readState);
+              if (!actionButtonVisible(button, { lifecycle: proposal.lifecycle, act: queueActivityActOf(wsId, proposalId) })) {
+                json(res, 400, { error: "gate", reason: "前置状态不匹配" });
+                return;
+              }
+              const enqueued = queueStore.enqueue({ wsId, proposalId, proposalDir, button });
+              if (enqueued.ok !== true) {
+                json(res, 400, { error: enqueued.error });
+                return;
+              }
+              broadcastQueue();
+              scheduler.kick(wsId);
+              json(res, 200, { ok: true, entry: publicEntryOf(enqueued.entry) });
+              return;
+            }
+            if (action === "reorder") {
+              const entryId = typeof body?.entryId === "string" ? body.entryId : "";
+              const direction = body?.direction === "up" ? "up" : body?.direction === "down" ? "down" : "";
+              if (!entryId || !direction) {
+                json(res, 400, { error: "invalid", reason: "缺少 entryId/direction" });
+                return;
+              }
+              const result = queueStore.reorder({ wsId, entryId, direction });
+              if (result.ok !== true) {
+                json(res, 400, { error: result.error });
+                return;
+              }
+              broadcastQueue();
+              json(res, 200, { ok: true });
+              return;
+            }
+            if (action === "remove") {
+              const entryId = typeof body?.entryId === "string" ? body.entryId : "";
+              if (!entryId) {
+                json(res, 400, { error: "invalid", reason: "缺少 entryId" });
+                return;
+              }
+              const result = queueStore.remove({ wsId, entryId });
+              if (result.ok !== true) {
+                json(res, 400, { error: result.error });
+                return;
+              }
+              broadcastQueue();
+              json(res, 200, { ok: true });
+              return;
+            }
+            if (action === "clear") {
+              const result = queueStore.clear({ wsId });
+              if (result.ok !== true) {
+                json(res, 400, { error: result.error });
+                return;
+              }
+              broadcastQueue();
+              json(res, 200, { ok: true, removed: result.removed });
+              return;
+            }
+            if (action === "pause" || action === "resume") {
+              const paused = action === "pause";
+              const result = queueStore.setPaused({ wsId, paused });
+              if (result.ok !== true) {
+                json(res, 400, { error: result.error });
+                return;
+              }
+              broadcastQueue();
+              /* 继续 = 立即尝试启动队首（暂停期间完成/跳过的条目重新推进）。 */
+              if (!paused) scheduler.kick(wsId);
+              json(res, 200, { ok: true, paused: result.paused });
+              return;
+            }
+            json(res, 400, { error: "invalid", reason: "未知队列操作" });
+            return;
+          }
+
+          /* ── SSE 轻帧广播（add-cosmos-entry）：既有心跳、proposals/associations
+             帧机制；连接建立/断开只增减客户端集合。 ── */
           if (route === "/events" && req.method === "GET") {
             res.writeHead(200, {
               "content-type": "text/event-stream",
@@ -1146,16 +1414,9 @@ export function apply(ctx, config, options = {}) {
             res.write("retry: 3000\n\n");
             res.write(": connected\n\n");
             sseClients.add(res);
-            const windowRole = isCosmosWindowRole(url.searchParams.get("role"));
-            if (windowRole) presence.add(res);
             startHeartbeat();
-            /* 连接建立即广播全量计数（含本连接）：任何客户端重连后按当前计数校正按钮态。 */
-            broadcastPresence();
             res.on("close", () => {
-              const wasWindow = presence.delete(res);
               sseClients.delete(res);
-              /* 占位释放 → 全体客户端（主壳座位）即时解锁。 */
-              if (wasWindow) broadcastPresence();
               maybeStopHeartbeat();
             });
             return;
@@ -1170,6 +1431,8 @@ export function apply(ctx, config, options = {}) {
 
     return () => {
       dispose();
+      disposeQueueListeners(); // 摘除 agent 事件面监听
+      scheduler.dispose(); // 清队列定时器（持久化状态不触碰）
       stopConfigWatch();
       disposeTokenFallback?.(); // 摘除路径令牌读取兜底监听
       for (const workspaceId of [...watchers.keys()]) dropWatcher(workspaceId);
@@ -1185,8 +1448,6 @@ export function apply(ctx, config, options = {}) {
         }
       }
       sseClients.clear();
-      /* 插件卸载清场：占位归零（连接随后全部 end；本集合是判定权威，MUST NOT 留残余）。 */
-      presence.reset();
       if (heartbeat) clearInterval(heartbeat);
     };
   }, "dsh-v-cosmos: api routes");

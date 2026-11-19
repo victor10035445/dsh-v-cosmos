@@ -579,7 +579,7 @@ const BUTTON = { name: "审查", prompt: "请使用 /cosmos-review 审查本提�
   const { COSMOS_DEFAULT_SKIN, COSMOS_SKINS, skinCardOf } = await import("../src/cosmos/skin-registry.mjs");
   const { COSMOS_SETTINGS_VERSION, loadCosmosSettings, sanitizeCosmosSettings, saveCosmosSettings } = await import("../src/settings.mjs");
 
-  assert.equal(COSMOS_SETTINGS_VERSION, 9, "设置面 v9（v8 = shortcuts 子对象，v9 = launchMode；版本号只进不退）");
+  assert.equal(COSMOS_SETTINGS_VERSION, 12, "设置面 v12（v10 = launchMode/window→dock 迁移，v11 = templateNames，v12 = 删缩放阈值两键；版本号只进不退）");
   const cards = COSMOS_SKINS.map(skinCardOf);
   assert.equal(cards.length, 12, "12 张卡片");
   assert.deepEqual(cards.map((c) => c.id), COSMOS_SKINS.map((s) => s.id), "卡片顺序 = 注册表顺序");
@@ -623,18 +623,15 @@ const BUTTON = { name: "审查", prompt: "请使用 /cosmos-review 审查本提�
     saveCosmosSettings
   } = await import("../src/settings.mjs");
 
-  assert.equal(COSMOS_SETTINGS_VERSION, 9, "设置面 v9（快捷键子对象与 launchMode 并入同一存储面）");
+  assert.equal(COSMOS_SETTINGS_VERSION, 12, "设置面 v12（v10 = dock 迁移，v11 = templateNames，v12 = 删缩放阈值两键）");
   assert.deepEqual(
-    [COSMOS_SETTINGS_DEFAULTS.zoomDiveRatio, COSMOS_SETTINGS_DEFAULTS.zoomFlyOutRatio, COSMOS_SETTINGS_DEFAULTS.zoomPointerFocus],
-    [100, 25, true],
-    "三键默认：进入 100% / 返回 25% / 指针聚焦开"
+    [COSMOS_SETTINGS_DEFAULTS.zoomPointerFocus, "zoomDiveRatio" in COSMOS_SETTINGS_DEFAULTS, "zoomFlyOutRatio" in COSMOS_SETTINGS_DEFAULTS],
+    [true, false, false],
+    "导航组仅保留指针聚焦；两阈值键已退场"
   );
   assert.equal(COSMOS_SETTINGS_DEFAULTS.sessionPanelOpen, true, "会话列表面板缺省展开（布局偏好，add-cosmos-session-list-panel 3.3）");
-  assert.deepEqual(
-    [COSMOS_SETTINGS_BOUNDS.zoomDiveRatio, COSMOS_SETTINGS_BOUNDS.zoomFlyOutRatio],
-    [[60, 140], [10, 50]],
-    "数值界：进入 60–140 / 返回 10–50"
-  );
+  assert.equal("zoomDiveRatio" in COSMOS_SETTINGS_BOUNDS, false, "进入阈值数值界已删除");
+  assert.equal("zoomFlyOutRatio" in COSMOS_SETTINGS_BOUNDS, false, "返回阈值数值界已删除");
 
   /* 即时生效数据链（纯面）：改动 → 写持久化 → 读回；越界/非法净化 */
   const store = new Map();
@@ -644,21 +641,30 @@ const BUTTON = { name: "审查", prompt: "请使用 /cosmos-review 审查本提�
     removeItem: (key) => store.delete(key)
   };
   try {
-    const applied = saveCosmosSettings({ zoomDiveRatio: 80, zoomFlyOutRatio: 40, zoomPointerFocus: false });
+    const applied = saveCosmosSettings({ zoomPointerFocus: false });
+    assert.equal(applied.zoomPointerFocus, false, "指针聚焦改动写入净房结果");
+    assert.equal(loadCosmosSettings().zoomPointerFocus, false, "重开读回（持久化）");
+    /* v11 存量（含两阈值键）读出即弃：无迁移动作、落盘不再含两键 */
+    store.set("dsh-v-cosmos:settings", JSON.stringify({
+      zoomDiveRatio: 80, zoomFlyOutRatio: 40, zoomPointerFocus: true, templateNames: true
+    }));
+    const loaded = loadCosmosSettings();
     assert.deepEqual(
-      [applied.zoomDiveRatio, applied.zoomFlyOutRatio, applied.zoomPointerFocus],
-      [80, 40, false],
-      "三控件改动写入净房结果"
+      [loaded.zoomPointerFocus, loaded.templateNames, "zoomDiveRatio" in loaded, "zoomFlyOutRatio" in loaded],
+      [true, true, false, false],
+      "v11 存量两阈值键读出即弃，其余键保留"
+    );
+    saveCosmosSettings({}); // 任一写动作 → 落盘净房形状
+    const disk = JSON.parse(store.get("dsh-v-cosmos:settings"));
+    assert.deepEqual(
+      ["zoomDiveRatio" in disk, "zoomFlyOutRatio" in disk],
+      [false, false],
+      "旧键不落盘（无迁移动作）"
     );
     assert.deepEqual(
-      [loadCosmosSettings().zoomDiveRatio, loadCosmosSettings().zoomFlyOutRatio, loadCosmosSettings().zoomPointerFocus],
-      [80, 40, false],
-      "重开读回（持久化）"
-    );
-    assert.deepEqual(
-      [sanitizeCosmosSettings({ zoomDiveRatio: 9999 }).zoomDiveRatio, sanitizeCosmosSettings({ zoomFlyOutRatio: "x" }).zoomFlyOutRatio, sanitizeCosmosSettings({ zoomPointerFocus: "yes" }).zoomPointerFocus],
-      [140, 25, true],
-      "非法输入净化（越界落端点 / 非数字落缺省 / 非布尔落 true）"
+      [sanitizeCosmosSettings({ zoomDiveRatio: 9999 }).zoomDiveRatio, sanitizeCosmosSettings({ zoomPointerFocus: "yes" }).zoomPointerFocus],
+      [undefined, true],
+      "旧阈值键净化即弃 / 非布尔指针聚焦落缺省 true"
     );
     /* 会话面板展开态（add-cosmos-session-list-panel 3.3）：同一存储通道、缺省展开、布尔净化。 */
     assert.equal(saveCosmosSettings({ sessionPanelOpen: false }).sessionPanelOpen, false, "收起写侧保留");
@@ -668,18 +674,19 @@ const BUTTON = { name: "审查", prompt: "请使用 /cosmos-review 审查本提�
     delete globalThis.localStorage;
   }
 
-  /* UI 锚点：面板组件 + 两输入一开关 + 触控/aria + 数字输入净化 */
+  /* UI 锚点：面板组件 + 仅指针聚焦开关（两阈值数字输入退场）+ 触控/aria */
   const ui = readFileSync(new URL("../src/settings-ui.jsx", import.meta.url), "utf8");
   assert.ok(ui.includes("export function CosmosNavPanel"), "界面面板组件");
   assert.ok(ui.includes('data-plugin-anchor="dsh-v-cosmos:settings-nav"'), "界面面板插件锚点（内部 id 保持 nav）");
-  assert.ok(ui.includes('id="cosmos-nav-dive"') && ui.includes('id="cosmos-nav-flyout"'), "两个数字输入稳定 id");
-  assert.ok(ui.includes("min={60}") && ui.includes("max={140}") && ui.includes("step={5}"), "进入阈值 60–140 步长 5");
-  assert.ok(ui.includes("min={10}") && ui.includes("max={50}"), "返回阈值 10–50 步长 5");
-  assert.ok(ui.includes('type="checkbox"') && ui.includes("zoomPointerFocus"), "指针聚焦开关控件");
-  assert.ok(ui.includes("onBlur={(event) => normalize("), "数字输入失焦夹取（非法/越界输入净化）");
-  assert.ok(ui.includes("min-height:44px"), "输入/开关触控目标 ≥44px");
-  assert.ok(ui.includes('aria-label={tr(t, "cosmos.settings.navDiveAria"'), "数字输入 aria 文案");
+  assert.ok(!ui.includes('id="cosmos-nav-dive"'), "进入阈值数字输入已删除");
+  assert.ok(!ui.includes('id="cosmos-nav-flyout"'), "返回阈值数字输入已删除");
+  assert.ok(!ui.includes("zoomDiveRatio") && !ui.includes("zoomFlyOutRatio"), "面板不再读写两阈值键");
+  assert.ok(!ui.includes("min={60}") && !ui.includes("min={10}"), "阈值数字输入界已删除");
+  assert.ok(ui.includes('type="checkbox"') && ui.includes("zoomPointerFocus"), "指针聚焦开关控件保留");
+  assert.ok(!ui.includes("normalize(\"zoomDiveRatio\"") && !ui.includes("commit(\"zoomDiveRatio\""), "阈值 commit/normalize 分支已删除");
+  assert.ok(ui.includes("min-height:44px"), "开关触控目标 ≥44px");
   assert.ok(ui.includes('aria-label={tr(t, "cosmos.settings.navFocusAria"'), "开关 aria 文案");
+  assert.ok(ui.includes("导航组：仅「指针聚焦缩放」开关"), "导航组注释声明仅剩指针聚焦");
   /* 界面尺寸组（add-cosmos-layout-tuning 5.2）：12 个字段 + 表格化渲染 + 高度键「0 = 自适应」 */
   assert.ok(ui.includes("const COSMOS_SIZE_FIELDS = Object.freeze(["), "尺寸字段表（单一来源）");
   for (const key of [
@@ -717,7 +724,12 @@ const BUTTON = { name: "审查", prompt: "请使用 /cosmos-review 审查本提�
   assert.ok(/order: 3,/.test(navTab), "排于「皮肤」(2) 之后");
   assert.ok(client.includes('"cosmos.settings.tabInterface": "界面"'), "词典 zh：页签名「界面」");
   assert.ok(client.includes('"cosmos.settings.tabInterface": "Interface"'), "词典 en：页签名成对");
-  assert.ok(client.includes('"cosmos.settings.navDiveLabel": "进入星座视图"'), "词典 zh：进入控件");
+  assert.ok(!client.includes('"cosmos.settings.navDiveLabel"'), "词典 zh：进入阈值控件文案已删除");
+  assert.ok(!client.includes('"cosmos.settings.navFlyOutLabel"'), "词典 zh：返回阈值控件文案已删除");
+  assert.ok(!client.includes('"cosmos.settings.navDiveLabel": "Dive into constellation"'), "词典 en：进入阈值控件文案已删除");
+  assert.ok(client.includes('"cosmos.settings.navHint": "缩放即导航：顶部只读标尺'), "词典 zh：navHint 改写为标尺描述");
+  assert.ok(client.includes("最近星座在屏幕中心 25% 范围内"), "navHint 如实说明屏心闸门语义");
+  assert.ok(client.includes('"cosmos.settings.navHint": "Zoom is navigation: the read-only ruler'), "词典 en：navHint 成对改写");
   assert.ok(client.includes('"cosmos.settings.navFocusHint": "Zoom gradually focuses'), "词典 en：开关说明");
   assert.ok(client.includes('"cosmos.settings.sizeGroup": "界面尺寸"'), "词典 zh：尺寸组标题");
   assert.ok(client.includes('"cosmos.settings.sizeGroup": "Layout sizes"'), "词典 en：尺寸组标题成对");
@@ -832,7 +844,7 @@ const BUTTON = { name: "审查", prompt: "请使用 /cosmos-review 审查本提�
     saveCosmosSettings
   } = await import("../src/settings.mjs");
 
-  assert.equal(COSMOS_SETTINGS_VERSION, 9, "设置面版本（拖拽平移键仍在册；v8 = 快捷键子对象，v9 = launchMode）");
+  assert.equal(COSMOS_SETTINGS_VERSION, 12, "设置面版本（拖拽平移键仍在册；v10 = dock，v11 = templateNames，v12 = 删缩放阈值两键）");
   assert.equal(COSMOS_SETTINGS_DEFAULTS.dragPan, false, "出厂默认关闭（鼠标拖拽保持旋转）");
   assert.equal(sanitizeCosmosSettings({}).dragPan, false, "空载荷 → false");
   assert.equal(sanitizeCosmosSettings({ dragPan: true }).dragPan, true, "合法 true 透传（开启态）");
@@ -843,8 +855,8 @@ const BUTTON = { name: "审查", prompt: "请使用 /cosmos-review 审查本提�
 
   /* v5 载荷（无 dragPan 键）→ 补默认 false（无迁移动作、无报错） */
   const v5Payload = {
-    panSpeed: 120, panShiftBoost: 3, skin: "rosepine", zoomDiveRatio: 100,
-    zoomFlyOutRatio: 25, zoomPointerFocus: true, sessionPanelOpen: true, constPreflight: "float"
+    panSpeed: 120, panShiftBoost: 3, skin: "rosepine",
+    zoomPointerFocus: true, sessionPanelOpen: true, constPreflight: "float"
   };
   assert.equal(sanitizeCosmosSettings(v5Payload).dragPan, false, "v5 载荷读出补默认 false");
 
@@ -975,7 +987,7 @@ const BUTTON = { name: "审查", prompt: "请使用 /cosmos-review 审查本提�
   /* 缺省读出：空载荷 / v4 旧载荷（无该键）→ float */
   assert.equal(sanitizeCosmosSettings({}).constPreflight, "float", "空载荷 → float");
   assert.equal(
-    sanitizeCosmosSettings({ skin: "lotus", zoomDiveRatio: 80, sessionPanelOpen: false }).constPreflight,
+    sanitizeCosmosSettings({ skin: "lotus", sessionPanelOpen: false }).constPreflight,
     "float",
     "v4 旧载荷 → float（逐键补默认）"
   );
@@ -1074,18 +1086,13 @@ const BUTTON = { name: "审查", prompt: "请使用 /cosmos-review 审查本提�
     client.indexOf("const clearPendingDive")
   );
   assert.ok(
-    constExecutorBody.includes("const intent = loadCosmosSettings().constPreflight;"),
-    "执行器现读设置面（MUST NOT 构造期缓存）"
+    constExecutorBody.includes("preflight: () => loadCosmosSettings().constPreflight,"),
+    "执行器现读设置面（MUST NOT 构造期缓存；无形态改写）"
   );
   assert.ok(
-    constExecutorBody.includes("if (!STANDALONE) return intent;") && constExecutorBody.includes('return "float";'),
-    "独立窗口态强制 float（add-cosmos-standalone-window D6）"
+    constExecutorBody.includes("closePage: () => closePageAfterJump(),"),
+    "native 分支关页经统一裁决（embedded 关整页 / dock no-op）"
   );
-  assert.ok(
-    constExecutorBody.includes('if (intent === "native") {'),
-    "native 意图被改写时呈现反馈（add-cosmos-standalone-jump-feedback D3）"
-  );
-  assert.ok(constExecutorBody.includes("closePage: () => cosmosOpenStore.set(false),"), "native 分支关整页 = 整页开合 store（与提案动作同通道）");
   assert.ok(constExecutorBody.includes("pending: heroMarkers,") && constExecutorBody.includes("floats: floatMarkers,"), "双通道注入不变（native 复用 hero / float 保留浮窗）");
   /* 回归确认（3.2）：hero 消费器零改动即承接 native 落稿；浮窗组件承载增强（不读 preflight 设置——分流在执行器） */
   const heroDockBody = client.slice(
@@ -1123,7 +1130,7 @@ const BUTTON = { name: "审查", prompt: "请使用 /cosmos-review 审查本提�
 
 /* ── 全局快捷键净房 v8（add-cosmos-shortcuts 2.1/2.2 / spec cosmos-shortcuts
       「缺省键位与净房」）：v8 净房、v7 补默认、漂移回落、读面冲突固定优先序
-      （设置面随后升 v9 = add-cosmos-standalone-window 的 launchMode；本块键面无变化）。 ── */
+      （设置面随后升 v10 = add-cosmos-rightbar-dock 的 dock 迁移；本块键面无变化）。 ── */
 {
   const {
     COSMOS_SETTINGS_DEFAULTS,
@@ -1139,7 +1146,7 @@ const BUTTON = { name: "审查", prompt: "请使用 /cosmos-review 审查本提�
     shortcutLabelOf
   } = await import("../src/shortcuts.mjs");
 
-  assert.equal(COSMOS_SETTINGS_VERSION, 9, "设置面 v9（shortcuts 子对象 + launchMode 并入）");
+  assert.equal(COSMOS_SETTINGS_VERSION, 12, "设置面 v12（shortcuts 子对象 + launchMode + templateNames + 删缩放阈值两键并入；v10 = dock 迁移）");
   assert.deepEqual(
     COSMOS_SETTINGS_DEFAULTS.shortcuts,
     { closePage: "Escape", goHome: "Backquote", togglePan: "KeyM", voiceToggle: "Ctrl+KeyQ" },
@@ -1147,9 +1154,9 @@ const BUTTON = { name: "审查", prompt: "请使用 /cosmos-review 审查本提�
   );
   assert.deepEqual(Object.keys(COSMOS_SETTINGS_DEFAULTS.shortcuts), SHORTCUT_FIELDS, "子对象键序 = 冲突优先序");
   assert.ok(Object.isFrozen(COSMOS_SETTINGS_DEFAULTS.shortcuts), "缺省子对象冻结（防误改）");
-  /* 构造头注记：v9 = add-cosmos-standalone-window（v8 = add-cosmos-shortcuts） */
+  /* 构造头注记：v10 = add-cosmos-rightbar-dock（v9 = 历史独立窗口变更，v8 = add-cosmos-shortcuts） */
   const settingsSource = readFileSync(new URL("../src/settings.mjs", import.meta.url), "utf8");
-  assert.ok(settingsSource.includes("设置面（version 9"), "文档头版本注记同步 v9");
+  assert.ok(settingsSource.includes("设置面（version 12"), "文档头版本注记同步 v12");
   assert.ok(settingsSource.includes("shortcutsOf(source.shortcuts)"), "净房接线 shortcutsOf（单一来源）");
 
   /* v8 净房：空载荷 → 四键缺省；合法值透传；与 shortcutsOf 同源 */
@@ -1158,7 +1165,7 @@ const BUTTON = { name: "审查", prompt: "请使用 /cosmos-review 审查本提�
   assert.deepEqual(sanitizeCosmosSettings({ shortcuts: custom }).shortcuts, custom, "合法四键透传");
   /* v7 载荷（无 shortcuts 键）→ 补默认（零迁移） */
   const v7 = {
-    panSpeed: 120, panShiftBoost: 3, skin: "deepspace", zoomDiveRatio: 100, zoomFlyOutRatio: 25,
+    panSpeed: 120, panShiftBoost: 3, skin: "deepspace",
     zoomPointerFocus: true, sessionPanelOpen: true, constPreflight: "float", dragPan: false
   };
   assert.deepEqual(sanitizeCosmosSettings(v7).shortcuts, { ...SHORTCUT_DEFAULTS }, "v7 载荷读出补默认四键");
@@ -1457,6 +1464,59 @@ const BUTTON = { name: "审查", prompt: "请使用 /cosmos-review 审查本提�
   assert.equal(snap.failed, false, "discard 清失败态");
   assert.deepEqual(snap.warnings, [], "discard 清警示");
   face.dispose();
+}
+
+/* ── 星座模板名显示设置净房（add-cosmos-template-name-toggle 4.1 / D1）：v10 → v11
+   布尔键 `templateNames`，缺省 false（默认渲染零变化）、合法布尔透传、非布尔形态
+   （字符串/数字/null/对象）回落缺省且不抛错、v10 旧载荷补默认、持久化往返与既有键零互扰。 ── */
+{
+  const {
+    COSMOS_SETTINGS_BOUNDS,
+    COSMOS_SETTINGS_DEFAULTS,
+    COSMOS_SETTINGS_VERSION,
+    loadCosmosSettings,
+    sanitizeCosmosSettings,
+    saveCosmosSettings
+  } = await import("../src/settings.mjs");
+
+  assert.equal(COSMOS_SETTINGS_VERSION, 12, "设置面 v12（v11 → v12 删缩放阈值两键；v10 → v11 新增 templateNames）");
+  assert.equal(COSMOS_SETTINGS_DEFAULTS.templateNames, false, "出厂缺省关闭（关闭态默认渲染零变化）");
+  assert.equal(sanitizeCosmosSettings({}).templateNames, false, "空载荷 → false");
+  assert.equal(sanitizeCosmosSettings({ templateNames: true }).templateNames, true, "合法 true 透传（开启态）");
+  assert.equal(sanitizeCosmosSettings({ templateNames: false }).templateNames, false, "显式 false 保留");
+  for (const bad of ["on", "true", "", 1, 0, null, undefined, {}, []]) {
+    assert.equal(sanitizeCosmosSettings({ templateNames: bad }).templateNames, false, "非布尔回落 false：" + String(bad));
+  }
+  /* 布尔键不进数值界表（BOUNDS 恒纯数值 [min,max] 形状） */
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(COSMOS_SETTINGS_BOUNDS, "templateNames"),
+    false,
+    "templateNames 以独立布尔净化分支表达，不混入数值界表"
+  );
+  /* v10 载荷（无 templateNames 键）→ 补缺省 false（零迁移、无报错） */
+  const v10Payload = { ...COSMOS_SETTINGS_DEFAULTS };
+  delete v10Payload.templateNames;
+  assert.equal(sanitizeCosmosSettings(v10Payload).templateNames, false, "v10 载荷读出补缺省 false");
+
+  /* 持久化读写（同一存储通道）：开启 → 读回开启；坏值 → 净房回落缺省；与既有键零互扰。 */
+  const store = new Map();
+  globalThis.localStorage = {
+    getItem: (key) => (store.has(key) ? store.get(key) : null),
+    setItem: (key, value) => store.set(key, String(value)),
+    removeItem: (key) => store.delete(key)
+  };
+  try {
+    assert.equal(loadCosmosSettings().templateNames, false, "无存储 → 关闭");
+    const saved = saveCosmosSettings({ templateNames: true });
+    assert.equal(saved.templateNames, true, "开启写入（净房结果）");
+    assert.equal(loadCosmosSettings().templateNames, true, "重开读回开启（关闭重开持久保持）");
+    assert.equal(loadCosmosSettings().launchMode, "embedded", "同通道既有键不受扰动");
+    assert.equal(saveCosmosSettings({ templateNames: "yes" }).templateNames, false, "非法写侧回落缺省 false（SHALL NOT 抛错）");
+    store.set("dsh-v-cosmos:settings", JSON.stringify({ templateNames: 1 }));
+    assert.equal(loadCosmosSettings().templateNames, false, "持久载荷坏值（数字）→ 净房回落 false");
+  } finally {
+    delete globalThis.localStorage;
+  }
 }
 
 console.log("settings-panel-smoke: all assertions passed");

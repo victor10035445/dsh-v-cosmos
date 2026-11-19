@@ -119,6 +119,40 @@ export function satBornKOf(it) {
   return it && it.bornK != null ? clamp(it.bornK, 0, 1) : 1;
 }
 
+/**
+ * 图样空槽装饰点绘制（add-cosmos-template-figure-display 3.2/3.3 / design D3 皮肤侧）。
+ *
+ * 引擎 `patdot` 条目：`{ pts: [{x, y, r, a}], alpha, ws, pat: true }`——
+ *  - `pts[i].x/y` 屏幕坐标、`pts[i].r` 屏显半径（引擎按投影缩放 clamp）、
+ *  - `pts[i].a` 点弱化因子（引擎 `PAT_DOT_DIM`，恒 < 图样线段的 `PAT_LINE_DIM`）、
+ *  - `it.alpha` 星座级 α（与图样线同帧淡入淡出）。
+ *
+ * 皮肤只决定「用什么颜色画」（`hex` 与母语线基线 `base`）：点 α = `base × it.alpha ×
+ * pts[i].a` —— 同一皮肤内恒低于其图样线段 α（装饰点弱于线，不会被误读为可交互天体）。
+ * 纯装饰层：不进 picks、无 hover/名牌——本函数不写任何交互状态。
+ *
+ * @param {CanvasRenderingContext2D} ctx 画布上下文
+ * @param {object} it `patdot` 渲染条目
+ * @param {string} hex 装饰点取色（hex）
+ * @param {number} base 该皮肤图样线基线 α（与 constline 分支同口径）
+ */
+export function patDotDraw(ctx, it, hex, base) {
+  const pts = it && it.pts;
+  const n = pts ? pts.length : 0;
+  if (!n) return;
+  const itemAlpha = Number.isFinite(Number(it.alpha)) ? Number(it.alpha) : 1;
+  const k = (base == null ? 0.28 : base) * itemAlpha;
+  for (let i = 0; i < n; i++) {
+    const p = pts[i];
+    const a = k * (p.a == null ? 1 : p.a);
+    if (!(a > 0.003)) continue;
+    ctx.fillStyle = hexA(hex, a.toFixed(3));
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.r, 0, TAU);
+    ctx.fill();
+  }
+}
+
 /* ---------- 绘制底层件 ---------- */
 
 /**

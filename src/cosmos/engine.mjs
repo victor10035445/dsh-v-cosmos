@@ -100,6 +100,22 @@
  *    点击 = 本地翻转镜像 + 视觉切换 + 注入回调 `onDragPanToggle(enabled)`（写穿客户端
  *    净房持久化链，再经 `setTuning` 热更回读——值恒等幂等）。
  *
+ * add-cosmos-rightdrag-pan（鼠标右键拖拽平移镜头）：
+ *  - **常开常在、零设置**（D1/D2）：仅 `pointerType === 'mouse'` 的右键（`button=2`）按住
+ *    拖动 → 平移相机 target（与「拖拽平移」开关**正交**：开关开启态下右键拖拽同为平移，
+ *    同一数学同一体验；不设开关、不进 settings、无设置版本迁移）；
+ *  - **作用域收窄**：pen 的笔杆键（`pointerType='pen'` + `button=2`）MUST NOT 纳入，
+ *    触屏与 pen 全部既有行为零变化；
+ *  - **优先级**（D3）：`pointermove` 分支序「右键平移 → 左键旋转」，右键按住期间左键分支
+ *    短路（跨设备共按同样让位）；独立增量锚点 `rsx/rsy` 与 4px 阈值（D4）口径同左键拖拽；
+ *  - **状态隔离**（D5）：`E.rdrag` 独立于 `E.dragging`；共享 hover 探针抑制 / `grabbing`
+ *    光标 / `zoomSwitchBlocked()` 守卫；收束路径（D8）覆盖 `pointerup(button=2)` /
+ *    共按释放切换沿 / `pointerleave` 幽灵清理 / `pointercancel`；
+ *  - **锚点交接**（D7）：Pointer Events 共按模型下 `pointerup` 只在最后一个按键抬起时派发，
+ *    故交接触发点在 `pointermove` 的「`buttons & 2` 消失」沿（若左键仍按着则重锚 `sx/sy`，
+ *    本帧 dx/dy 归零、无跳变），`pointerup(button=2)` 只做收束、不承担交接；
+ *  - 契约：openspec/changes/add-cosmos-rightdrag-pan（specs/dsh-cosmos「右键拖拽平移镜头」）。
+ *
  * polish-cosmos-tip-leader-line（浮签引线与避让间距）：
  *  - 三族浮签避让（`TIP_GAP`，spec 只锁下限、实现集中校准）：chip 悬空 56px（≥40）、
  *    恒星名牌星缘下 44px（≥28）、信息卡自「星中心旁 ±18px」改为**星缘外** 80px（≥40，
@@ -122,6 +138,33 @@
  *    （摘除帧不画，无残影）；卡盒尺寸按内容签名（`dataset.sig`）变更时测量缓存，MUST NOT
  *    逐帧强制布局；翻转阈值随「星缘 + 间距 + 卡宽」派生（卡体不越出右缘，见下）；
  *    引线在拾取路径之外（MUST NOT 参与命中）。
+ *
+ * polish-cosmos-tip-ui-avoidance（浮签与 UI 铬件的遮挡避让与命中隔离）：
+ *  - **裁决（D1）**：呈现与命中分离——浮签层 z-46 保持不动（polish-cosmos-tip-topmost-layer
+ *    的可读性承诺不回退），但「可读」不再兑换「抢命中」。浮签与交互 chrome（提案面板 /
+ *    会话面板 / 动作条 / 「＋」/ 搜索框 / 引擎自建 HUD）的空间重叠由**几何避让**消解，
+ *    残余由**事件级门禁**兜底；否决「层级回退」（复发面板遮蔽浮签）与「仅命中隔离」
+ *    （看得见点不着的视觉混乱，chip 是长得像按钮的元素）。
+ *  - **矩形契约（D2）**：client 收集 chrome 的 `getBoundingClientRect` 快照、减去引擎根
+ *    容器原点归一化为**容器坐标**，经控制器 → 公共面 `setUiChromeRects({rects, origin})`
+ *    发布；只在布局事实变化时重算（ResizeObserver + 子节点增删 + rAF 合并 + client 侧
+ *    签名缓存），MUST NOT 逐帧测量。引擎缓存 `E.uiRects`，帧内只做数组比对（D7 红线）。
+ *  - **避让（D3，单点）**：判定收敛在 `updateOverlay`（浮签定位/换算唯一计算点）——chip
+ *    相交即整族淡出（锚定语义优先，MUST NOT 平移锚点，导航有面板清单/搜索/切换条目
+ *    等价路径）；信息卡「UI 感知钳位」= 短轴推出 → 翻转 → 钳回容器，无自由空间 →
+ *    整卡 `pointer-events:none` 降级（视觉保留、命中放行）；切换条目 / 回到银河 /
+ *    拖拽开关纳入同一兜底判定（相交即退场，键盘等价路径仍在）；名牌 / 引线 / pe:none 族
+ *    显式不参与。判定结果与引线同帧同源（`E.tipLines` 消费链零二次推导）。
+ *  - **命中门禁（D4）**：可交互浮签 `pointerdown` 布防 + `click` 首行消费一次性抑制
+ *    （与 `gestureSuppressed()` 并列短路、不合并条件），判据 = `pointInUiRects`（容器坐标
+ *    = `clientX − origin`）；事件级判定、无持久 DOM 改写。门禁是矩形发布滞后一帧的竞态
+ *    兜底，MUST NOT 替代几何避让成为主策略。
+ *  - **缺席降级（红线）**：矩形集为空 / 公共面从未被调用 → 零矩形集 = 避让不生效、行为
+ *    回落现状（demo 独立页与旧测试桩零改动即绿）；浮窗模态（`inset:0` + z-9998 全屏
+ *    backdrop）由既有 `isFloatOpen` 探针等价覆盖（其「矩形」恒等于整屏）。z 红线
+ *    （toast 47 / 确认浮窗 9998 / 宿主 toast 9999）不动。
+ *  - 契约：openspec/changes/polish-cosmos-tip-ui-avoidance（specs/dsh-cosmos
+ *    「浮签呈现层级」MODIFIED + 「浮签与 UI 铬件遮挡避让与命中隔离」ADDED）。
  *
  * step1-add-constellation-vitality（星座活力两态）：
  *  - `constellationVitalityOf(ws)` = 存在口径单一判据纯函数（stars ∪ planets ∪ comets
@@ -154,15 +197,21 @@
  *    轮询；条目 click → `diveToWs` 同一条内部实现（未命中静默降级），多指手势期点击抑制；
  *    容器 pointer-events:none、条目 `.on` 时 auto（不形成点击死区）；镀铬取色沿用皮肤 CSS 变量。
  *
- * two-use-cosmos-template-star-layout（恒星图样落位 + 图样连线呈现 + 星↔星提案连线解除）：
+ * two-use-cosmos-template-star-layout（恒星图样落位 + 图样连线呈现 + 星↔星提案连线解除）
+ * / add-cosmos-template-figure-display（全量图样 + 空槽装饰点）：
  *  - **引擎零改动面**：off 消费（`ws.pos + star.off`）、差分补间、拾取路径全部沿用——
  *    落位仍由 merge 层以 `star.off` 交付（含星胚槽位），批量 off 变化走 patch + 补间；
- *  - **图样连线呈现**：merge 随落位交付 `ws.patternLines`（场景 stars 下标对、含星胚槽位）
- *    → buildItems 换算槽位世界坐标段，独立 constline 条目（`pat` 标记、z 在提案/关系线层
- *    之下 = 背景层）——段 α 自缩 `PAT_LINE_DIM`，各皮肤缺省 constline 呈现即天然弱化
- *    （弱于恒星本体与轨道环，未适配皮肤零改动即「缺省线渲染回退」）；段淡入淡出复用
- *    linkMix 星 id 对键控机制（captureLinkMix 改喂 patternLines，D7 复用不另起炉灶）；
- *    纯装饰层：不进 picks、不参与拾取/命中；观测面 `inspectPatternLines()` 供冒烟直测；
+ *  - **图样全量呈现**：merge 交付 `ws.pattern = { slots, lines }`（全部内核槽位世界坐标 +
+ *    模板 lines 原样索引对，端点可为空槽位）→ buildItems 逐对投影为段，独立 constline
+ *    条目（`pat` 标记、z 在提案/关系线层之下 = 背景层）——段 α 恒 = `PAT_LINE_DIM`
+ *    （**统一口径**：有星段与空槽段同一亮度，无双轨分层），各皮肤缺省 constline 呈现即
+ *    天然弱化（弱于恒星本体与轨道环，未适配皮肤零改动即「缺省线渲染回退」）；
+ *    **静态几何**：端点恒等槽位坐标（非恒星落位投影）、不携带星 id 键——per-segment
+ *    linkMix 淡入路径与幽灵渐熄层整体退役，段随 `ws.alpha` 星座级淡入淡出；
+ *  - **空槽装饰点**：未被恒星占用的内核槽位渲染微小低 α 点（`patdot` 条目、α 恒低于
+ *    图样线），线段顶点可见；被占槽位不叠加（恒星本体覆盖）；
+ *  - 纯装饰层：不进 picks、不参与拾取/命中、无 hover/名牌；观测面
+ *    `inspectPatternLines()` / `inspectPatternDots()` 供冒烟直测；
  *  - **星↔星提案关联连线解除**（dsh-cosmos MODIFIED / cosmos-relation-focus MODIFIED）：
  *    buildItems 不再绘制 `ws.links` 段、relSetOf 移除星↔星点亮分支、`E.relLast.links`
  *    观测面移除——`ws.links` 数据面保留（面板 proposalIds 投影消费），「星↔星直线」
@@ -183,8 +232,8 @@ export const ENGINE_CSS = `
 /* 浮签呈现层级（polish-cosmos-tip-topmost-layer 1.1）：46 = max(交互 HUD)+1——
    压过宿主全部交互铬件（顶部搜索 40 / 会话面板 42 / 提案面板 42 / 底部动作条 43 /
    左下「＋」45），恒星近缘悬停时浮签不再滑入面板背后。层级红线：MUST NOT 压过
-   独立窗口提示行（58）、确认浮窗（9998）与反馈 toast（引擎 .cos-toast 47 / 宿主
-   9999）——瞬时反馈与模态确认恒在浮签之上。 */
+   确认浮窗（9998）与反馈 toast（引擎 .cos-toast 47 / 宿主 9999）——瞬时反馈与模态
+   确认恒在浮签之上。 */
 .cos-overlay { position: absolute; inset: 0; pointer-events: none; z-index: 46; }
 /* 浮签引线专用层（polish-cosmos-tip-topmost-layer 2.1）：浮签 overlay 的首子 canvas。
    pointer-events:none 显式声明（canvas 默认拦截指针，MUST NOT 参与拾取）；继承 overlay
@@ -241,6 +290,15 @@ export const ENGINE_CSS = `
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .cos-badge b { display: block; font-size: var(--cos-ws-title-size, 13px); font-weight: 600; letter-spacing: 1px; text-shadow: 0 0 8px var(--cos-glow, rgba(255,210,140,.55)); }
 .cos-badge span { display: block; margin-top: 2px; font-size: 10px; letter-spacing: 2px; opacity: .6; }
+/* 星座模板名副行（add-cosmos-template-name-toggle 3.4/D3）：chip 与钻取标牌共用的**纯装饰**
+   文本槽——由引擎仅在开关开启且 tplZh 非空时渲染（关闭态零 DOM ⇒ 本节样式无呈现对象）。
+   .cos-chip span / .cos-badge span 已给副行基座（10px、低 α、宽字距），本组以更高
+   特异性收敛装饰口径：更松字距 + 更低 α 把「图样名」与计数/活力仪表串区分开；display:block
+   让 chip 内副行独立成行（标牌内本就 block，覆盖基座 margin-top 统一为 1px）。
+   取色恒消费皮肤令牌 --cos-ink-dim（浅/深色主题同源，MUST NOT 硬编码色值）。 */
+.cos-chip .cos-chip-tpl,
+.cos-badge .cos-chip-tpl { display: block; margin-top: 1px; font-size: 10px; font-weight: 400;
+  font-style: normal; letter-spacing: 1.6px; opacity: .5; color: var(--cos-ink-dim, rgba(255,233,207,.55)); }
 /* 钻取态星座标牌活力标识（step1-add-constellation-vitality D2/D3）：星座名后两态点 +
    文案（复用 E.labels.vitality 同源标签组），取色与恒星名牌 .cos-slab-life 同源
    （活跃 = 活力琥珀令牌链 / 沉睡 = 暗淡墨色；同语义跨皮肤同色，MUST NOT 固定直量另设）。
@@ -290,9 +348,17 @@ export const ENGINE_CSS = `
   color: var(--cos-accent-ink, #ffe9cf); background: var(--cos-hover, rgba(255,210,140,.12));
   box-shadow: 0 0 10px rgb(var(--cos-accent-rgb, 255 210 140) / .28); }
 .cos-dragpan-btn[aria-pressed="true"] svg { filter: drop-shadow(0 0 5px rgb(var(--cos-accent-rgb, 255 210 140) / .75)); }
-.cos-chip { position: absolute; left: 0; top: 0; text-align: center; pointer-events: auto; cursor: pointer; opacity: 0; transition: opacity .25s; will-change: transform;
+/* 引擎自建 HUD 的遮挡让位（polish-cosmos-tip-ui-avoidance D3「回到银河 / 拖拽开关」兜底）：
+   浮签层 z-46 恒居交互铬件之上，故与铬件矩形残余相交时**视觉退场 + 命中放行**（不让 HUD
+   抢走下方按钮的点击）；键盘等价路径（Esc / M）仍在，功能不损失。逐帧由 updateOverlay
+   的 syncHudOcclusion 幂等切换 class（离开相交即恢复），MUST NOT 在此写内联动画面。 */
+.cos-hud-occluded { opacity: 0; pointer-events: none; }
+.cos-chip { position: absolute; left: 0; top: 0; text-align: center; pointer-events: none; cursor: pointer; opacity: 0; transition: opacity .25s; will-change: transform;
   color: var(--cos-accent-ink, #ffe3b8); padding: 4px 12px; border: 1px dashed rgb(var(--cos-accent-rgb, 255 210 140) / .4); background: var(--cos-chip-bg, rgba(10,10,20,.45)); }
-.cos-chip.on { opacity: 1; }
+/* 命中门只在 .on（= 本帧可见）上：不可见 chip **MUST NOT** 继续拦截指针
+   （polish-cosmos-tip-ui-avoidance 红线「隐藏期间该区域无点击死区残留」——遮挡避让与
+   focusMix 淡出共用本显隐谓词；与 .cos-card / .cos-wsbar-item 同款单点口径）。 */
+.cos-chip.on { opacity: 1; pointer-events: auto; }
 .cos-chip b { display: block; font-size: 13px; font-weight: 600; letter-spacing: 1px; text-shadow: 0 0 8px var(--cos-glow, rgba(255,210,140,.55)); }
 .cos-chip span { font-size: 10px; opacity: .6; letter-spacing: 2px; }
 .cos-chip:hover { border-color: rgb(var(--cos-accent-rgb, 255 210 140) / .85); }
@@ -486,12 +552,9 @@ const PLAN_KIND_LABEL = { approval: '审批', 'plan-review': '方案审查', que
 const DEFAULT_LABELS = Object.freeze({
   decide: Object.freeze({ approval: '待批准', 'plan-review': '计划待审', question: '待回答', fallback: '待决策' }),
   vitality: Object.freeze({ label: '活力', active: '活跃', sleep: '沉睡' }),
-  /* card：会话卡按钮文案（add-cosmos-standalone-window D6）——`openDisabled` =
-     「打开会话」在独立窗口态（无主壳会话页）的禁用提示（title）；
-     `archiveBusy` / `archiveWaiting` = 「归档会话」活跃门禁按态说明（disabled 态
-     title，add-cosmos-session-archive-busy-gate 3.1/D2，形态对齐 openDisabled）。 */
+  /* card：会话卡按钮文案——`archiveBusy` / `archiveWaiting` = 「归档会话」活跃门禁
+     按态说明（disabled 态 title，add-cosmos-session-archive-busy-gate 3.1/D2）。 */
   card: Object.freeze({
-    openDisabled: '独立窗口内无法跳转会话页（请在主窗口操作）',
     archiveBusy: '执行中，暂不可归档',
     archiveWaiting: '待决策中，暂不可归档'
   }),
@@ -617,6 +680,258 @@ export function tipLeaderOf(tip) {
   };
 }
 
+/* ---------- UI 铬件矩形契约与浮签避让（polish-cosmos-tip-ui-avoidance D2/D3/D4） ----------
+
+   浮签层（`.cos-overlay`，z-46）恒居全部交互 HUD 铬件（搜索 40 / 面板 42 / 动作条 43 /
+   「＋」45）之上——**呈现抬层为可读性服务没有错，错在呈现与命中未分离**。本块是该
+   分离的**纯函数单点实现**（无 DOM 依赖，冒烟直测），三件事：
+
+   1. **矩形规范化**（`normalizeUiRects`）：client 发布面的唯一净房点——非法/零尺寸
+      （未布局、已卸载）条目丢弃，坐标归一化为 `{left, top, right, bottom, kind}`；
+      空集/非法入参 = 零矩形集 ⇒ 避让不生效、行为回落现状（MUST NOT 报错）。
+   2. **相交谓词**（`pointInRects` / `boxInRects`）：D4 命中门禁与 D3 避让共用同一份
+      矩形数学（引擎内以 `E.uiRects` 为参数的薄包装 `pointInUiRects` / `intersectsUiRects`），
+      MUST NOT 在两处散写矩形比较。
+   3. **避让决策**（`tipAvoidanceOf`）：输入候选位 + 铬件矩形集 + 容器边界，输出
+      `{ action: 'keep'|'hide'|'place', x, y, dir, degraded }`——
+       - `keep`：不相交，按原候选位呈现；
+       - `hide`：chip 族（锚定语义优先：钳位会破坏「chip 指向其星座」，相交即整族淡出）；
+       - `place`：信息卡族沿卡体短轴推出 → 翻转（镜像候选位）→ 钳回容器后的落位；
+       - `degraded`：仍相交且无自由空间 ⇒ 调用方整卡降级 `pointer-events:none`
+         （视觉保留可读、命中放行；卡内按钮暂不可用属可接受降级）。
+
+   性能红线（D7）：矩形集由 client 在**布局事实变化**时发布并在引擎侧缓存，本块只在
+   `updateOverlay` 内做数组比对——引擎帧循环内零 DOM 测量、零 rect 查询。 */
+
+/** 浮签避让决策常量（真机校准点，集中定义便于调参）。 */
+export const UI_AVOID = Object.freeze({
+  margin: 6,     // 推出/钳位后与容器边缘的留白（像素）
+  maxPush: 480,  // 短轴推出距离上限：超出即改走翻转/钳位（防把卡推到离谱位置）
+  gateMs: 800,   // 命中门禁一次性抑制窗（pointerdown 命中 → 随后的 click 抑制）
+  chipFallbackW: 96,  // chip 宽/高测量不可用（Node 桩 / 未布局）时的兜底盒
+  chipFallbackH: 26
+});
+
+/** 判定辅助：`ignoreKinds` 归一为数组（string | string[] | null → string[]）。 */
+function ignoreListOf(ignoreKinds) {
+  if (ignoreKinds == null) return null;
+  if (typeof ignoreKinds === 'string') return ignoreKinds ? [ignoreKinds] : null;
+  if (Array.isArray(ignoreKinds)) return ignoreKinds.length ? ignoreKinds : null;
+  return null;
+}
+
+/**
+ * UI 铬件矩形规范化（D2 发布面净房点；client 发布 / 冒烟直测共用）。
+ * @param {Array<{left:number, top:number, right:number, bottom:number, kind?: string}>|null} rects
+ * @returns {Array<{left:number, top:number, right:number, bottom:number, kind:string}>}
+ *          合法矩形（坐标按 min/max 归一，零/负尺寸丢弃）；非数组 → 空集
+ */
+export function normalizeUiRects(rects) {
+  const out = [];
+  if (!Array.isArray(rects)) return out;
+  for (let i = 0; i < rects.length; i += 1) {
+    const raw = rects[i];
+    if (!raw || typeof raw !== 'object') continue;
+    const left = Number(raw.left), top = Number(raw.top);
+    const right = Number(raw.right), bottom = Number(raw.bottom);
+    if (!Number.isFinite(left) || !Number.isFinite(top)
+      || !Number.isFinite(right) || !Number.isFinite(bottom)) continue;
+    const l = Math.min(left, right), r = Math.max(left, right);
+    const t = Math.min(top, bottom), b = Math.max(top, bottom);
+    if (!(r - l > 0) || !(b - t > 0)) continue; // 未布局 / display:none / 已卸载
+    out.push({
+      left: l, top: t, right: r, bottom: b,
+      kind: typeof raw.kind === 'string' ? raw.kind : ''
+    });
+  }
+  return out;
+}
+
+/** 两个盒/矩形是否相交（开边界：仅边缘相贴不算重叠——贴边不拦命中）。 */
+export function rectsIntersect(a, b) {
+  if (!a || !b) return false;
+  return a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
+}
+
+/**
+ * 盒是否与矩形集相交（D3 避让谓词单点实现）。
+ * @param {{left:number, top:number, right:number, bottom:number}|null} box
+ * @param {Array<object>} rects 已规范化矩形集
+ * @param {string|string[]} [ignoreKinds] 判据忽略的矩形类别（自遮挡排除：浮签自身族的矩形）
+ * @returns {boolean}
+ */
+export function boxInRects(box, rects, ignoreKinds) {
+  if (!box || !Array.isArray(rects)) return false;
+  const ignore = ignoreListOf(ignoreKinds);
+  for (let i = 0; i < rects.length; i += 1) {
+    const rect = rects[i];
+    if (!rect) continue;
+    if (ignore && ignore.indexOf(rect.kind) >= 0) continue;
+    if (rectsIntersect(box, rect)) return true;
+  }
+  return false;
+}
+
+/**
+ * 点是否落在矩形集内（D4 命中门禁谓词单点实现；边界含入 —— 落在铬件边缘也算命中，
+ * 与浏览器命中的闭区间语义一致）。
+ * @param {number} x 容器坐标 x
+ * @param {number} y 容器坐标 y
+ * @param {Array<object>} rects 已规范化矩形集
+ * @param {string|string[]} [ignoreKinds] 判据忽略的矩形类别（浮签自身族的矩形）
+ * @returns {boolean}
+ */
+export function pointInRects(x, y, rects, ignoreKinds) {
+  const px = Number(x), py = Number(y);
+  if (!Number.isFinite(px) || !Number.isFinite(py) || !Array.isArray(rects)) return false;
+  const ignore = ignoreListOf(ignoreKinds);
+  for (let i = 0; i < rects.length; i += 1) {
+    const rect = rects[i];
+    if (!rect) continue;
+    if (ignore && ignore.indexOf(rect.kind) >= 0) continue;
+    if (px >= rect.left && px <= rect.right && py >= rect.top && py <= rect.bottom) return true;
+  }
+  return false;
+}
+
+/** 容器边界规范化（`{W, H}` / `{width, height}` → 盒；缺参/非法 → null = 不约束）。 */
+export function boundsBoxOf(bounds) {
+  if (!bounds || typeof bounds !== 'object') return null;
+  const w = Number(bounds.W ?? bounds.width);
+  const h = Number(bounds.H ?? bounds.height);
+  if (!(w > 0) || !(h > 0)) return null;
+  return { left: 0, top: 0, right: w, bottom: h };
+}
+
+/** 盒完全落在容器留白内（frame 缺省 → 不约束）。 */
+function insideBounds(box, frame, margin) {
+  if (!frame) return true;
+  if (!box) return false;
+  return box.left >= frame.left + margin - 0.01
+    && box.top >= frame.top + margin - 0.01
+    && box.right <= frame.right - margin + 0.01
+    && box.bottom <= frame.bottom - margin + 0.01;
+}
+
+/** 把盒钳进容器留白（宽/高超出容器时以留白左上角为锚，与既有纵向钳制同口径）。 */
+function clampBoxInto(box, frame, margin) {
+  if (!frame || !box) return box;
+  const w = box.right - box.left;
+  const h = box.bottom - box.top;
+  const maxLeft = Math.max(frame.left + margin, frame.right - margin - w);
+  const maxTop = Math.max(frame.top + margin, frame.bottom - margin - h);
+  const left = clamp(box.left, frame.left + margin, maxLeft);
+  const top = clamp(box.top, frame.top + margin, maxTop);
+  return { left: left, top: top, right: left + w, bottom: top + h };
+}
+
+/**
+ * 浮签候选位的包围盒（D3）：定位点口径与 DOM transform 单点同源——
+ *  - chip：`translate(-50%,-100%)` ⇒ 定位点 = **底缘中点**；
+ *  - card：未翻转 `dir=1` 定位点 = **左缘上角**（卡向右伸展）；翻转 `dir=-1` = **右缘上角**
+ *    （DOM 缀 `translateX(-100%)`，卡向左伸展）。
+ * @param {object|null} candidate `{kind, x, y, w, h, dir}`
+ * @returns {object|null} 盒；非法候选位 → null（不参与判定）
+ */
+export function tipBoxOf(candidate) {
+  if (!candidate || typeof candidate !== 'object') return null;
+  const x = Number(candidate.x), y = Number(candidate.y);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+  const w = Math.max(0, Number(candidate.w) || 0);
+  const h = Math.max(0, Number(candidate.h) || 0);
+  if (candidate.kind === 'chip') {
+    return { left: x - w / 2, top: y - h, right: x + w / 2, bottom: y };
+  }
+  return candidate.dir === -1
+    ? { left: x - w, top: y, right: x, bottom: y + h }
+    : { left: x, top: y, right: x + w, bottom: y + h };
+}
+
+/** 由卡盒反推卡定位点（`tipBoxOf` 的逆：与 DOM transform 口径单点同源）。 */
+function cardAnchorOf(box, dir) {
+  return { x: dir === -1 ? box.right : box.left, y: box.top };
+}
+
+/**
+ * 浮签遮挡避让决策（D3 纯函数；`updateOverlay` 每帧对每股可见浮签调用一次）。
+ *
+ * 决策序（design D3「各族规则」）：
+ *  - chip：与任一铬件矩形相交 → `hide`（锚定语义优先，MUST NOT 平移锚点）；
+ *  - card：短轴推出（`h <= w` → 纵向；否则横向，取位移更小的可行方向）→ 翻转
+ *    （`candidate.altX` = 星心另一侧同间距的镜像候选位）→ 钳回容器；全部失败 → `degraded`。
+ *  - 矩形集为空 / 候选位非法 / 不相交 → `keep`（现状回落，MUST NOT 报错）。
+ *
+ * @param {{kind:'chip'|'card', x:number, y:number, w?:number, h?:number, dir?:1|-1, altX?:number}} candidate
+ * @param {Array<{left:number, top:number, right:number, bottom:number, kind?:string}>} rects 已规范化矩形集
+ * @param {{W?:number, H?:number}|null} [bounds] 容器边界（缺省 = 不约束）
+ * @returns {{action:'keep'|'hide'|'place', x:number, y:number, dir:1|-1, degraded:boolean}}
+ */
+export function tipAvoidanceOf(candidate, rects, bounds) {
+  const x = Number(candidate?.x);
+  const y = Number(candidate?.y);
+  const dir = candidate?.dir === -1 ? -1 : 1;
+  const keep = { action: 'keep', x: x, y: y, dir: dir, degraded: false };
+  const box = tipBoxOf(candidate);
+  const list = Array.isArray(rects) ? rects : [];
+  if (!box) return keep;
+  if (!list.length || !boxInRects(box, list)) return keep;
+  /* chip：整族淡出（导航有面板清单 / 搜索 / 钻取切换条目等价路径，隐藏零功能损失）。 */
+  if (candidate.kind === 'chip') return { action: 'hide', x: x, y: y, dir: dir, degraded: false };
+
+  const frame = boundsBoxOf(bounds);
+  const w = Math.max(0, Number(candidate.w) || 0);
+  const h = Math.max(0, Number(candidate.h) || 0);
+  const free = function (b) { return !boxInRects(b, list) && insideBounds(b, frame, UI_AVOID.margin); };
+
+  /* ① 沿卡体短轴推出：对每个相交矩形各算「上/下（或左/右）越过它」的位移，按位移
+        从小到大试——先小后大，首个「推出后与全集都不相交且在容器内」的方向即落位。 */
+  const vertical = h <= w;
+  const steps = [];
+  for (let i = 0; i < list.length; i += 1) {
+    const rect = list[i];
+    if (!rect || !rectsIntersect(box, rect)) continue;
+    if (vertical) {
+      steps.push(rect.top - box.bottom);   // 上移出矩形
+      steps.push(rect.bottom - box.top);   // 下移出矩形
+    } else {
+      steps.push(rect.left - box.right);   // 左移出矩形
+      steps.push(rect.right - box.left);   // 右移出矩形
+    }
+  }
+  steps.sort(function (a, b) { return Math.abs(a) - Math.abs(b); });
+  for (let i = 0; i < steps.length; i += 1) {
+    const d = steps[i];
+    if (!(Math.abs(d) > 0.01) || Math.abs(d) > UI_AVOID.maxPush) continue;
+    const moved = vertical
+      ? { left: box.left, top: box.top + d, right: box.right, bottom: box.bottom + d }
+      : { left: box.left + d, top: box.top, right: box.right + d, bottom: box.bottom + d };
+    if (!free(moved)) continue;
+    const anchor = cardAnchorOf(moved, dir);
+    return { action: 'place', x: anchor.x, y: anchor.y, dir: dir, degraded: false };
+  }
+
+  /* ② 翻转：镜像候选位（星心另一侧同间距）自由则整卡镜像落位（`dir` 取反 → 调用方
+        的 `translateX(-100%)` 随判定结果同帧切换）。 */
+  const altX = Number(candidate.altX);
+  if (Number.isFinite(altX)) {
+    const altDir = dir === -1 ? 1 : -1;
+    const altBox = tipBoxOf({ kind: candidate.kind, x: altX, y: y, w: w, h: h, dir: altDir });
+    if (altBox && free(altBox)) {
+      return { action: 'place', x: altX, y: y, dir: altDir, degraded: false };
+    }
+  }
+
+  /* ③ 钳回容器：上/下都无自由落位时把卡盒钳进容器留白（位置尽量保持不变）。 */
+  const clamped = clampBoxInto(box, frame, UI_AVOID.margin);
+  const clampedAnchor = cardAnchorOf(clamped, dir);
+  if (!boxInRects(clamped, list)) {
+    return { action: 'place', x: clampedAnchor.x, y: clampedAnchor.y, dir: dir, degraded: false };
+  }
+
+  /* ④ 无自由空间（极窄容器 / 四邻皆铬件）→ 视觉保留（浮签层 z 保证可读）+ 命中降级。 */
+  return { action: 'place', x: clampedAnchor.x, y: clampedAnchor.y, dir: dir, degraded: true };
+}
+
 /* ---------- 成星捕获补间（polish-cosmos-orbit-insertion；初值，spec 不锁数值） ---------- */
 
 /** 捕获补间总时长（与回归 1.4s 对称；真机调参改此常量即可，不进设置页）。 */
@@ -651,8 +966,9 @@ const SHOCK_KICK_MAX = 48;
 /* ---------- 转场编排常量（add-transition-choreography；初值，spec 不锁数值，集中便于真机调参） ---------- */
 
 /** 尘埃增量渐入（1.2：born α 坡道 0.8s）/ 卫星出生坡道（2.2：0.5s）/ 状态色相滑移（3.1：0.6s）/
-    星座消散幽灵（5.1：1.5s）/ 冷启动序曲窗口（6.1：1.2s，ws 错峰 0.1s、单 ws 坡道 0.5s）/
-    连线段淡入淡出（8.1：0.4s）。 */
+    星座消散幽灵（5.1：1.5s）/ 冷启动序曲窗口（6.1：1.2s，ws 错峰 0.1s、单 ws 坡道 0.5s）。
+    （连线段逐段淡入 0.4s 随图样静态化退役：图样线/点改随星座级 α 淡入淡出，
+    add-cosmos-template-figure-display 2.3。） */
 const DUST_BORN_FADE = 0.8;
 const SAT_BORN_DUR = 0.5;
 export const COLOR_MIX_DUR = 0.6;
@@ -660,11 +976,21 @@ const WS_GHOST_DUR = 1.5;
 export const BOOT_DUR = 1.2;
 const BOOT_WS_STAGGER = 0.1;
 const BOOT_WS_RAMP = 0.5;
-const LINK_FADE_DUR = 0.4;
-/** 图样连线弱化因子（two-use-cosmos-template-star-layout 3.1）：段 α 自缩系数——各皮肤
-    缺省 constline 基线（≈0.28α）× 本值 ≈0.14α，弱于轨道环 0.20 与恒星本体（背景层
-    定位）；皮肤未适配 `seg.pat` 标记时同式生效（缺省线渲染回退，无破图路径）。 */
+/** 图样连线弱化因子（two-use-cosmos-template-star-layout 3.1 / add-cosmos-template-figure-
+    display 2.1）：段 α 自缩系数——各皮肤缺省 constline 基线（≈0.28α）× 本值 ≈0.14α，
+    弱于轨道环 0.20 与恒星本体（背景层定位）。**统一口径**（本提案裁决）：有星段与空槽段
+    同一亮度，MUST NOT 双轨分层；皮肤未适配 `seg.pat` 标记时同式生效（缺省线渲染回退，
+    无破图路径）。 */
 const PAT_LINE_DIM = 0.5;
+/** 空槽装饰点弱化因子（add-cosmos-template-figure-display 3.2 / D3）：点 α 自缩系数——
+    MUST 低于 `PAT_LINE_DIM`（装饰点弱于图样线；同一皮肤基线口径下相对关系恒成立），
+    视觉上 = 「线段顶点可见」的微点，不被误读为可交互天体。 */
+const PAT_DOT_DIM = 0.22;
+/** 空槽装饰点屏显半径基准（像素；按投影缩放 clamp 到 [下限, 上限]——银河态自然缩小、
+    钻取态可辨，与图样线的屏幕厚度同阶）。 */
+const PAT_DOT_R_BASE = 1.1;
+const PAT_DOT_R_MIN = 0.7;
+const PAT_DOT_R_MAX = 2.2;
 /** 关联聚焦 α 坡道（cosmos-relation-focus D3）：0.2s——聚焦是高频瞬态交互，快于连线段
     0.4s 的登场叙事；切换时旧集 out / 新集 in，α 因子进 rel 段与 rel 环的条目数据。 */
 export const REL_FADE_DUR = 0.2;
@@ -738,9 +1064,26 @@ export const FILTER_FIT_DUR = 0.8;
 export const FILTER_FIT_MARGIN = 60;
 /** 视锥填充系数（投影既有取景口径 f = H*1.1/2tan(fov/2)；1.1 使球面留白一致）。 */
 const FILTER_FIT_FILL = 1.1;
-/** dist 值域（与滚轮一致：stepTween 直赋 dist，不经过 wheel 的 clamp）。 */
-const DIST_MIN = 24;
-const DIST_MAX = 4200;
+/** dist 值域（与滚轮一致：stepTween 直赋 dist，不经过 wheel 的 clamp）。
+    2.5 导出：顶部缩放标尺（add-cosmos-zoom-ruler 1.2）与观察面同源消费值域端点。 */
+export const DIST_MIN = 24;
+export const DIST_MAX = 4200;
+/**
+ * 银河首屏/归位视距（进入 Cosmos 页面时的初始镜头距离；`flyOut` 无快照兜底同源）。
+ *
+ * 星座天球壳半径 ≈ `150 × (0.9 + √|S| × 0.55)`（默认 spread=150；88 座松弛前 ≈909，
+ * 最小间距松弛后壳顶实测 ≈1117 世界单位）。旧值 430 位于壳内：首屏只能看到相机前方的
+ * 少量星座（88 座投影实测仅 19 座落屏）。取 3000 后整壳落入首屏垂直 FOV
+ * （tan(30°)×3000 ≈ 1732 > 1117，88 座全部落屏）；仍远小于 DIST_MAX，保留滚轮继续
+ * 拉远与阈值导航（tick=155）全部空间。
+ */
+export const HOME_DIST = 3000;
+
+/** 首屏视距构造净房（`opts.homeDist` 可覆盖，测试夹具用）：非法/缺席 → HOME_DIST。 */
+function homeDistOf(value) {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? clamp(n, DIST_MIN, DIST_MAX) : HOME_DIST;
+}
 /** α 目标比较阈值（差值小于此值视为一致，不重锚坡道）。 */
 const FILTER_ALPHA_EPS = 1e-4;
 
@@ -1347,6 +1690,23 @@ export const CENTER_GATE_RATIO = 0.25;
 export const DIVE_SAFE_MARGIN = 1.15;
 /** 返回判定的视距下限倍率（× DIVE_REF；显式滞回，保证刚进入的镜头绝不误返回）。 */
 export const FLYOUT_DIST_FLOOR_MULT = 1.35;
+/** 返回判定的绝对距离下限（= DIVE_REF × FLYOUT_DIST_FLOOR_MULT = 209.25；标尺与判定同源）。 */
+export const FLYOUT_DIST_FLOOR = DIVE_REF * FLYOUT_DIST_FLOOR_MULT;
+
+/* ---------- 顶部缩放标尺几何与数据通道（add-cosmos-zoom-ruler 1.1–1.2） ---------- */
+
+/** 标尺 tick 距离 = 钻取参考视距（进入星座视图的缩放尺度；双向共用同一刻度）。 */
+export const ZOOM_RULER_TICK = DIVE_REF;
+/** 标尺值域下限（钻取态最大缩放）。 */
+export const ZOOM_RULER_DIST_MIN = DIST_MIN;
+/** 标尺值域上限（银河缩到最小）。 */
+export const ZOOM_RULER_DIST_MAX = DIST_MAX;
+/** 覆盖层通知门限（轨道归一化位移）：≥0.5% 才回调（防高频无谓 DOM 写）。 */
+export const ZOOM_METER_EPSILON = 0.005;
+/** 跳变缓动门限（轨道归一化位移）：≥2% 走 200ms ease-out（连续小步零迟滞）。 */
+export const ZOOM_RULER_EASE_RATIO = 0.02;
+/** 跳变缓动时长（ms；CSS transition 与一次到位判定的单一来源）。 */
+export const ZOOM_RULER_EASE_MS = 200;
 /* ---------- 彗星游荡方程（确定性；`updateScene` 与捕获离场切向共用单一数值来源） ---------- */
 
 /** 游荡振幅（世界单位）：x±58 / y±16(+10 偏置) / z±46。 */
@@ -1388,39 +1748,69 @@ function positiveOr(value, fallback) {
 }
 
 /**
- * 缩放阈值切换判定（纯函数，1.1/D7；引擎在缩放输入处理处内联调用）。
+ * 标尺刻度映射（纯函数，add-cosmos-zoom-ruler 1.2/D1）：对数刻度
+ * `t = log(distMax/dist) / log(distMax/distMin)`，归一化到 [0, 1]。
+ * 4200 → 0（银河缩到最小）、430 ≈ 0.441、155 ≈ 0.639（tick）、24 → 1（钻取最近）。
+ * 非法距离 / 值域退化 → 0（安全落位，SHALL NOT 产生 NaN）。
+ * @param {number} dist 镜头距离
+ * @param {number} [distMin] 值域下限（缺省 DIST_MIN）
+ * @param {number} [distMax] 值域上限（缺省 DIST_MAX）
+ * @returns {number} 0..1
+ */
+export function zoomMeterTrackOf(dist, distMin = DIST_MIN, distMax = DIST_MAX) {
+  const d = Number(dist);
+  const min = Number(distMin);
+  const max = Number(distMax);
+  if (!(d > 0) || !(min > 0) || !(max > min)) return 0;
+  const span = Math.log(max / min);
+  if (!(span > 0)) return 0;
+  const track = Math.log(max / d) / span;
+  return Math.min(1, Math.max(0, track));
+}
+
+/**
+ * 标尺游标运动分型（纯函数，add-cosmos-zoom-ruler D5）：相邻两次轨道位置位移
+ * ≥ 2% → `ease`（200ms 一次到位），否则 `snap`（连续小步直接落位，MUST NOT 叠加
+ * 过渡动画）。非有限输入 → `snap`。
+ * @param {number} prevTrack 上一次轨道位置（0..1）
+ * @param {number} nextTrack 本次轨道位置（0..1）
+ * @returns {"ease"|"snap"}
+ */
+export function zoomRulerMotionOf(prevTrack, nextTrack) {
+  const a = Number(prevTrack);
+  const b = Number(nextTrack);
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return "snap";
+  return Math.abs(b - a) >= ZOOM_RULER_EASE_RATIO ? "ease" : "snap";
+}
+
+/**
+ * 缩放阈值切换判定（纯函数，1.1/D2/D3；引擎在缩放输入处理处内联调用）。
  *
- * 口径（design D1/D2）：
- *  - 进入（银河态）：最近星座中心视距 `vz ≤ DIVE_REF / (zoomDiveRatio/100)`（「星座屏显
- *    尺寸达到钻取参考尺寸的 X%」的视距等价式，与星座大小无关），且该星座屏心距离
- *    `≤ min(W,H) × CENTER_GATE_RATIO`（闸门外不参与）；
- *  - 返回（钻取态）：焦点星座屏显直径 `2·boundR·f/dist ≤ (zoomFlyOutRatio/100) ×
- *    min(W,H)`，且 `dist ≥ DIVE_REF × 1.35`（显式滞回下限）；
+ * 口径（add-cosmos-zoom-ruler D2：全部锚定距离轴）：
+ *  - 进入（银河态）：最近星座中心视距 `vz ≤ DIVE_REF`（tick = 155，与顶部缩放标尺同源），
+ *    且该星座屏心距离 `≤ min(W,H) × CENTER_GATE_RATIO`（闸门外不参与）；
+ *  - 返回（钻取态）：镜头距离 `≥ FLYOUT_DIST_FLOOR`（= 155 × 1.35 = 209.25，既有滞回下限）
+ *    **距离单判**——屏显直径条件已删除（大星座与小型星座同一距离口径，行为变化已记录）；
  *  - 守卫：`blocked` 由调用方聚合（补间/拖拽/手势/冷却任一在途）→ 早退双 false；
  *    模式隔离：galaxy 只可能 dive、drilled 只可能 flyOut。
  *
  * @param {{mode?: "galaxy"|"drilled", blocked?: boolean, vz?: number, centerDistPx?: number,
- *   minViewportPx?: number, dist?: number, boundR?: number, f?: number}} state
- * @param {{diveRatio?: number, flyOutRatio?: number}} [params]
+ *   minViewportPx?: number, dist?: number}} state
+ * @param {{diveRatio?: number, flyOutRatio?: number}} [params] `diveRatio` 保留为纯函数
+ *   直测入参（引擎恒传常量 100 → 阈值 = DIVE_REF）；`flyOutRatio` 已无消费方，仅作兼容占位。
  * @returns {{dive: boolean, flyOut: boolean}}
  */
 export function zoomSwitchVerdict(state, params) {
   const s = state && typeof state === "object" ? state : {};
   if (s.blocked === true) return { dive: false, flyOut: false };
-  const diveRatio = positiveOr(params?.diveRatio, 100);
-  const flyOutRatio = positiveOr(params?.flyOutRatio, 25);
-  const minVp = Number(s.minViewportPx);
-  if (!(minVp > 0)) return { dive: false, flyOut: false };
   if (s.mode === "drilled") {
     const dist = Number(s.dist);
-    const boundR = Number(s.boundR);
-    const f = Number(s.f);
-    if (!(dist > 0) || !(boundR >= 0) || !(f > 0)) return { dive: false, flyOut: false };
-    const diameter = (2 * boundR * f) / dist;
-    const limit = (flyOutRatio / 100) * minVp;
-    const hysteresis = dist >= DIVE_REF * FLYOUT_DIST_FLOOR_MULT;
-    return { dive: false, flyOut: hysteresis && diameter <= limit };
+    if (!(dist > 0)) return { dive: false, flyOut: false };
+    return { dive: false, flyOut: dist >= FLYOUT_DIST_FLOOR };
   }
+  const minVp = Number(s.minViewportPx);
+  if (!(minVp > 0)) return { dive: false, flyOut: false };
+  const diveRatio = positiveOr(params?.diveRatio, 100);
   const vz = Number(s.vz);
   const centerDistPx = Number(s.centerDistPx);
   if (!Number.isFinite(vz) || !Number.isFinite(centerDistPx) || centerDistPx < 0) {
@@ -1510,7 +1900,8 @@ export function zoomFocusTargetOf(cam, px, py, W, H, newDist) {
  *    构建期已知的簇心恒星 wp / 联星质心；稳态轨道半径 = baseR，捕获螺旋瞬态不纳入）；
  *  - 彗星：确定性游荡包络常量 `COMET_WANDER_R`；
  *  - 下限：星云渲染半径 `12 + archives×2.4`（空星座兜底）。
- * 仅消费于返回阈值判定，MUST NOT 影响布局/绘制。
+ * 不再被任何缩放阈值判定消费（add-cosmos-zoom-ruler D2：返回判定已收敛为距离单判）；
+ * 保留为引擎数据与观测面字段，MUST NOT 用作引线锚点，MUST NOT 影响布局/绘制。
  *
  * @param {object} ws 场景星座 body
  * @returns {number}
@@ -1644,6 +2035,59 @@ function blastFieldsOf(entry) {
 }
 
 /**
+ * 图样快照（add-cosmos-template-figure-display 2.1/2.5）：场景 `ws.pattern` 深拷贝进引擎
+ * 快照（`{ slots, lines }` 引用隔离——场景数据换代不影响引擎在途帧）。
+ *
+ * **旧字段容忍**（2.5）：`ws.pattern` 缺席 / null / 非对象 / 空 slots → null（= 无图样，
+ * 旧场景快照互读安全）；逐槽位坐标经 `Number` 归一（非有限保留 NaN，渲染期跳过——
+ * 图样数据损坏不得抛错）；lines 逐项剔除非整数 / 自环 / 越界索引对（结构性损坏防御，
+ * 与 merge 层同口径）。
+ *
+ * @param {object|null|undefined} p 场景 `ws.pattern`
+ * @returns {{slots: Array<[number, number, number]>, lines: Array<[number, number]>}|null}
+ */
+export function patSnapshotOf(p) {
+  if (!p || typeof p !== 'object') return null;
+  const slotsIn = Array.isArray(p.slots) ? p.slots : [];
+  if (slotsIn.length === 0) return null;
+  const slots = slotsIn.map(function (s) {
+    return [Number(s?.[0]), Number(s?.[1]), Number(s?.[2])];
+  });
+  const lines = [];
+  const linesIn = Array.isArray(p.lines) ? p.lines : [];
+  for (const pair of linesIn) {
+    const a = Number(pair?.[0]), b = Number(pair?.[1]);
+    if (!Number.isInteger(a) || !Number.isInteger(b) || a === b) continue;
+    if (a < 0 || b < 0 || a >= slots.length || b >= slots.length) continue;
+    lines.push([a, b]);
+  }
+  return { slots: slots, lines: lines };
+}
+
+/**
+ * 空槽判定纯函数（add-cosmos-template-figure-display 3.1 / D3）：规范序保证前
+ * `min(N, L)` 颗恒星占前序内核槽位（N = 模板主星数 = `slots.length`、L = 恒星数），
+ * 余下内核槽位即空槽（溢出环恒星不参与内核槽位判定）。与装配顺序无关——恒星集合
+ * 相同（同 id、同 at）无论数组序，结果一致。
+ *
+ * 纯函数、零副作用：图样缺席/畸形 → `[]`（无装饰点 = 无图样）。
+ *
+ * @param {{slots?: Array}|null|undefined} pattern 图样快照（引擎 ws.pattern）
+ * @param {number} starCount 本星座恒星数（含星胚 proto）
+ * @returns {number[]} 空槽下标（升序，下标入 pattern.slots）
+ */
+export function patEmptySlotsOf(pattern, starCount) {
+  const slots = Array.isArray(pattern?.slots) ? pattern.slots : [];
+  const n = slots.length;
+  if (n === 0) return [];
+  const l = Math.max(0, Math.floor(Number(starCount) || 0));
+  const occupied = Math.min(n, l);
+  const out = [];
+  for (let k = occupied; k < n; k++) out.push(k);
+  return out;
+}
+
+/**
  * 场景构建纯函数（add-transition-choreography 1.3 可测性导出；引擎 `buildScene` 薄封装）。
  *
  * 确定性渲染地基（D1）：
@@ -1674,8 +2118,15 @@ export function buildScenePure(sceneData, captures, regressions) {
       center: (w.pos || [0, 0, 0]).slice(),
       stars: [], planets: [], comets: [],
       links: (w.links || []).slice(),
-      patternLines: (w.patternLines || []).slice(), // 图样连线索引对（two 2.6：引用本数组 stars 下标）
+      /* 图样全量几何（add-cosmos-template-figure-display 2.1/2.5）：`{ slots, lines }`
+         深拷贝进快照（与场景数据引用隔离）；缺席/畸形 → null（旧场景快照互读安全），
+         渲染期一律经 `ws.pattern` 消费，MUST NOT 旁路读 sceneData。 */
+      pattern: patSnapshotOf(w.pattern),
       archives: w.archives || 0,
+      /* 星座模板中文名（add-cosmos-template-name-toggle 2.2/D2）：merge 单一出处交付的装饰
+         元数据原样透传；缺席容忍（非字符串 / 空串归一 null ⇒ 呈现端按无名称处理）。仅呈现层
+         消费（chip 副文本 / 钻取标牌副行），MUST NOT 进入布局、拾取或场景差分属性面。 */
+      tplZh: typeof w.tplZh === "string" && w.tplZh ? w.tplZh : null,
       dust: [], dustCount: 0, // 已入册尘埃粒子数（增量 born 判定基线；patch 重生成时沿用）
       alpha: 1, vis: true, proj: null
     };
@@ -1976,24 +2427,24 @@ function zOf(cam, p) {
  *        浮窗打开态探针（add-cosmos-shortcuts 4.2/D13 模态让位）：浮窗（星座补写卡片）
  *        打开时 `goHome` / `togglePan` MUST NOT 分发——浮窗是模态上下文（backdrop 挡住
  *        星空），补写途中误触切换星空状态无意义。未注入 → 恒按未打开（引擎侧零拦截）。
- * @param {{dragPan?: boolean, shortcuts?: {closePage?: string, goHome?: string,
+ * @param {{dragPan?: boolean, templateNames?: boolean, shortcuts?: {closePage?: string, goHome?: string,
  *        togglePan?: string, voiceToggle?: string}}} [opts.settings]
  *        设置面初值（settings.mjs 净房产物）：`dragPan` 为拖拽平移开关缺省态
- *        （非显式 `true` 一律按关闭 = 默认关闭）；`shortcuts` 为全局快捷键表
+ *        （非显式 `true` 一律按关闭 = 默认关闭）；`templateNames` 为星座模板名显示缺省态
+ *        （`add-cosmos-template-name-toggle`：非显式 `true` 一律按关闭 = 默认渲染零变化）；
+ *        `shortcuts` 为全局快捷键表
  *        （add-cosmos-shortcuts D11，净房由 `shortcutsOf` 二次兜底；改绑走
  *        `setShortcuts` 热更，无需重开整页）。
+ * @param {number} [opts.homeDist] 银河首屏/归位视距（构造选项；缺省 `HOME_DIST = 3000`）。
+ *        净房 clamp 到 `[DIST_MIN, DIST_MAX]`，非法/缺席回落缺省；测试夹具可传 430 等
+ *        经典视距。仅影响初始镜头距离与 `flyOut` 无快照兜底，不参与阈值导航。
  * @param {{decide?: object, vitality?: object, card?: object, dismiss?: object}} [opts.labels]
  *        信息卡文案注入位（locale 同源，任务 5.4）：`decide` = 决策按钮 pendingKind 映射
  *        （键域 approval / plan-review / question + fallback），`vitality` = 活力状态行
- *        行标（label）与两态取值（active / sleep），`card` = 会话卡按钮禁用提示
- *        （`openDisabled`，add-cosmos-standalone-window D6），`dismiss` = 星胚卡「移除星胚」
- *        按钮与确认态文案（`remove` / `confirm`，add-cosmos-embryo-dismiss D9）；
+ *        行标（label）与两态取值（active / sleep），`card` = 会话卡归档门禁文案
+ *        （`archiveBusy` / `archiveWaiting`），`dismiss` = 星胚卡「移除星胚」按钮与确认态
+ *        文案（`remove` / `confirm`，add-cosmos-embryo-dismiss D9）；
  *        缺省 = 引擎内 DEFAULT_LABELS。
- * @param {boolean} [opts.sessionNavAvailable]
- *        会话导航可用性（add-cosmos-standalone-window D6）：`false` = 独立窗口态
- *        （无主壳右侧系统会话页）——信息卡「打开会话」呈禁用态 + title 提示，空格
- *        快捷键同款静默 no-op（MUST NOT 报错、MUST NOT 关窗）；缺省/非 `true` 之外
- *        一律按可用（内嵌态行为零变化）。
  */
 export function createCosmosEngine(opts) {
   if (!opts?.container) throw new TypeError("createCosmosEngine: container required");
@@ -2019,9 +2470,6 @@ export function createCosmosEngine(opts) {
       card: Object.assign({}, DEFAULT_LABELS.card, textRecordOf(opts.labels?.card)),
       dismiss: Object.assign({}, DEFAULT_LABELS.dismiss, textRecordOf(opts.labels?.dismiss))
     },
-    /* 会话导航可用性（add-cosmos-standalone-window D6）：独立窗口态注入 false——信息卡
-       「打开会话」禁用 + title 提示、空格快捷键早退；缺省 true（内嵌态行为零变化）。 */
-    sessionNavAvailable: opts.sessionNavAvailable !== false,
     /* 归档按钮在途会话 id（权威防重入门，D6）：per-session 单飞——卡片在途重渲染会
        抹掉按钮的 disabled 属性，DOM 只是呈现层，本集合才是「重复点击被忽略」的依据。 */
     archiveInFlight: new Set(),
@@ -2050,6 +2498,10 @@ export function createCosmosEngine(opts) {
        平移调参面）；初始化读持久化设置——非显式 true 一律 false（「默认关闭」），
        `setTuning` 热更时同步。 */
     dragPanMode: opts.settings?.dragPan === true,
+    /* 星座模板名显示镜像（add-cosmos-template-name-toggle 3.1/D4）：引擎级装饰布尔，
+       **不进 `E.tuning` / `getTuning()`**；初始化读持久化设置——非显式 true 一律关闭
+       （默认渲染零变化），热翻转走 `setTuning`（置位后显式刷新 chip 文本）。 */
+    templateNames: opts.settings?.templateNames === true,
     /* 全局快捷键表（add-cosmos-shortcuts 4.1/D11）：引擎侧只消费 `goHome` / `togglePan`；
        构造经 `shortcutsOf` 二次净房（池校验 + 读面冲突回落 → 表恒无重复），热更走
        `setShortcuts`（守卫形态对齐 `setTuning`：部分写、非法忽略、幂等）。 */
@@ -2057,7 +2509,11 @@ export function createCosmosEngine(opts) {
     /* 浮窗打开态探针（D13 模态让位）：客户端注入模块级探针（浮窗 armed 即 true）；
        未注入 → 恒按未打开（引擎侧不新增依赖面）。 */
     isFloatOpen: typeof opts.isFloatOpen === "function" ? opts.isFloatOpen : null,
-    cam: { target: [0, 0, 0], yaw: -0.7, pitch: 0.5, dist: 430, fov: 60 },
+    cam: { target: [0, 0, 0], yaw: -0.7, pitch: 0.5, dist: homeDistOf(opts.homeDist), fov: 60 },
+    /* 银河首屏视距（add-cosmos-zoom-ruler 后续真机调优）：构造选项 `homeDist` 可覆盖
+       （测试夹具用），缺席/非法 → HOME_DIST（3000，首屏容纳整座星座天球）；`flyOut`
+       无 diveFrom 快照的兜底落点同源。 */
+    homeDist: homeDistOf(opts.homeDist),
     tween: null,
     focusWs: null, focusMix: 0, diveSel: null, diveSelKind: null,
     diveFrom: null, // dive 前的完整镜头快照（Esc 全量回放，平移/缩放语义配套）
@@ -2077,14 +2533,14 @@ export function createCosmosEngine(opts) {
     fxActive: [], // 已启动转场进行窗口（P1 并发上限计数；startedAt + activeDur）
     fxLastStart: new Map(), // "priority|wsId" → 上次同 ws 启动时刻（错峰步长基线）
     fxStorm: false, // 风暴降级开关（待启动积压 > 8 时 true，阈值比较即自动恢复）
-    linkMix: new Map(), // wsId → Map("aId|bId" → {t0, dir:'in'|'out', pA?, pB?})（8.1 段淡入淡出；two 起 = 图样连线段状态，跨 rebuild 键控恒星 id 对）
     /* 关联聚焦坡道（cosmos-relation-focus D3）：键 `wsId|kind:id` → {t0, dir:'in'|'out',
        wsId, kind, id}。跨 rebuild 按键保留（id 基），切换 = 旧键 out + 新键 in；α 因子由
        条目 t0 与帧时刻现算，不落 body（纯派生，无失效路径）。 */
     relMix: new Map(),
     relFocusKey: "", // 当前聚焦源键（"" = 三源皆空；E.hovered ?? E.extHover ?? E.selected）
     relLast: null, // 最近一帧 rel 呈现快照（inspectRelation 观测面；two 起 = {focusKey, orbits, segs}，星↔星 links 面解除）
-    patLast: [], // 最近一帧图样连线段快照（two：inspectPatternLines 观测面，帧重建）
+    patLast: [], // 最近一帧图样连线段快照（inspectPatternLines 观测面，帧重建，{wsId, segIndex, alpha}）
+    patDotLast: [], // 最近一帧空槽装饰点快照（inspectPatternDots 观测面，帧重建，{wsId, slotIndex, alpha}）
     filter: null, // 搜索过滤态（2.2）：null = 关闭 | {matched: Set<wsId>, pos: Map<wsId,[x,y,z]>}
     filterRamp: new Map(), // wsId → {from, to, t0}（α 坡道；**引擎级**：跨 rebuild 存活，MUST NOT 挂 ws body）
     filterFitPending: false, // 「过滤排除」flyOut 收尾补 fit 标志（2.5/D3）
@@ -2093,9 +2549,20 @@ export function createCosmosEngine(opts) {
     wsBirth: new Map(), // wsId → t0（空星座 chip 出生高亮标记；D6/3.2，CSS 2s 渐熄后自动常态）
     bootT0: null, // 冷启动点亮序曲锚点（首帧场景注入 / start 场景已在；null = 未锚定不启用序曲）
     px: -1, py: -1, pointerIn: false, dragging: false,
+    /* 右键拖拽平移态（add-cosmos-rightdrag-pan D5）：与 `dragging`（左键）**互不相干**——
+       右键拖拽 MUST NOT 写 `dragging`（否则「左键静置 + 右键拖动」后左键抬起会被
+       `wasDrag` 误吞拾取）；三处共享反馈（hover 探针抑制 / `grabbing` 光标 /
+       `zoomSwitchBlocked()` 守卫）按「左键拖拽态或右键拖拽态任一在场」判定。 */
+    rdrag: false,
     /* 浮签引线逐帧缓存（polish-cosmos-tip-leader-line D3）：`updateOverlay` 每帧重写，
        `drawTipLines` 紧随其后消费——端点同源的唯一实现载体（呈现层瞬态，不进 sceneData）。 */
     tipLines: [],
+    /* UI 铬件矩形缓存（polish-cosmos-tip-ui-avoidance D2）：client 在**布局事实变化**时
+       经公共面 `setUiChromeRects` 发布（规范化后逐条入本数组），`updateOverlay` 逐帧只做
+       数组比对——引擎帧循环内零 DOM 测量。空集 = 契约缺席 → 避让不生效（现状回落）。
+       `uiOrigin` = 引擎容器原点（窗口视口坐标），仅 `pointerdown`/`click` 事件级换算消费。 */
+    uiRects: [],
+    uiOrigin: { x: 0, y: 0 },
     tipCardH: TIP_LINE.cardFallbackH, // 信息卡高度缓存（内容签名变更时测量；D5）
     tipCardW: TIP_LINE.cardFallbackW, // 信息卡宽度缓存（翻转判定与避让间距同源派生）
     pointers: new Map(), // pointerId → {x, y}（多指针追踪：pinch 基准指距与剩指重置，D2）
@@ -2111,11 +2578,14 @@ export function createCosmosEngine(opts) {
     tuning: {
       speed: Number(opts.settings?.panSpeed) > 0 ? opts.settings.panSpeed : PAN_SPEED,
       boost: Number(opts.settings?.panShiftBoost) > 0 ? opts.settings.panShiftBoost : PAN_SHIFT_BOOST,
-      /* 缩放导航调参（add-cosmos-zoom-focus-nav 2.6）：与设置面同键装载；非法值回落缺省。 */
-      diveRatio: positiveOr(opts.settings?.zoomDiveRatio, 100),
-      flyOutRatio: positiveOr(opts.settings?.zoomFlyOutRatio, 25),
+      /* 缩放导航阈值（add-cosmos-zoom-ruler 1.1/D3）：恒为引擎常量、不再读设置键；
+         `E.tuning` 只保留指针聚焦开关（设置面仅此一项）。 */
       pointerFocus: opts.settings?.zoomPointerFocus !== false
-    }, // 可配置平移速度 + 缩放导航（settings.mjs 装载；setTuning 热更新）
+    }, // 可配置平移速度 + 指针聚焦（settings.mjs 装载；setTuning 热更新）
+    /* 标尺数据通道（add-cosmos-zoom-ruler 1.2/D4）：回调集合 + 上次通知快照
+       （轨道位置 + 模式；0.5% 位移门限与模式变化触发，避免逐帧无谓 DOM 写）。 */
+    zoomMeters: new Set(),
+    zoomMeterLast: null,
     W: 0, H: 0, dpr: 1,
     sceneData: null, // providers 合并 scene（mock 同构）
     scene: null, ctx: null,
@@ -2303,10 +2773,6 @@ export function createCosmosEngine(opts) {
     ws.dustCount = n;
   }
 
-  /** 连线段键（D8/8.1）：恒星 id 对（无序）——links 是索引对，恒星插删漂移索引，
-      按索引比对新旧段会错配；差分时解析成 id 对再比对。 */
-  function linkKey(aId, bId) { return aId < bId ? aId + '|' + bId : bId + '|' + aId; }
-
   /* ---------- 关联聚焦（cosmos-relation-focus D1/D3） ---------- */
 
   /** 聚焦源描述（hover/选中实体 → {wsId, kind, id}；实体残缺 → null）。 */
@@ -2425,45 +2891,6 @@ export function createCosmosEngine(opts) {
       }
     }
     return { orbit: orbit, segs: [...segByPair.values()] };
-  }
-
-  /** 图样连线段状态捕获（two-use-cosmos-template-star-layout 3.4，复用 8.1 星 id 对键控
-      机制；setScene rebuild 替换前调用）：跨旧/新场景差分（patternLines 判级为 rebuild，
-      段状态 MUST 跨重建保留）——新增段 dir 'in'（α 坡道 0→1），移除段 dir 'out'
-      （冻结端点世界坐标渐熄幽灵）。键 = 恒星 id 对（linkKey，索引漂移不致错配）。 */
-  function captureLinkMix(oldScene, sceneData) {
-    const oldWs = Array.isArray(oldScene?.ws) ? oldScene.ws : [];
-    const nextWs = Array.isArray(sceneData?.workspaces) ? sceneData.workspaces : [];
-    for (const old of oldWs) {
-      const next = nextWs.find(function (w) { return w.id === old.id; });
-      const nextKeys = new Set();
-      if (next) {
-        (next.patternLines ?? []).forEach(function (L) {
-          const a = next.stars?.[L[0]], b = next.stars?.[L[1]];
-          if (a && b) nextKeys.add(linkKey(a.id, b.id));
-        });
-      }
-      const oldKeys = new Set();
-      let mix = E.linkMix.get(old.id) ?? null;
-      const ensure = function () {
-        if (!mix) { mix = new Map(); E.linkMix.set(old.id, mix); }
-        return mix;
-      };
-      (old.patternLines ?? []).forEach(function (L) {
-        const a = old.stars?.[L[0]], b = old.stars?.[L[1]];
-        if (!a || !b) return;
-        oldKeys.add(linkKey(a.id, b.id));
-        if (nextKeys.has(linkKey(a.id, b.id))) return;
-        ensure().set(linkKey(a.id, b.id), { t0: E.t, dir: 'out', aId: a.id, bId: b.id, pA: (a.wp ?? [0, 0, 0]).slice(), pB: (b.wp ?? [0, 0, 0]).slice() });
-      });
-      if (!next) continue;
-      (next.patternLines ?? []).forEach(function (L) {
-        const a = next.stars?.[L[0]], b = next.stars?.[L[1]];
-        if (!a || !b) return;
-        if (oldKeys.has(linkKey(a.id, b.id))) return;
-        ensure().set(linkKey(a.id, b.id), { t0: E.t, dir: 'in' });
-      });
-    }
   }
 
   /** 星座快照（D5/5.1）：尘埃世界 offsets（≤520，含当时半径 R）+ 恒星 {p, color}
@@ -2931,13 +3358,6 @@ export function createCosmosEngine(opts) {
     E.novae = stepNovae(E.novae, t);
     // 星座消散幽灵步进（5.1）：dur 播完即摘（1.5s 自灭，与场景实体解耦）
     E.wsGhosts = E.wsGhosts.filter(function (g) { return t - g.t0 < g.dur; });
-    // 连线段淡入淡出过期清理（8.1）：段状态跨 rebuild 保留，0.4s 播完即摘 + 空 Map 回收
-    for (const [wsId, mix] of E.linkMix) {
-      for (const [key, entry] of mix) {
-        if (t - entry.t0 > LINK_FADE_DUR + 0.05) mix.delete(key);
-      }
-      if (mix.size === 0) E.linkMix.delete(wsId);
-    }
     // 转场 fx 过期清理（点燃/落印/查看渐熄/出生/金涌播完即摘；t<t0 的 delay 段天然安全）
     for (const [key, fx] of E.fx) {
       if (t - fx.t0 > fx.dur + 0.05) E.fx.delete(key);
@@ -2992,6 +3412,7 @@ export function createCosmosEngine(opts) {
   const P_BIRTH = { x: 0, y: 0, s: 0, z: 0 }; // 出生滑入/游入的第二投影（与主投影并存）
   const P_BG = { x: 0, y: 0, s: 0, z: 0 };
   const P_BAND = { x: 0, y: 0, s: 0, z: 0 };
+  const P_PAT_DOT = { x: 0, y: 0, s: 0, z: 0 }; // 空槽装饰点投影（add-cosmos-template-figure-display 3.2）
 
   /** 屏幕坐标槽位（D4）：条目对象原地复用 + generation 标记（帧末摘除陈旧键）。 */
   function screenSlot(key) {
@@ -3019,10 +3440,12 @@ export function createCosmosEngine(opts) {
        由帧时刻现算，活动集按星座分组消费。 */
     advanceRelFocus(t);
     const relFocuses = activeRelFocuses(t);
-    /* 星↔星提案连线解除（two）：relLast 不再有 links 面；patLast = 图样连线观测面
-       （inspectPatternLines 消费，帧重建——与 relLast 同款每帧快照纪律）。 */
+    /* 星↔星提案连线解除（two）：relLast 不再有 links 面；patLast / patDotLast = 图样连线段
+       与空槽装饰点观测面（inspectPatternLines / inspectPatternDots 消费，帧重建——与
+       relLast 同款每帧快照纪律）。 */
     E.relLast = { focusKey: E.relFocusKey, orbits: [], segs: [] };
     E.patLast = [];
+    E.patDotLast = [];
 
     /* 预算前置（D1）：先算本帧参与尘埃渲染的星座数 n——α 三因子（过滤 × focus ×
        点亮序曲）与可见性在此一次算好，主循环只读。均摊上限 = dustPerWsOf(n)：
@@ -3091,45 +3514,66 @@ export function createCosmosEngine(opts) {
       const relSet = relSetOf(ws, relFocuses, cam, W, H);
       const segs = [];
       const patSegs = [];
-      /* 图样连线呈现（two-use-cosmos-template-star-layout 3.1/D7）：merge 交付的
-         patternLines（场景 stars 下标对、含星胚槽位）→ 槽位世界坐标段；端点恒等恒星
-         落位（确定性随落位管线免费获得）。弱化线型：seg.alpha 自缩 PAT_LINE_DIM——
-         各皮肤缺省 constline 呈现（基线 ≈0.28α）× 本值 ≈0.14α，弱于恒星本体与轨道环；
-         独立 constline 条目定位背景层（z 在提案/关系线层之下）。纯装饰层：不进 picks、
-         不参与拾取/命中；段淡入经 linkMix 星 id 对键控（D7 复用提案连线段机制）。
-         星↔星提案关联虚线（基线金色虚线与聚焦点亮）自本 capability 起解除呈现——
-         ws.links 数据面保留（面板 proposalIds 投影消费），引擎不再绘制。 */
-      if (ws.patternLines.length && ws.stars.length) {
-        ws.patternLines.forEach(function (L) {
-          const A = ws.stars[L[0]], B = ws.stars[L[1]];
-          if (!A || !B) return;
-          const pa = project(cam, A.wp, W, H), pb = project(cam, B.wp, W, H);
-          if (!pa || !pb) return;
-          /* 段淡入坡道（8.1 复用）：以恒星 id 对键控（索引漂移不致错配）；无段状态 → 1。 */
-          const mixEntry = E.linkMix.get(ws.id)?.get(linkKey(A.id, B.id));
-          const fade = mixEntry && mixEntry.dir === 'in'
-            ? clamp((t - mixEntry.t0) / LINK_FADE_DUR, 0, 1)
-            : 1;
-          const seg = { a: pa, b: pb, alpha: fade * PAT_LINE_DIM, pat: true, aId: A.id, bId: B.id };
-          patSegs.push(seg);
-          E.patLast.push({ wsId: ws.id, aId: A.id, bId: B.id, alpha: seg.alpha });
-        });
-      }
-      /* 移除段渐熄幽灵（8.1 复用）：冻结端点世界坐标 α→0（端点恒星已不在图样/场景）；
-         门控只看 ghostMix——新场景 patternLines 为空但幽灵在途时仍要播完渐熄。 */
-      const ghostMix = E.linkMix.get(ws.id);
-      if (ghostMix) {
-        for (const entry of ghostMix.values()) {
-          if (entry.dir !== 'out') continue;
-          const k = clamp((t - entry.t0) / LINK_FADE_DUR, 0, 1);
-          const pa = project(cam, entry.pA, W, H), pb = project(cam, entry.pB, W, H);
+      /* 图样全量呈现（add-cosmos-template-figure-display 2.1–2.3 / D3）：引擎消费 merge
+         交付的 `ws.pattern = { slots, lines }`——模板 lines 逐对投影 slots 端点为段；
+         端点恒等槽位坐标（模板派生静态几何、不随恒星落位变动）。**统一弱化 α**：
+         seg.alpha 恒 = PAT_LINE_DIM（有星段与空槽段同一亮度，无双轨分层），各皮肤
+         缺省 constline 呈现（基线 ≈0.28α）× 本值 ≈0.14α，弱于恒星本体与轨道环；独立
+         constline 条目定位背景层（z 在提案/关系线层之下）。
+         **星座级淡入淡出**（2.2/2.3）：段不携带星 id 键、不再按键控坡道——图样随
+         ws.alpha 呈现（首星 → 门控装配 → 随星座淡入；末星 → 门控关闭图样消失，无独立
+         渐熄幽灵层）。纯装饰层：不进 picks、不参与拾取/命中。空槽装饰点见下方 patdot。
+         星↔星提案关联虚线自 two 起解除呈现——ws.links 数据面保留（面板 proposalIds
+         投影消费），引擎不再绘制。 */
+      const pattern = ws.pattern;
+      if (pattern && ws.stars.length) {
+        for (let si = 0; si < pattern.lines.length; si++) {
+          const L = pattern.lines[si];
+          const slotA = pattern.slots[L[0]], slotB = pattern.slots[L[1]];
+          if (!slotA || !slotB) continue;
+          /* 槽位世界坐标 = 渲染期中心（星座滑移/过滤位移随动）+ 槽位偏移；
+             槽位坐标非有限（图样数据损坏）→ 该段跳过，不抛错。 */
+          const ax = center[0] + slotA[0], ay = center[1] + slotA[1], az = center[2] + slotA[2];
+          const bx = center[0] + slotB[0], by = center[1] + slotB[1], bz = center[2] + slotB[2];
+          if (!Number.isFinite(ax) || !Number.isFinite(ay) || !Number.isFinite(az)) continue;
+          if (!Number.isFinite(bx) || !Number.isFinite(by) || !Number.isFinite(bz)) continue;
+          const pa = project(cam, [ax, ay, az], W, H);
+          const pb = project(cam, [bx, by, bz], W, H);
           if (!pa || !pb) continue;
-          patSegs.push({ a: pa, b: pb, alpha: (1 - k) * PAT_LINE_DIM, pat: true, aId: entry.aId, bId: entry.bId });
-          /* 幽灵段同帧入观测面（aId/bId 捕获自 'out' 条目；无 id 的陈旧条目只画不录）。 */
-          if (entry.aId != null && entry.bId != null) E.patLast.push({ wsId: ws.id, aId: entry.aId, bId: entry.bId, alpha: (1 - k) * PAT_LINE_DIM });
+          patSegs.push({ a: pa, b: pb, alpha: PAT_LINE_DIM, pat: true });
+          E.patLast.push({ wsId: ws.id, segIndex: si, alpha: PAT_LINE_DIM });
         }
       }
       if (patSegs.length) items.push({ kind: 'constline', z: zOf(cam, center) - 5, segs: patSegs, ws: ws, alpha: ws.alpha, pat: true });
+      /* 空槽装饰点（3.1–3.3 / D3）：未被恒星占用的内核槽位 → 微小低 α 点（`patdot`
+         装饰层条目、`pat` 标记）。α = PAT_DOT_DIM（MUST 低于图样线），随 ws.alpha 与
+         图样线同帧淡入淡出（门控同源）；被占槽位不叠加（恒星本体覆盖）。
+         判定走纯函数 `patEmptySlotsOf`（规范序推得，与装配顺序无关）。 */
+      if (pattern && ws.stars.length) {
+        const emptySlots = patEmptySlotsOf(pattern, ws.stars.length);
+        if (emptySlots.length) {
+          /* 槽位复用（D4 纪律）：pts 数组与逐点槽位挂 ws（`__patDotPts`/`__patDotPool`），
+             稳态零分配——MUST NOT 用引擎级单槽（同帧多星座会互相踩脏）。 */
+          const dots = ws.__patDotPts || (ws.__patDotPts = []);
+          const dotPool = ws.__patDotPool || (ws.__patDotPool = []);
+          let dc = 0;
+          for (let di = 0; di < emptySlots.length; di++) {
+            const slot = pattern.slots[emptySlots[di]];
+            if (!slot || !Number.isFinite(slot[0]) || !Number.isFinite(slot[1]) || !Number.isFinite(slot[2])) continue;
+            if (!projectIntoXYZ(cam, center[0] + slot[0], center[1] + slot[1], center[2] + slot[2], W, H, P_PAT_DOT)) continue;
+            const dot = dotPool[dc] || (dotPool[dc] = { x: 0, y: 0, r: 0, a: 0 });
+            dot.x = P_PAT_DOT.x;
+            dot.y = P_PAT_DOT.y;
+            dot.r = clamp(P_PAT_DOT.s * PAT_DOT_R_BASE, PAT_DOT_R_MIN, PAT_DOT_R_MAX);
+            dot.a = PAT_DOT_DIM;
+            dots[dc] = dot;
+            dc += 1;
+            E.patDotLast.push({ wsId: ws.id, slotIndex: emptySlots[di], alpha: PAT_DOT_DIM });
+          }
+          dots.length = dc;
+          if (dc) items.push({ kind: 'patdot', z: zOf(cam, center) - 5, pts: dots, ws: ws, alpha: ws.alpha, pat: true });
+        }
+      }
       /* 星↔行星关系线段（D2：复用 constline 层 / z 在天体之下；端点每帧重算，行星运动
          线随动）。rel 段与共享会话段同层并列，皮肤按 seg.rel 分流呈现。 */
       if (relSet && relSet.segs.length) {
@@ -3447,12 +3891,12 @@ export function createCosmosEngine(opts) {
     E.diveSelKind = selectEnt ? kindOfEntity(ws, selectEnt) : null;
     setSelection(null);
     /* 记住钻取前位置：WASD 平移后 Esc 飞回原处而非硬编码原点（会把视野甩走）。
-       缩放触发的 dive（fromSafe，add-cosmos-zoom-focus-nav 2.5/D2）：快照 dist 拉出
-       进入触发带（≥ 参考视距 ÷ 进入阈值 × 1.15），飞回落点天然不满足再进入条件，
-       从结构上杜绝「深放 → dive → Esc → 立即又 dive」振荡；target/yaw/pitch 保持。
-       chip/拾取路径不传 opts → 零影响。 */
+       缩放触发的 dive（fromSafe，add-cosmos-zoom-focus-nav 2.5/D2；add-cosmos-zoom-ruler
+       D2 口径收敛）：快照 dist 拉出进入触发带（≥ 钻取参考视距 155 × 1.15 = 178.25），
+       飞回落点天然不满足再进入条件，从结构上杜绝「深放 → dive → Esc → 立即又 dive」振荡；
+       target/yaw/pitch 保持。chip/拾取路径不传 opts → 零影响。 */
     const fromDist = opts?.fromSafe === true
-      ? Math.max(E.cam.dist, (DIVE_REF / (E.tuning.diveRatio / 100)) * DIVE_SAFE_MARGIN)
+      ? Math.max(E.cam.dist, DIVE_REF * DIVE_SAFE_MARGIN)
       : E.cam.dist;
     E.diveFrom = {
       target: E.cam.target.slice(), yaw: E.cam.yaw, pitch: E.cam.pitch, dist: fromDist
@@ -3470,7 +3914,7 @@ export function createCosmosEngine(opts) {
     setSelection(null);
     /* 完整镜头回放（target/yaw/pitch/dist 全恢复）——平移/旋转/缩放后 Esc 不再
        被拽回出厂视角。 */
-    const home = E.diveFrom ?? { target: [0, 0, 0], yaw: E.cam.yaw, pitch: 0.5, dist: 430 };
+    const home = E.diveFrom ?? { target: [0, 0, 0], yaw: E.cam.yaw, pitch: 0.5, dist: E.homeDist ?? HOME_DIST };
     E.viewSwitchAt = performance.now(); // 切换触发锚点（同 dive）
     tweenTo({ target: home.target, yaw: home.yaw, pitch: home.pitch, dist: home.dist, mix: 0 }, 1200, 'out');
   }
@@ -3539,6 +3983,111 @@ export function createCosmosEngine(opts) {
       chip click 与容器级 pointerup 拾取共用此判据。 */
   function gestureSuppressed() {
     return E.gesture === true || (performance.now() - E.gestureEndAt) < GESTURE_SUPPRESS_MS;
+  }
+
+  /* ---------- UI 铬件矩形消费面（polish-cosmos-tip-ui-avoidance D2/D3/D4） ----------
+     `E.uiRects` 的**唯一**写入口 = 公共面 `setUiChromeRects`（client 发布，布局事件驱动）；
+     本组只读包装把纯函数谓词绑定到引擎态矩形集上，供避让（D3）与命中门禁（D4）共用——
+     MUST NOT 在别处再写一遍矩形数学。 */
+
+  /** 落点是否落在任一铬件矩形内（D4 门禁；**容器坐标**）。`ignoreKinds` = 自遮挡排除。 */
+  function pointInUiRects(x, y, ignoreKinds) {
+    return pointInRects(x, y, E.uiRects, ignoreKinds);
+  }
+
+  /** 浮签盒是否与任一铬件矩形相交（D3 避让；**容器坐标**）。 */
+  function intersectsUiRects(box, ignoreKinds) {
+    return boxInRects(box, E.uiRects, ignoreKinds);
+  }
+
+  /** 浮窗模态整屏遮蔽（D2 等价实现）：`.dsh-cosmos-const-float` 是 inset:0 + z-9998 的
+      全屏模态（backdrop 覆盖全部浮签）——其「矩形」恒等于整屏，故直接消费既有
+      `isFloatOpen` 探针（D13 同一注入面），MUST NOT 为它另建矩形发布通道。 */
+  function uiModalOpen() {
+    try {
+      return !!E.isFloatOpen && E.isFloatOpen() === true;
+    } catch {
+      return false; // 宿主探针异常 → 按未打开（避让回落到矩形判定）
+    }
+  }
+
+  /** 视图坐标（`ev.clientX/clientY`）→ 容器坐标：减本帧缓存原点，**事件级换算零 DOM 测量**。 */
+  function uiPointOf(clientX, clientY) {
+    const x = Number(clientX), y = Number(clientY);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+    return { x: x - E.uiOrigin.x, y: y - E.uiOrigin.y };
+  }
+
+  /** 命中门禁判定（D4）：落点在任一铬件矩形内（或浮窗模态遮蔽）→ 浮签自身动作 MUST NOT 执行。 */
+  function uiHitBlocked(clientX, clientY, ignoreKinds) {
+    if (uiModalOpen()) return true;
+    const point = uiPointOf(clientX, clientY);
+    return point ? pointInUiRects(point.x, point.y, ignoreKinds) : false;
+  }
+
+  /** pointerdown 命中门禁抑制窗起点（一次性；click 首行消费）。 */
+  let uiGateAt = -Infinity;
+
+  /** 门禁布防（D4 前半）：落点命中铬件矩形 → 记时刻，随后的 click 首行一次性抑制。
+      兜住「矩形已更新、避让/降级尚未落到 DOM」的那一帧（视觉滞后于数据）。 */
+  function uiGateArm(clientX, clientY, ignoreKinds) {
+    if (uiHitBlocked(clientX, clientY, ignoreKinds)) uiGateAt = performance.now();
+  }
+
+  /** 门禁消费（D4 前半的配对点）：抑制窗内取走一次性标记 → true（本次 click 不执行动作）。
+      超出窗（pointerdown 后未派生 click 的下一次独立点击）→ 自愈，不形成持久死区。 */
+  function uiGateTake() {
+    if (!(performance.now() - uiGateAt <= UI_AVOID.gateMs)) return false;
+    uiGateAt = -Infinity;
+    return true;
+  }
+
+  /** 引擎自建 HUD 的遮挡兜底（D3「切换条目 / 回到银河 / 拖拽开关」）：自身族矩形与铬件矩形
+      相交（或浮窗模态）→ 视觉让位 + 命中放行（键盘等价路径 Esc / M 仍在，无功能损失）。
+      逐帧 `classList.toggle` 廉价幂等（与 chip 沉睡态同款纪律），离开相交即恢复。 */
+  function syncHudOcclusion(el, kind) {
+    if (!el || !el.classList) return;
+    const own = uiRectOfKind(kind);
+    const hidden = uiModalOpen() || (own ? intersectsUiRects(own, kind) : false);
+    el.classList.toggle('cos-hud-occluded', hidden);
+  }
+
+  /** 按类别取本帧矩形（引擎自建 HUD 以 client 发布的真实 rect 为准——零 DOM 测量）。 */
+  function uiRectOfKind(kind) {
+    for (let i = 0; i < E.uiRects.length; i += 1) {
+      if (E.uiRects[i].kind === kind) return E.uiRects[i];
+    }
+    return null;
+  }
+
+  /** chip 包围盒（定位点 = 底缘中点，与 `translate(-50%,-100%)` 单点同源）。 */
+  function chipBoxOf(x, y, half, height) {
+    return { left: x - half, top: y - height, right: x + half, bottom: y };
+  }
+
+  /** chip 盒高（`data-h` 缓存，与 `data-w` 同款纪律：只在未测量时读一次 `offsetHeight`，
+      MUST NOT 逐帧强制布局）；测量不可用（Node 桩 / 未布局）→ `UI_AVOID.chipFallbackH`。 */
+  function chipHeightOf(el) {
+    let h = Number(el.dataset.h) || 0;
+    if (!(h > 0) && typeof el.offsetHeight === "number" && el.offsetHeight > 0) {
+      h = el.offsetHeight;
+      el.dataset.h = String(h);
+    }
+    return h > 0 ? h : UI_AVOID.chipFallbackH;
+  }
+
+  /** 钻取态切换条目的遮挡兜底（D3「切换条目」）：条目槽矩形（client 以 `wsbar-left/right`
+      类别发布）与铬件矩形相交 → 该侧条目不呈现（导航仍有面板星座清单与搜索两条等价路径）。
+      自遮挡排除：判据忽略同侧槽矩形本身（`wsbar-` 类别），否则条目永远与自己相交。 */
+  function uiChromeSafeItemsOf(items) {
+    if (!items.length) return items;
+    if (uiModalOpen()) return []; // 浮窗模态：整屏遮蔽 → 条目一并退场
+    if (!E.uiRects.length) return items; // 矩形契约缺席 → 现状回落
+    return items.filter(function (entry) {
+      const selfKind = 'wsbar-' + entry.side;
+      const own = uiRectOfKind(selfKind);
+      return !own || !intersectsUiRects(own, selfKind);
+    });
   }
 
   /* ---------- 拖拽平移开关（add-cosmos-drag-pan-toggle D4/D5） ----------
@@ -3637,8 +4186,15 @@ export function createCosmosEngine(opts) {
       item.className = 'cos-wsbar-item';
       item.setAttribute('type', 'button');
       item.disabled = true;
-      item.addEventListener('click', function () {
+      /* 命中门禁（polish-cosmos-tip-ui-avoidance D4）：pointerdown 布防 + click 首行消费
+         （自遮挡排除自身槽类别——否则条目永远与自己的矩形相交）。 */
+      item.addEventListener('pointerdown', function (ev) {
+        uiGateArm(ev?.clientX, ev?.clientY, 'wsbar-' + side);
+      });
+      item.addEventListener('click', function (ev) {
         if (gestureSuppressed()) return;
+        if (uiGateTake()) return; // pointerdown 落点门禁（一次性，竞态兜底）
+        if (uiHitBlocked(ev?.clientX, ev?.clientY, 'wsbar-' + side)) return; // click 复检（矩形更新窗口）
         const entry = E.wsbar[side].entry;
         if (!entry) return;
         diveToWsById(entry.wsId); // 未命中（目标已注销）→ false 静默降级
@@ -3657,7 +4213,14 @@ export function createCosmosEngine(opts) {
     homeBtn.setAttribute('aria-label', '回到银河');
     homeBtn.setAttribute('title', '回到银河');
     homeBtn.innerHTML = HOME_ICON_SVG;
-    homeBtn.addEventListener('click', function () { flyOut(); });
+    homeBtn.addEventListener('pointerdown', function (ev) {
+      uiGateArm(ev?.clientX, ev?.clientY, 'home'); // 命中门禁布防（D4；自遮挡排除自身类别）
+    });
+    homeBtn.addEventListener('click', function (ev) {
+      if (uiGateTake()) return;
+      if (uiHitBlocked(ev?.clientX, ev?.clientY, 'home')) return;
+      flyOut();
+    });
     E.el.overlay.appendChild(homeBtn);
     E.el.homeBtn = homeBtn;
 
@@ -3672,14 +4235,28 @@ export function createCosmosEngine(opts) {
     dragPanBtn.setAttribute('aria-label', '拖拽平移');
     dragPanBtn.setAttribute('title', '拖拽平移');
     dragPanBtn.innerHTML = DRAG_PAN_ICON_SVG;
-    dragPanBtn.addEventListener('click', function () {
+    dragPanBtn.addEventListener('pointerdown', function (ev) {
+      uiGateArm(ev?.clientX, ev?.clientY, 'dragpan'); // 命中门禁布防（D4；自遮挡排除自身类别）
+    });
+    dragPanBtn.addEventListener('click', function (ev) {
+      if (uiGateTake()) return;
+      if (uiHitBlocked(ev?.clientX, ev?.clientY, 'dragpan')) return;
       toggleDragPanMode(); // 与键盘 `M` 共用同一条状态链（D5）
     });
     E.el.overlay.appendChild(dragPanBtn);
     E.el.dragPanBtn = dragPanBtn;
     syncDragPanButton(); // 初值视觉（持久化 true → 冷启动即点亮）
 
+    /* 信息卡命中门禁（polish-cosmos-tip-ui-avoidance D4）：卡内按钮（`.cd-btn`）是
+       `pointer-events:none` 降级之外的最后一道闸——落点在铬件矩形内则本击不执行任何
+       卡内动作（打开 / 归档 / 决策 / 移胚）；与 `gestureSuppressed()` 并列短路、不合并条件
+       （语义可读性优先）。卡体无自身矩形类别（chip 同款：忽略集为空）。 */
+    E.el.card.addEventListener('pointerdown', function (ev) {
+      uiGateArm(ev?.clientX, ev?.clientY);
+    });
     E.el.card.addEventListener('click', function (ev) {
+      if (uiGateTake()) return; // pointerdown 落点门禁（一次性，竞态兜底）
+      if (uiHitBlocked(ev?.clientX, ev?.clientY)) return; // click 复检（矩形更新窗口）
       /* 信息卡按钮分流（add-cosmos-session-archive-action D4；cosmos-session-decide D6；
          add-cosmos-embryo-dismiss 3.2）：
          - `data-action="open"` → 既有 onOpenSession（行为零变化：先关整页再导航）；
@@ -3708,8 +4285,6 @@ export function createCosmosEngine(opts) {
         return;
       }
       if (action !== 'archive') {
-        /* 独立窗口态：导航不可用（按钮已 disabled，此处为 markup 之外的兜底）→ 静默。 */
-        if (!E.sessionNavAvailable) return;
         if (E.onOpenSession) E.onOpenSession(sessionId);
         return;
       }
@@ -3866,10 +4441,18 @@ export function createCosmosEngine(opts) {
            （结构重建会替换 ws/body，旧引用会让 dive 用陈旧中心和名称）。 */
         const wsId = ws.id;
         chip = document.createElement('div');
-        chip.addEventListener('click', function () {
+        chip.addEventListener('pointerdown', function (ev) {
+          uiGateArm(ev?.clientX, ev?.clientY); // 命中门禁布防（D4；chip 无自身矩形类别）
+        });
+        chip.addEventListener('click', function (ev) {
           /* 手势抑制（D2）：多指手势期间/刚结束（GESTURE_SUPPRESS_MS 内）的 click
              MUST NOT 触发 dive——双指起手落在 chip 上完成捏合会派生 click。 */
           if (gestureSuppressed()) return;
+          /* 命中门禁（polish-cosmos-tip-ui-avoidance D4）：pointerdown 一次性抑制 +
+             click 落点复检（防 pointerdown 后矩形更新的窗口）——兜住「矩形已更新、chip
+             避让尚未落到 DOM」的竞态帧，让点击语义直达下方铬件。 */
+          if (uiGateTake()) return;
+          if (uiHitBlocked(ev?.clientX, ev?.clientY)) return;
           const target = E.scene.ws.find(function (w) { return w.id === wsId; });
           if (target) dive(target, null);
         });
@@ -3911,7 +4494,10 @@ export function createCosmosEngine(opts) {
       守卫：名字几乎恒定，逐帧重写 innerHTML 是无谓开销，且会让 chip 内部元素活不过一帧；
       活力翻转（step1-add-constellation-vitality D2）即换串重写、不变零重写。
       `cos-chip-new` 出生高亮关键帧只作用于 border/box-shadow/b 的 text-shadow，无额外
-      元素依赖（移除计数行、追加状态点均不影响高亮）。 */
+      元素依赖（移除计数行、追加状态点均不影响高亮）。
+      星座模板名（add-cosmos-template-name-toggle 3.2/D3）：开关开启且 `tplZh` 非空时名称行
+      `<b>` 后追加副行 `<span class="cos-chip-tpl">`；关闭或 null 时**不追加**（串逐字节与
+      引入本设置前一致 ⇒ 零 DOM 变化、零布局偏移）。 */
   function updateChipText() {
     E.scene.ws.forEach(function (ws) {
       const chip = E.chips[ws.id];
@@ -3919,9 +4505,22 @@ export function createCosmosEngine(opts) {
       /* 两态状态点取色与恒星名牌 `cos-slab-life` 同源；沉睡态 chip 的降饱和由
          `cos-chip-sleep` 类承担（class 单点写入在 updateOverlay）。 */
       const html = '<b>' + escapeHtml(ws.name)
-        + '<i class="cos-chip-life ' + constellationVitalityOf(ws) + '"></i></b>';
-      if (chip.dataset.html !== html) { chip.innerHTML = html; chip.dataset.html = html; }
+        + '<i class="cos-chip-life ' + constellationVitalityOf(ws) + '"></i></b>'
+        + templateNameHtmlOf(ws);
+      if (chip.dataset.html !== html) { chip.innerHTML = html; chip.dataset.html = html; chip.dataset.w = ""; }
     });
+  }
+
+  /** 星座模板名副行 DOM 串（add-cosmos-template-name-toggle 3.2/3.3/D3）：chip 与钻取标牌
+      共用同一组装式——**开关关闭或 `tplZh` 为 null/空串时返回空串**（调用侧串逐字节不变，
+      即「关闭态零渲染、零布局偏移」的落实点）。模板名虽来自静态模板模块（数据面可信），
+      入 HTML 串前 MUST 仍经 `escapeHtml`（引擎统一转义纪律，防未来模板数据来源变化引入
+      注入面）；副行为纯装饰文本，无独立事件钩子，不参与拾取/hover 语义。 */
+  function templateNameHtmlOf(ws) {
+    if (E.templateNames !== true) return '';
+    const zh = typeof ws?.tplZh === 'string' ? ws.tplZh : '';
+    if (!zh) return '';
+    return '<span class="cos-chip-tpl">' + escapeHtml(zh) + '</span>';
   }
 
   /** 星座计数仪表文本（D4/3.2）：✦ 含星胚、◇ = subagent 会话总数（含折叠）、
@@ -3966,14 +4565,11 @@ export function createCosmosEngine(opts) {
   }
 
   /** 会话卡按钮组（add-cosmos-session-archive-action 2.1 / D4；cosmos-session-decide D5
-      / cosmos-session-archive delta 重钉顺序；add-cosmos-standalone-window D6 独立窗口
-      禁用态）：行星与彗星信息卡「打开会话」与「归档会话」并列，行星待决策时在两者之间
-      插入决策按钮（`lead`，空串 = 两颗）。按钮共用 `.cd-btn` 一类（同排布区、8px 间距、
-      ≥40px 触屏目标）；`data-action` 为程序化分流钩子，`data-session` 沿用既有会话 id
-      钩子——「打开会话」行为零变化（spec「打开会话行为不变」）。卫星无信息卡 ⇒ 无入口。
-      **导航可用性**（独立窗口态，D6 例外）：`sessionNavAvailable === false` 时「打开会话」
-      渲染 `disabled` + title 提示（动作依赖主壳右侧会话页，独立窗口无会话页）——该态是
-      页面生命周期常量，故直接进 markup（与归档在途的瞬态禁用语义不同，sig 无需豁免）。
+      / cosmos-session-archive delta 重钉顺序）：行星与彗星信息卡「打开会话」与「归档会话」
+      并列，行星待决策时在两者之间插入决策按钮（`lead`，空串 = 两颗）。按钮共用 `.cd-btn`
+      一类（同排布区、8px 间距、≥40px 触屏目标）；`data-action` 为程序化分流钩子，
+      `data-session` 沿用既有会话 id 钩子——「打开会话」行为零变化（spec「打开会话行为
+      不变」）。卫星无信息卡 ⇒ 无入口。
       「打开会话」按钮标注空格快捷键（add-cosmos-session-open-hotkey 2.1/D4）：
       `aria-keyshortcuts` + title 为静态 markup 属性增量（行为不变；归档按钮无快捷键 ⇒
       不标注），sig 差分守卫据此仍按同串比较、无逐帧重建问题。
@@ -3989,9 +4585,7 @@ export function createCosmosEngine(opts) {
     const archiveTitle = !active
       ? '归档会话'
       : ent.state === 'waiting' ? E.labels.card.archiveWaiting : E.labels.card.archiveBusy;
-    const open = E.sessionNavAvailable
-      ? '<button class="cd-btn" type="button" data-action="open" data-session="' + id + '" aria-keyshortcuts="Space" title="打开会话（空格）">打开会话</button>'
-      : '<button class="cd-btn" type="button" data-action="open" data-session="' + id + '" title="' + escapeHtml(E.labels.card.openDisabled) + '" disabled>打开会话</button>';
+    const open = '<button class="cd-btn" type="button" data-action="open" data-session="' + id + '" aria-keyshortcuts="Space" title="打开会话（空格）">打开会话</button>';
     const archive = '<button class="cd-btn" type="button" data-action="archive" data-session="' + id + '" title="' +
       escapeHtml(archiveTitle) + '"' + (active ? ' disabled' : '') + '>归档会话</button>';
     return '<div class="cd-actions">' +
@@ -4159,12 +4753,16 @@ export function createCosmosEngine(opts) {
          两态点 + 文案（复用 `E.labels.vitality` 同源标签组）；计数行 `<span>` 不变。
          与恒星级名牌标识可区分：星座级铬件在此（页顶标牌）、恒星级在天体浮签，位置即
          语境；判据不同（星座级 = 存在口径、恒星级 = 热度口径），呈现层不额外消歧。
-         内容仍走 `dataset.html` 差分守卫——活力翻转即换串重写、不变零重写。 */
+         内容仍走 `dataset.html` 差分守卫——活力翻转即换串重写、不变零重写。
+         星座模板名（add-cosmos-template-name-toggle 3.3/D3）：计数行后追加同形副行
+         （`templateNameHtmlOf` 与 chip 同源；关闭/null → 空串，逐字节与现状一致）。
+         刷新走本节既有差分路径（`updateOverlay` 逐帧），热翻转下一帧自然收敛。 */
       const life = constellationVitalityOf(E.focusWs);
       badge = '<b>' + escapeHtml(E.focusWs.name)
         + '<i class="cos-ws-life ' + life + '"><i></i>'
         + escapeHtml(life === 'active' ? E.labels.vitality.active : E.labels.vitality.sleep)
-        + '</i></b><span>' + countsHtml(E.focusWs) + '</span>';
+        + '</i></b><span>' + countsHtml(E.focusWs) + '</span>'
+        + templateNameHtmlOf(E.focusWs);
     }
     if (E.el.badge.dataset.html !== badge) { E.el.badge.innerHTML = badge; E.el.badge.dataset.html = badge; }
 
@@ -4172,7 +4770,16 @@ export function createCosmosEngine(opts) {
        有提案/星胚的星座 ∖ 当前（导航铬件——MUST NOT 与搜索过滤求交集；过滤把当前星座排除触发
        flyOut 时切换器随钻取态整体退场）。显隐与标牌同一阈值（focusMix > 0.4）；银河态 / 阈值
        下传空清单 → 条目淡出退场（零布局呈现）。内容差分与 `.on` 过渡由 syncWsbarItems 单点维护。 */
-    syncWsbarItems(E.focusWs && E.focusMix > 0.4 ? wsSwitcherItemsOf(E.scene, E.focusWs.id) : []);
+    syncWsbarItems(uiChromeSafeItemsOf(
+      E.focusWs && E.focusMix > 0.4 ? wsSwitcherItemsOf(E.scene, E.focusWs.id) : []
+    ));
+
+    /* 引擎自建 HUD 兜底（polish-cosmos-tip-ui-avoidance D3「回到银河 / 拖拽开关」）：
+       逐帧按本帧矩形集同步遮挡让位（幂等 class 切换、离开即恢复；键盘等价路径 Esc / M
+       仍在，无功能损失）。名牌 / 引线 / 其余 `pointer-events:none` 族**显式不参与**判定
+       ——slab 与 tiplines 本就无命中面，其下的命中让位由 chip / card 族承担。 */
+    syncHudOcclusion(E.el.homeBtn, 'home');
+    syncHudOcclusion(E.el.dragPanBtn, 'dragpan');
 
     // 星座 chip(仅银河视图)
     Object.keys(E.chips).forEach(function (id) {
@@ -4194,12 +4801,31 @@ export function createCosmosEngine(opts) {
       const alpha = clamp(ws.alpha * (1 - E.focusMix * 1.6), 0, 1);
       el.style.opacity = String(alpha);
       /* 避让偏移（D2）：chip 悬空于星座投影中心上方 TIP_GAP.chip；
-         `translate(-50%,-100%)` 使定位点 = chip 底缘中点 → 该点即引线止点。 */
-      const chipX = snap1(ws.proj.x);
+         `translate(-50%,-100%)` 使定位点 = chip 底缘中点 → 该点即引线止点。
+         列形适配（add-cosmos-rightbar-dock D7）：横向按 chip 实测宽钳制在容器内
+         （宽只随文本变化，`data-w` 缓存；MUST NOT 逐帧强制布局）。 */
+      let chipW = Number(el.dataset.w) || 0;
+      if (!(chipW > 0) && typeof el.offsetWidth === "number" && el.offsetWidth > 0) {
+        chipW = el.offsetWidth;
+        el.dataset.w = String(chipW);
+      }
+      const chipHalf = chipW > 0 ? chipW / 2 : 0;
+      const chipX = snap1(clamp(ws.proj.x, 8 + chipHalf, W - 8 - chipHalf));
       const chipY = snap1(ws.proj.y - TIP_GAP.chip);
+      /* UI 铬件遮挡避让（polish-cosmos-tip-ui-avoidance D3「星座 chip」）：chip 锚定语义优先
+         ——钳位会破坏「chip 指向其星座」，故与任一铬件矩形相交即**整族淡出**：走与不可见帧
+         同一条「`.on` 移除 + 内联 opacity 清理」路径（显隐机制零新增），本帧不产引线条目 ⇒
+         引线随可见性自然不画（既有同帧纪律）。MUST NOT 平移锚点。矩形契约缺席 → 零矩形 →
+         恒不命中（行为回落现状）；浮窗模态 → 整屏等同相交。 */
+      if (uiModalOpen() || intersectsUiRects(chipBoxOf(chipX, chipY, chipHalf, chipHeightOf(el)))) {
+        el.classList.remove('on');
+        if (el.style.opacity !== '') el.style.opacity = '';
+        return;
+      }
       el.style.transform = 'translate(' + chipX.toFixed(1) + 'px,' + chipY.toFixed(1) + 'px) translate(-50%,-100%)';
-      /* 竖直引线：起笔星座投影中心（`ws.proj` 是裸中心点，无半径字段；`ws.boundR` 契约
-         限定仅阈值判定消费 → MUST NOT 作锚点），止于 chip 底缘。线长 = 避让间距本身。 */
+      /* 竖直引线：起笔星座投影中心（`ws.proj` 是裸中心点，无半径字段；`ws.boundR`
+         不再被任何缩放阈值判定消费 → 保留为引擎数据/观测面字段，MUST NOT 作锚点），
+         止于 chip 底缘。线长 = 避让间距本身。 */
       E.tipLines.push({
         kind: 'chip', alpha: alpha,
         hx: chipX, hy: snap1(ws.proj.y),
@@ -4243,13 +4869,21 @@ export function createCosmosEngine(opts) {
       if (slab.dataset.html !== slabHtml) {
         slab.innerHTML = slabHtml;
         slab.dataset.html = slabHtml;
+        slab.dataset.w = "";
       }
       slab.classList.add('on');
       const slabAlpha = focused ? 1 : clamp(ownerWs.alpha * 0.9, 0, 1);
       slab.style.opacity = String(slabAlpha);
       /* 避让偏移（D2）：名牌顶缘落在星缘（屏幕半径 r 之外）下方 TIP_GAP.slab；
-         `translate(-50%,0)` 使定位点 = 名牌顶缘中点 → 该点即引线止点。 */
-      const slabX = snap1(scr.x);
+         `translate(-50%,0)` 使定位点 = 名牌顶缘中点 → 该点即引线止点。
+         列形适配（add-cosmos-rightbar-dock D7）：横向钳制在容器内（宽缓存同 chip）。 */
+      let slabW = Number(slab.dataset.w) || 0;
+      if (!(slabW > 0) && typeof slab.offsetWidth === "number" && slab.offsetWidth > 0) {
+        slabW = slab.offsetWidth;
+        slab.dataset.w = String(slabW);
+      }
+      const slabHalf = slabW > 0 ? slabW / 2 : 0;
+      const slabX = snap1(clamp(scr.x, 8 + slabHalf, W - 8 - slabHalf));
       const starEdgeY = snap1(scr.y + scr.r);
       const slabY = snap1(scr.y + scr.r + TIP_GAP.slab);
       slab.style.transform = 'translate(' + slabX.toFixed(1) + 'px,' + slabY.toFixed(1) + 'px) translate(-50%,0)';
@@ -4310,16 +4944,58 @@ export function createCosmosEngine(opts) {
        间距 + 卡宽 + 留白」/ 纵向 70..H−240）：顶部钳制把中点压回星心下方属**钳制例外
        路径**（斜出段随实际 dy 局部下行），端点仍取钳后实际卡缘。 */
     const dir = flip ? -1 : 1;
-    const cx = snap1(scr2.x + dir * (scr2.r + TIP_GAP.card));
+    /* 列形适配（add-cosmos-rightbar-dock D7 / spec「列形信息卡不越缘」）：翻转换算的
+       视口留白同样作用于**左缘**——翻转侧卡体止于锚点左侧，锚点须至少距左缘
+       「留白 + 卡宽」；未翻转侧卡体向右伸展，锚点须使右缘落在「视口 − 留白」内。
+       宽视口下两式均不触发（与既有 `W−300` 翻转阈值同源），窄列（dock 正文）才生效。 */
+    let cx = snap1(scr2.x + dir * (scr2.r + TIP_GAP.card));
+    if (flip) {
+      cx = Math.max(TIP_LINE.flipMargin + E.tipCardW, cx);
+    } else if (cx + E.tipCardW > W - TIP_LINE.flipMargin) {
+      cx = Math.max(TIP_LINE.flipMargin, W - TIP_LINE.flipMargin - E.tipCardW);
+    }
     const cardMidY = scr2.y - TIP_GAP.cardLift;
-    const cy = snap1(clamp(cardMidY - E.tipCardH / 2, 70, H - 240));
-    E.el.card.style.transform = 'translate(' + cx.toFixed(1) + 'px,' + cy.toFixed(1) + 'px)' + (flip ? ' translateX(-100%)' : '');
-    /* 折线引线（D5）：起笔星缘侧点（高度对齐星心），止于卡近缘**中点**
-       （半高来自上面的缓存测量）。钳制生效时 cy 已钳后 → 线止于实际卡缘（D3）。 */
+    let cy = snap1(clamp(cardMidY - E.tipCardH / 2, 70, H - 240));
+    /* UI 铬件遮挡避让（polish-cosmos-tip-ui-avoidance D3「信息卡」）：既有翻转/钳位结果
+       再过 `tipAvoidanceOf` —— 沿卡体短轴推出 → 翻转（镜像候选位 = 星心另一侧同间距、
+       与既有翻转同一条越缘钳制）→ 钳回容器；仍相交且无自由空间 → 整卡 `pointer-events:none`
+       降级（视觉保留、命中放行，卡内按钮暂不可用属可接受降级）。判定全部在本帧完成、
+       与 `E.tipLines` 同一组数（MUST NOT 复用上一帧或另起一套投影）；引擎帧循环内零 DOM
+       测量（卡盒尺寸来自内容签名变更时的缓存测量，矩形集来自 client 发布缓存）。 */
+    let cardDir = dir;
+    let cardX = cx;
+    let degraded = false;
+    if (uiModalOpen()) {
+      degraded = true; // 浮窗模态（z-9998 全屏 backdrop）= 整屏等同相交
+    } else if (E.uiRects.length) {
+      const altDir = dir === -1 ? 1 : -1;
+      let altX = snap1(scr2.x + altDir * (scr2.r + TIP_GAP.card));
+      if (altDir === -1) {
+        altX = Math.max(TIP_LINE.flipMargin + E.tipCardW, altX);
+      } else if (altX + E.tipCardW > W - TIP_LINE.flipMargin) {
+        altX = Math.max(TIP_LINE.flipMargin, W - TIP_LINE.flipMargin - E.tipCardW);
+      }
+      const avoid = tipAvoidanceOf(
+        { kind: 'card', x: cx, y: cy, w: E.tipCardW, h: E.tipCardH, dir: dir, altX: altX },
+        E.uiRects,
+        { W: W, H: H }
+      );
+      if (Number.isFinite(avoid.x)) cardX = snap1(avoid.x);
+      if (Number.isFinite(avoid.y)) cy = snap1(avoid.y);
+      cardDir = avoid.dir === -1 ? -1 : 1;
+      degraded = avoid.degraded === true;
+    }
+    E.el.card.style.transform = 'translate(' + cardX.toFixed(1) + 'px,' + cy.toFixed(1) + 'px)' + (cardDir === -1 ? ' translateX(-100%)' : '');
+    /* 降级单写点（D3）：相交帧 `pointer-events:none`、离开相交即清回 auto（内联单点写、
+       不重建 DOM、不进内容签名——`data-sig` 差分纪律零改动）。 */
+    const cardPe = degraded ? 'none' : '';
+    if (E.el.card.style.pointerEvents !== cardPe) E.el.card.style.pointerEvents = cardPe;
+    /* 折线引线（D5）：起笔星缘侧点（高度对齐星心，侧别随避让后的卡侧）、止于卡近缘**中点**
+       （半高来自上面的缓存测量）。钳制/推出/翻转生效时端点取判定后的同一组数（D3）。 */
     E.tipLines.push({
       kind: 'card', alpha: 1,
-      hx: snap1(scr2.x + dir * scr2.r), hy: snap1(scr2.y),
-      x: cx, y: snap1(cy + E.tipCardH / 2)
+      hx: snap1(scr2.x + cardDir * scr2.r), hy: snap1(scr2.y),
+      x: cardX, y: snap1(cy + E.tipCardH / 2)
     });
   }
 
@@ -4401,6 +5077,16 @@ export function createCosmosEngine(opts) {
   function bindInput(root) {
     const canvas = E.el.canvas;
     let sx = 0, sy = 0;
+    /* 右键拖拽（add-cosmos-rightdrag-pan D3/D7）：按住标志 + **独立**增量锚点（MUST NOT 与
+       左键 `sx/sy` 混用）+ 该指针 id（捕获/取消/离场路径收束的判定依据）。 */
+    let rbtn = false, rsx = 0, rsy = 0, rpid = -1;
+    /** 右键拖拽态收束（D8）：只清按住标志/拖拽态/指针 id——不拾取、不动 camera，亦不保留
+        任何持久化残留。锚点交接不在此承担（改由 pointermove 共按释放切换沿触发，D7）。 */
+    function endRightDrag() {
+      rbtn = false;
+      rpid = -1;
+      E.rdrag = false;
+    }
     /* 已 setPointerCapture 的指针 id：这类指针离开容器仍会收到 pointerup（捕获语义），
        区别于无捕获指针（触屏从覆盖元素起手划出边界）需在 pointerleave 时清理。 */
     const captured = new Set();
@@ -4517,7 +5203,25 @@ export function createCosmosEngine(opts) {
     }
 
     root.addEventListener('pointerdown', function (ev) {
-      /* 仅主键（左键/触摸/笔尖）参与导航与拾取：右键的 pointerup 若走拾取会
+      /* 右键拖拽平移（add-cosmos-rightdrag-pan D2/D6/D7）：**仅鼠标**、常开、起手即锚定。
+         作用域显式收窄（D2）：pen 的笔杆键同报 `button=2` 但 `pointerType='pen'` → 落入
+         下方「非主键直接返回」，pen 既有行为零变化。起手域对齐左键拖拽（D6）：覆盖元素
+         起手同样平移，且覆盖元素 MUST NOT 捕获（捕获会重定向 pointerup/click → 吞 click）；
+         非覆盖元素（canvas）起手捕获指针，拖出窗口边缘不中断。
+         MUST NOT 进入 `E.pointers`（多指手势追踪面）与拾取链：右键无拾取语义，
+         pointerup 非主键分支直接返回（D8）。 */
+      if (ev.button === 2 && ev.pointerType === 'mouse') {
+        rbtn = true;
+        rpid = ev.pointerId;
+        rsx = ev.clientX; rsy = ev.clientY;
+        E.rdrag = false; // 新序列：清拖拽累积（4px 阈值自本次起手重新累计，D4）
+        if (!onOverlayTarget(ev) && typeof canvas.setPointerCapture === 'function') {
+          canvas.setPointerCapture(ev.pointerId);
+          captured.add(ev.pointerId);
+        }
+        return;
+      }
+      /* 其余非主键（含 pen 笔杆键，D2 排除）不参与导航与拾取：右键的 pointerup 若走拾取会
          在弹出原生菜单的同时误触发 dive/选中，右键语义整体留给 contextmenu 屏蔽。 */
       if (ev.button !== 0) return;
       ev.preventDefault(); // 拖拽起点不触发文本选取/原生拖拽（CSS user-select 兜底）
@@ -4581,7 +5285,45 @@ export function createCosmosEngine(opts) {
         }
         return;
       }
+      /* 右键平移（add-cosmos-rightdrag-pan D3/D4/D7）：仅鼠标；分支序在左键旋转**之前**。
+         共按模型（规范语义 + 本文件 pointerup 注释）：`pointerup` 只在**最后一个按键抬起**
+         时派发 → 右键在共按中途的按下/松开只派发 pointermove（`buttons` 位图更新），故
+         两条路径都在此感知：
+         - `rbtn` 缺席 + `buttons & 2`：左键先按再按右键（规范不派发右键 pointerdown）→
+           **补锚定**并置 `rbtn`（D7 起手锚定第二条路径）；
+         - `rbtn` 在场 + `buttons & 2` 消失：**释放切换沿**（D7 交接触发点）——清右键态；
+           若此时 `buttons & 1` 仍按着，把左键锚点 `sx/sy` 重锚到当前位置（本帧 dx/dy
+           归零，旋转自下一 move 从新锚点续接），否则下一帧旋转会吃进右键期间的全部
+           位移 → 镜头跳变。`pointerup(button=2)` 不承担交接（该事件仅在右键为最后按键
+           ——左键必不在场——时派发，「左键仍按着」条件恒为假）。 */
+      if (ev.pointerType === 'mouse') {
+        if (rbtn && !(ev.buttons & 2)) {
+          endRightDrag();
+          if (ev.buttons & 1) { sx = ev.clientX; sy = ev.clientY; }
+        }
+        if (ev.buttons & 2) {
+          if (!rbtn) {
+            rbtn = true;
+            rpid = ev.pointerId;
+            rsx = ev.clientX; rsy = ev.clientY;
+            E.rdrag = false;
+          }
+          const rdx = ev.clientX - rsx, rdy = ev.clientY - rsy;
+          if (E.rdrag || Math.abs(rdx) + Math.abs(rdy) > 4) {
+            /* 4px 阈值与补间让位口径同左键拖拽（D4）；平移数学与三指平移/开关平移
+               **单源**（D1）：同一纯函数、同一系数口径（MUST NOT 第二条数学路径）。 */
+            E.rdrag = true;
+            cancelTween();
+            panCameraTargetByDrag(E.cam, rdx, rdy, E.cam.dist, E.tuning);
+            rsx = ev.clientX; rsy = ev.clientY; // 增量锚点：每次 move 重置起点（无累积跳变）
+          }
+          return; // 右键接管：本帧左键旋转短路（分支序裁决，D3）
+        }
+      }
       if (ev.buttons & 1) {
+        /* 右键接管（D3）：右键按住期间左键分支短路——跨设备共按（触屏单指 + 鼠标右键）
+           同样让位；锚点跟随当前位置，右键释放后自新锚点续接（无基准跳变）。 */
+        if (rbtn) { sx = ev.clientX; sy = ev.clientY; return; }
         const dx = ev.clientX - sx, dy = ev.clientY - sy;
         if (E.dragging || Math.abs(dx) + Math.abs(dy) > 4) {
           E.dragging = true;
@@ -4610,6 +5352,10 @@ export function createCosmosEngine(opts) {
         captured.delete(ev.pointerId);
         E.pointers.delete(ev.pointerId);
         if (E.pointers.size === 0) E.dragging = false;
+        /* 右键收束（add-cosmos-rightdrag-pan D8）：只清右键按住标志/拖拽态与捕获记录，
+           MUST NOT 拾取（既有非主键路径）；锚点交接不在此承担——按规范本事件仅在右键为
+           最后按键（左键必不在场）时派发，「左键仍按着则重锚」条件在此恒为假（D7）。 */
+        if (ev.button === 2) endRightDrag();
         return;
       }
       captured.delete(ev.pointerId);
@@ -4638,12 +5384,19 @@ export function createCosmosEngine(opts) {
     /* 指针被系统取消（触屏手势被浏览器接管等）：只清追踪，MUST NOT 拾取。 */
     root.addEventListener('pointercancel', function (ev) {
       captured.delete(ev.pointerId);
+      /* 右键拖拽收束（D8）：系统取消右键指针（如指针捕获丢失）→ 清右键态，防止拖拽态
+         残留卡住 hover 探针与 grabbing 光标。 */
+      if (ev.pointerId === rpid) endRightDrag();
       if (E.gesture) { endGesturePointer(ev); return; }
       E.pointers.delete(ev.pointerId);
       E.dragging = false;
     });
     root.addEventListener('pointerleave', function () {
       E.pointerIn = false;
+      /* 右键拖拽幽灵清理（D8）：无捕获指针离开容器后其 pointermove/pointerup 不再回到
+         root（覆盖元素起手的右键拖拽划出边界）→ 清右键态；有 pointer capture 的指针仍会
+         收到 pointerup（spec「拖出窗口边缘不中断」），保留拖拽态。 */
+      if (rbtn && !captured.has(rpid)) endRightDrag();
       /* 无捕获指针离开容器后其 pointerup 不再回到 root（触屏从覆盖元素起手划出边界后
          抬起）→ 清掉这类「幽灵指针」：否则下一次单指点按会被误判为双指捏合。
          有 pointer capture 的指针仍会收到 pointerup，保留追踪。
@@ -4695,10 +5448,11 @@ export function createCosmosEngine(opts) {
 
   /* ---------- 缩放阈值导航（add-cosmos-zoom-focus-nav D2/D3） ---------- */
 
-  /** 切换判定守卫聚合（滚轮路径）：补间在途 / 拖拽 / 多指手势 / 冷却窗任一 → blocked。 */
+  /** 切换判定守卫聚合（滚轮路径）：补间在途 / 左键拖拽 / 右键拖拽 / 多指手势 / 冷却窗任一 → blocked。 */
   function zoomSwitchBlocked() {
     return E.tween != null
       || E.dragging === true
+      || E.rdrag === true
       || E.gesture === true
       || (performance.now() - E.viewSwitchAt) < SWITCH_COOLDOWN_MS;
   }
@@ -4729,6 +5483,8 @@ export function createCosmosEngine(opts) {
    * 命中进入 → 复用既有 `dive(ws, null, { fromSafe: true })`（与 chip 同一镜头语言）；
    * 命中返回 → 复用既有 `flyOut()`（Esc 等效路径）。判定源无关的冷却锚点在
    * `dive()` / `flyOut()` 与切换补间收尾双写。
+   * 阈值（add-cosmos-zoom-ruler D3）：`diveRatio` 恒传内部常量 100（阈值 = tick 155），
+   * 返回为距离单判（不再读 `E.tuning` 的任何阈值字段）。
    * @param {boolean} blocked 调用方聚合的守卫（见 zoomSwitchBlocked）
    * @returns {boolean} 是否发生切换
    */
@@ -4736,15 +5492,10 @@ export function createCosmosEngine(opts) {
     if (E.disposed || !E.scene) return false;
     const minVp = Math.min(E.W, E.H);
     if (!(minVp > 0)) return false;
-    const params = { diveRatio: E.tuning.diveRatio, flyOutRatio: E.tuning.flyOutRatio };
+    const params = { diveRatio: 100 };
     if (E.focusWs) {
-      const f = (E.H * 1.1) / (2 * Math.tan(E.cam.fov * Math.PI / 360));
-      const boundR = Number(E.focusWs.boundR) > 0
-        ? E.focusWs.boundR
-        : 12 + (Number(E.focusWs.archives) || 0) * 2.4;
       const verdict = zoomSwitchVerdict({
-        mode: "drilled", blocked, minViewportPx: minVp,
-        dist: E.cam.dist, boundR, f
+        mode: "drilled", blocked, dist: E.cam.dist
       }, params);
       if (verdict.flyOut) { flyOut(); return true; }
       return false;
@@ -4882,9 +5633,6 @@ export function createCosmosEngine(opts) {
          六道全过才 `preventDefault`（抑制宿主页面滚动）+ 触发。 */
       if (ev.ctrlKey || ev.metaKey || ev.altKey) return; // 组合键不劫持空格（D8b 下沉后原位保留）
       if (String(ev.code ?? "") !== SESSION_OPEN_KEY) return;
-      /* 独立窗口态（add-cosmos-standalone-window D6）：导航不可用 → 静默 no-op（不
-         preventDefault，空格回到宿主默认语义；信息卡按钮同款禁用）。 */
-      if (!E.sessionNavAvailable) return;
       if (ev.repeat === true) return;
       if (ev.isComposing) return;
       const active = document.activeElement;
@@ -4950,6 +5698,34 @@ export function createCosmosEngine(opts) {
 
   /* ---------- 主循环 ---------- */
 
+  /** 标尺载荷（引擎单源）：dist + tick + 值域端点（add-cosmos-zoom-ruler 1.2/D4）。 */
+  function zoomMeterPayload() {
+    return {
+      dist: E.cam.dist,
+      tickDist: ZOOM_RULER_TICK,
+      distMin: DIST_MIN,
+      distMax: DIST_MAX
+    };
+  }
+
+  /** 标尺变更通知（帧内同步派发）：轨道位移 < 0.5% 且模式未变 → 不通知（防高频无谓写）。 */
+  function emitZoomMeter() {
+    if (E.zoomMeters.size === 0) return;
+    const track = zoomMeterTrackOf(E.cam.dist);
+    const mode = E.focusWs ? "drilled" : "galaxy";
+    const last = E.zoomMeterLast;
+    if (last && last.mode === mode && Math.abs(track - last.track) < ZOOM_METER_EPSILON) return;
+    E.zoomMeterLast = { track: track, mode: mode };
+    const payload = zoomMeterPayload();
+    for (const cb of [...E.zoomMeters]) {
+      try {
+        cb(payload);
+      } catch (error) {
+        console.warn("[dsh-v-cosmos] zoom meter listener failed:", error);
+      }
+    }
+  }
+
   function frame(ts) {
     if (!E.running || E.disposed) return;
     const dt = E.lastTs ? clamp((ts - E.lastTs) / 1000, 0, 0.1) : 0.016;
@@ -4959,8 +5735,9 @@ export function createCosmosEngine(opts) {
     /* WASD 平移（按住持续、帧率无关；手动位移打断 dive/飞回补间）。 */
     if (panCameraTarget(E.cam, E.panKeys, dt, E.tuning)) cancelTween();
     /* 场景未就绪守卫：attach 先于首帧 providers merge 时（首开竞态 / 上游重建
-       失败），E.scene 为 null——跳帧等待而非崩溃（Cannot read 'ws' of null）。 */
-    if (!E.scene) { E.raf = requestAnimationFrame(frame); return; }
+       失败），E.scene 为 null——跳帧等待而非崩溃（Cannot read 'ws' of null）。
+       标尺通道仍派发（镜头距离可经公共面缩放先行变化）。 */
+    if (!E.scene) { emitZoomMeter(); E.raf = requestAnimationFrame(frame); return; }
     updateScene(E.t, dt);
 
     const ctx = E.ctx, style = E.style;
@@ -5019,14 +5796,19 @@ export function createCosmosEngine(opts) {
 
     /* hover 拾取态写入口（p1-add-cosmos-external-hover D6）：拖拽 / 指针离场门禁沿用既有
        拾取判定（拖拽中无逐天体通知、门禁置空至多一次；离场置空）；键变才回调
-       onHoverChange（载荷恒为画布指针拾取态，外部注入不进入载荷）。 */
-    setHovered((E.pointerIn && !E.dragging) ? pickAt(E.px, E.py) : null);
-    E.el.canvas.style.cursor = E.hovered ? 'pointer' : (E.dragging ? 'grabbing' : 'grab');
+       onHoverChange（载荷恒为画布指针拾取态，外部注入不进入载荷）。
+       拖拽门禁扩展（add-cosmos-rightdrag-pan D5）：左键/右键拖拽态**任一在场** → 同一
+       抑制与 `grabbing` 反馈（右键态独立成字段，不写 `E.dragging`）。 */
+    const dragActive = E.dragging || E.rdrag;
+    setHovered((E.pointerIn && !dragActive) ? pickAt(E.px, E.py) : null);
+    E.el.canvas.style.cursor = E.hovered ? 'pointer' : (dragActive ? 'grabbing' : 'grab');
 
     updateOverlay();
     /* 浮签引线（D1）：必须在 updateOverlay 之后——三族可见性/α 与本帧 flip/cx/cy 都诞生
        于该函数，前移只能复制判定或退用上一帧陈值（「同帧同源」不成立）。 */
     drawTipLines();
+    /* 标尺通道（add-cosmos-zoom-ruler D4）：帧内同步派发，client 只做纯 DOM 写。 */
+    emitZoomMeter();
     E.raf = requestAnimationFrame(frame);
   }
 
@@ -5158,7 +5940,6 @@ export function createCosmosEngine(opts) {
     setScene(sceneData, level) {
       E.sceneData = sceneData;
       if (!E.scene || level === 'rebuild') {
-        captureLinkMix(E.scene, sceneData); // 连线集合变化段状态跨 rebuild 差分（8.1，替换前捕获）
         captureCenterTweens(E.scene, sceneData); // 星座集合变化中心捕获（D5/2.1，替换前捕获）
         const prevScene = E.scene;
         E.scene = buildScene(sceneData);
@@ -5211,6 +5992,23 @@ export function createCosmosEngine(opts) {
         yaw: E.cam.yaw,
         pitch: E.cam.pitch,
         dist: E.cam.dist
+      };
+    },
+    /**
+     * 缩放标尺数据通道（add-cosmos-zoom-ruler 1.2/D4；顶部标尺覆盖层的唯一数据源）。
+     * 引擎在帧内同步派发——轨道位置（对数映射）位移 ≥ 0.5% 或模式（银河/钻取）变化时
+     * 回调 `{ dist, tickDist, distMin, distMax }`；订阅后下一帧强制补发一次当前值
+     * （冷启动/重挂载首帧即有位置）。页面侧 MUST NOT 逐帧轮询。
+     * @param {(meter: {dist: number, tickDist: number, distMin: number, distMax: number}) => void} cb
+     * @returns {() => void} 卸载函数（幂等；引擎已销毁 / 非法回调 → 空函数）
+     */
+    onZoomMeter(cb) {
+      if (E.disposed || typeof cb !== "function") return function () {};
+      E.zoomMeters.add(cb);
+      E.zoomMeterLast = null; // 新订阅者：下一帧强制补发当前值
+      return function () {
+        E.zoomMeters.delete(cb);
+        if (E.zoomMeters.size === 0) E.zoomMeterLast = null;
       };
     },
     /**
@@ -5356,6 +6154,66 @@ export function createCosmosEngine(opts) {
     inspectSelection() {
       return E.disposed ? null : selectionInfoOf(E.selected);
     },
+    /**
+     * UI 铬件矩形发布（polish-cosmos-tip-ui-avoidance D2 公共面；client 唯一发布入口）：
+     * client 在**布局事实变化**时把交互 chrome 的布局矩形发到这里——矩形为**引擎容器坐标**
+     * （窗口视口坐标减去引擎根容器原点，原点随矩形同批发布：`{rects, origin}`）。整页形态
+     * 根容器自窗口安全区与宿主侧栏起排、dock 形态随 dock 列定位（窗口原点 ≠ 容器原点），
+     * 故换算职责在发布方（它是唯一知道真实 rect 的一侧）。
+     *
+     * 语义与降级：
+     *  - 逐条规范化（`normalizeUiRects`：非法 / 零尺寸条目丢弃），结果**就地换入** `E.uiRects`
+     *    ——帧循环内只做数组比对（MUST NOT 在此做 DOM 测量，也不逐帧调用）；
+     *  - 空集 / `null` / 非法载荷 = **零矩形集** → 避让不生效、行为回落现状（MUST NOT 报错）；
+     *  - 同值重复发布幂等（不换引用，避免无谓的判定抖动）；
+     *  - 与 `setExternalHover` 同款守卫：引擎未挂载 / 已销毁 → `false` 且不抛错。
+     * 兼容两种调用形：`setUiChromeRects(rects[])` 与 `setUiChromeRects({rects, origin})`
+     * （后者是控制器的标准载荷；数组形保留 `origin` 现值不变）。
+     * @param {Array<object>|{rects?: Array<object>, origin?: {x?: number, y?: number}}|null} payload
+     * @returns {boolean} 是否接受发布
+     */
+    setUiChromeRects(payload) {
+      if (E.disposed) return false;
+      if (payload === null || payload === undefined) {
+        E.uiRects.length = 0;
+        return true;
+      }
+      const source = Array.isArray(payload) ? payload : (payload && typeof payload === "object" ? payload.rects : null);
+      if (!Array.isArray(source)) return false;
+      const next = normalizeUiRects(source);
+      const origin = Array.isArray(payload) ? null : (payload && typeof payload.origin === "object" ? payload.origin : null);
+      let changed = next.length !== E.uiRects.length;
+      if (!changed) {
+        for (let i = 0; i < next.length; i += 1) {
+          const a = next[i], b = E.uiRects[i];
+          if (a.left !== b.left || a.top !== b.top || a.right !== b.right || a.bottom !== b.bottom || a.kind !== b.kind) {
+            changed = true;
+            break;
+          }
+        }
+      }
+      if (changed) {
+        E.uiRects.length = 0;
+        for (let i = 0; i < next.length; i += 1) E.uiRects.push(next[i]);
+      }
+      if (origin) {
+        const ox = Number(origin.x), oy = Number(origin.y);
+        if (Number.isFinite(ox)) E.uiOrigin.x = ox;
+        if (Number.isFinite(oy)) E.uiOrigin.y = oy;
+      }
+      return true;
+    },
+    /** UI 铬件矩形观测面（D2/D3/D4 冒烟直测）：本帧消费的矩形集与容器原点只读快照。 */
+    inspectUiRects() {
+      return E.disposed
+        ? { rects: [], origin: { x: 0, y: 0 } }
+        : {
+          rects: E.uiRects.map(function (rect) {
+            return { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom, kind: rect.kind };
+          }),
+          origin: { x: E.uiOrigin.x, y: E.uiOrigin.y }
+        };
+    },
     /** 外部悬停观测面（p1-add-cosmos-external-hover 3.3）：与 `setExternalHover` 入参同形
         `{wsId, kind, id} | null`；已销毁 → null（纪律同 `inspectSelection`）。 */
     inspectExternalHover() {
@@ -5446,7 +6304,8 @@ export function createCosmosEngine(opts) {
     },
     /** 输入观测面（polish-cosmos-touch-nav 6.1/6.3 + add-cosmos-three-finger-pan 2.1，
         只读快照供冒烟直测）：多指针追踪数 / 手势模式 / 捏合基准 / 三指平移起点与累计
-        位移 / 手势抑制窗 / dive 计数（容器级重绑「单次 dive」防回归）。 */
+        位移 / 手势抑制窗 / 左键与右键拖拽态 / dive 计数（容器级重绑「单次 dive」防回归；
+        add-cosmos-rightdrag-pan 追加 `rdrag`——右键拖拽态独立的观测依据）。 */
     inspectInput() {
       return {
         pointers: E.pointers.size,
@@ -5466,16 +6325,20 @@ export function createCosmosEngine(opts) {
         gestureEndAt: E.gestureEndAt,
         suppressed: gestureSuppressed(),
         dragging: E.dragging === true,
+        rdrag: E.rdrag === true,
         dives: E.diveCount
       };
     },
-    /** 缩放导航观测面（add-cosmos-zoom-focus-nav 2.7，只读快照供冒烟直测）：
-        调参 / 冷却锚点 / diveFrom 快照距离 / 各星座 boundR 与屏显投影。 */
+    /** 缩放导航观测面（add-cosmos-zoom-focus-nav 2.7；add-cosmos-zoom-ruler 1.3 改形）：
+        标尺几何（tick / 滞回下限 / 值域端点）+ 指针聚焦开关 / 冷却锚点 /
+        diveFrom 快照距离 / 各星座 boundR 与屏显投影。阈值不再有设置面字段。 */
     inspectZoomNav() {
       return {
+        tickDist: ZOOM_RULER_TICK,
+        flyOutFloorDist: FLYOUT_DIST_FLOOR,
+        distMin: DIST_MIN,
+        distMax: DIST_MAX,
         tuning: {
-          diveRatio: E.tuning.diveRatio,
-          flyOutRatio: E.tuning.flyOutRatio,
           pointerFocus: E.tuning.pointerFocus
         },
         switchAt: E.viewSwitchAt,
@@ -5676,11 +6539,18 @@ export function createCosmosEngine(opts) {
         } : null
       };
     },
-    /** 图样连线观测面（two-use-cosmos-template-star-layout 3.1 冒烟直测，只读快照）：
-        最近一帧渲染的图样连线段（wsId + 端点恒星 id 对 + 含弱化因子的 α）。星↔星提案
-        关联段（ws.links）不在此面——该通道已解除呈现，段集合恒等 patternLines 投影。 */
+    /** 图样连线观测面（add-cosmos-template-figure-display 2.4 冒烟直测，只读快照）：
+        最近一帧渲染的图样连线段 —— `{ wsId, segIndex, alpha }`（`segIndex` = 该段在
+        `ws.pattern.lines` 中的序号；槽位段无星 id 键，静态几何不携带恒星标识）。
+        星↔星提案关联段（ws.links）不在此面——该通道已解除呈现，段集合恒等图样 lines 投影。 */
     inspectPatternLines() {
-      return (E.patLast ?? []).map(function (r) { return { wsId: r.wsId, aId: r.aId, bId: r.bId, alpha: r.alpha }; });
+      return (E.patLast ?? []).map(function (r) { return { wsId: r.wsId, segIndex: r.segIndex, alpha: r.alpha }; });
+    },
+    /** 空槽装饰点观测面（3.2/3.3 冒烟直测，只读快照）：最近一帧渲染的装饰点 ——
+        `{ wsId, slotIndex, alpha }`（`slotIndex` = 空槽在 `ws.pattern.slots` 中的序号）。
+        纯装饰层：不进 picks、不参与拾取/命中。 */
+    inspectPatternDots() {
+      return (E.patDotLast ?? []).map(function (r) { return { wsId: r.wsId, slotIndex: r.slotIndex, alpha: r.alpha }; });
     },
     /** 成星捕获观测面（polish-cosmos-orbit-insertion 4.1 冒烟直测，只读快照）：捕获条目
         （from / 离场切向 / 尾迹快照长度 / degraded / elapsed）与行星 body（wp / α / 补间
@@ -5844,14 +6714,14 @@ export function createCosmosEngine(opts) {
       return found ? found.wp.slice() : null;
     },
     toast,
-    /** 平移调参 + 缩放导航热更新（设置面持久化后调用，无需重开整页）：
-        `{ panSpeed, panShiftBoost, zoomDiveRatio, zoomFlyOutRatio, zoomPointerFocus, dragPan }`
-        （部分写语义：非法/缺席键保持原值）。 */
+    /** 平移调参 + 指针聚焦热更新（设置面持久化后调用，无需重开整页）：
+        `{ panSpeed, panShiftBoost, zoomPointerFocus, dragPan, templateNames }`
+        （部分写语义：非法/缺席键保持原值）。缩放阈值已常量化
+        （add-cosmos-zoom-ruler D3），旧 `zoomDiveRatio` / `zoomFlyOutRatio` 入参
+        被忽略、SHALL NOT 报错。 */
     setTuning(settings) {
       if (Number(settings?.panSpeed) > 0) E.tuning.speed = settings.panSpeed;
       if (Number(settings?.panShiftBoost) > 0) E.tuning.boost = settings.panShiftBoost;
-      if (positiveOr(settings?.zoomDiveRatio, 0) > 0) E.tuning.diveRatio = positiveOr(settings.zoomDiveRatio, E.tuning.diveRatio);
-      if (positiveOr(settings?.zoomFlyOutRatio, 0) > 0) E.tuning.flyOutRatio = positiveOr(settings.zoomFlyOutRatio, E.tuning.flyOutRatio);
       if (typeof settings?.zoomPointerFocus === "boolean") E.tuning.pointerFocus = settings.zoomPointerFocus;
       /* 拖拽平移开关镜像（add-cosmos-drag-pan-toggle 2.1/D4）：布尔入参才更新（部分写语义），
          值与当前一致时幂等（不触达 DOM）——点击链回读即走这条恒等路径，无回环。
@@ -5860,13 +6730,20 @@ export function createCosmosEngine(opts) {
         E.dragPanMode = settings.dragPan;
         syncDragPanButton();
       }
+      /* 星座模板名显示镜像（add-cosmos-template-name-toggle 3.1/D4）：布尔入参才更新、值变
+         才动作（部分写语义 + 幂等，同 dragPan 分支）。**通道精度**：chip 文本
+         `updateChipText` 是非逐帧通道（仅 overlay 重建时调用）→ 翻转 MUST 显式触发刷新
+         （沿 dragPan 分支显式 `syncDragPanButton()` 同款）；钻取 badge 的内容组装在
+         `updateOverlay` 逐帧差分内，下一帧自然收敛，无需此处介入。 */
+      if (typeof settings?.templateNames === "boolean" && settings.templateNames !== E.templateNames) {
+        E.templateNames = settings.templateNames;
+        if (E.scene && Array.isArray(E.scene.ws)) updateChipText();
+      }
     },
     getTuning() {
       return {
         panSpeed: E.tuning.speed,
         panShiftBoost: E.tuning.boost,
-        zoomDiveRatio: E.tuning.diveRatio,
-        zoomFlyOutRatio: E.tuning.flyOutRatio,
         zoomPointerFocus: E.tuning.pointerFocus
       };
     },
@@ -5907,11 +6784,11 @@ export function createCosmosEngine(opts) {
       E.fxActive.length = 0;
       E.fxLastStart.clear();
       E.fxStorm = false;
-      E.linkMix.clear(); // 段淡入淡出状态随实例销毁（8.1；two 起 = 图样连线段状态）
       E.relMix.clear(); // 关联聚焦坡道随实例销毁（cosmos-relation-focus D3：呈现层瞬态）
       E.relFocusKey = "";
       E.relLast = null;
-      E.patLast = []; // 图样连线观测面随实例销毁（two）
+      E.patLast = []; // 图样连线观测面随实例销毁（add-cosmos-template-figure-display）
+      E.patDotLast = []; // 空槽装饰点观测面随实例销毁（同上 3.2）
       /* 外部悬停注入随实例销毁（p1-add-cosmos-external-hover 3.3）：瞬态，无需通知
          （destroyed 后调用方经 onHoverChange 已无意义，setExternalHover 恒 false）。 */
       E.extHover = null;
@@ -5926,6 +6803,10 @@ export function createCosmosEngine(opts) {
       E.wsBirth.clear(); // 空星座出生高亮标记随实例销毁（D6）
       E.bootT0 = null;
       E.fx.clear();
+      /* 标尺通道随实例销毁（add-cosmos-zoom-ruler 1.2）：订阅引用与门限快照一并释放
+         （SHALL NOT 跨实例残留；页面重挂载重新订阅）。 */
+      E.zoomMeters.clear();
+      E.zoomMeterLast = null;
       E.resizeObserver?.disconnect();
       E.el.root?.remove();
       /* 引线层随实例销毁同步清理（polish-cosmos-tip-topmost-layer 2.3）：canvas 已随
@@ -5955,9 +6836,13 @@ export function createCosmosEngine(opts) {
       if (ws.archives !== prevArchives) regenerateWsDust(ws);
       ws.satelliteCount = next.satelliteCount ?? ws.satelliteCount;
       ws.links = (next.links ?? ws.links).slice();
-      /* 图样连线同步（two）：patch 级恒星集合不变 → patternLines 恒等（确定性派生），
-         同步为防御一致性；off/wp 重算与端点跟随由下方恒星循环天然承接（端点恒等槽位）。 */
-      ws.patternLines = (next.patternLines ?? ws.patternLines).slice();
+      /* 图样（add-cosmos-template-figure-display 2.1/D2）：patch 级恒星集合不变 → 交付门控
+         不变 → `ws.pattern` 恒等（ws.id 确定性派生），**不同步**（无逐帧开销）。图样段的
+         端点跟随由渲染期「中心 + 槽位偏移」投影天然承接（恒星 off 滑位不影响图样几何）。 */
+      /* 模板中文名同步（add-cosmos-template-name-toggle 2.2）：由 id 确定性派生、patch 级
+         理论上恒等（值变已在 sceneDiffLevel 判 rebuild）；只在交付非空字符串时就地同步，
+         缺席/畸形保留现值（SHALL NOT 抹掉呈现）——纯防御，无逐帧开销。 */
+      if (typeof next.tplZh === "string" && next.tplZh) ws.tplZh = next.tplZh;
       // 恒星属性补丁（集合不变由 diffLevel 保证）
       (next.stars ?? []).forEach(function (star, i) {
         const local = ws.stars.find((s) => s.id === star.id);

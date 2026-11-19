@@ -15,7 +15,7 @@ import {
   TAU, clamp, lerp, easeOutK, mix, hexA, hashSeed, hashRand,
   makeGlowCache, trailStroke, sessColor, mixFade, viewKOf, birthAlphaOf, segAlphaOf,
   dustBornK, satBornKOf, createVesselGuard, vesselAnchor,
-  makeDustSprite, dustBatchDraw
+  makeDustSprite, dustBatchDraw, patDotDraw
 } from '../skin-kit.mjs';
 
 const CREATED = '#6fd8d8';
@@ -223,6 +223,14 @@ export function createSkinReagent() {
             ctx.beginPath(); ctx.arc(e.x, e.y, 2.2, 0, TAU); ctx.stroke();
           });
         });
+        return;
+      }
+
+      if (it.kind === 'patdot') {
+        /* 空槽装饰点（add-cosmos-template-figure-display 3.2）：导管顶点微泡——
+           取玻璃色、基线 0.32（= 本皮肤导管主管系数），点弱化因子由引擎下发；
+           纯装饰（不进 picks / 无 hover / 无名牌）。 */
+        patDotDraw(ctx, it, GLASS, 0.32);
         return;
       }
 

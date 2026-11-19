@@ -30,7 +30,7 @@ import {
   TAU, clamp, lerp, easeOutK, mix, hexA, hashSeed, hashRand,
   makeGlowCache, trailStroke, sessColor, mixFade, viewKOf, birthAlphaOf, segAlphaOf,
   dustBornK, satBornKOf, createVesselGuard, vesselAnchor,
-  makeDustSprite, dustBatchDraw
+  makeDustSprite, dustBatchDraw, patDotDraw
 } from '../skin-kit.mjs';
 
 /* created 取 demo `draft` 的冷蓝支（#6a8ab8）：另一支 in-progress #e8f4ff 近白，
@@ -240,6 +240,14 @@ export function createSkinChamber() {
           ctx.setLineDash([]);
           ctx.lineDashOffset = 0;
         });
+        return;
+      }
+
+      if (it.kind === 'patdot') {
+        /* 空槽装饰点（add-cosmos-template-figure-display 3.2）：径迹顶点微滴——
+           取径迹同色、基线 0.22（低于本皮肤图样线段），点弱化因子由引擎下发；
+           纯装饰（不进 picks / 无 hover / 无名牌）。 */
+        patDotDraw(ctx, it, TRACK, 0.22);
         return;
       }
 

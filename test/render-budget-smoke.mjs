@@ -162,7 +162,9 @@ function spyStyle(useBand = false) {
 /** 引擎 + 相对时间基准（每引擎独立时钟：E.t 推进逐位可复现）。 */
 function bootEngine(sceneData, style) {
   const container = stubEl("div");
-  const engine = createCosmosEngine({ container, style });
+  /* 视口剔除/绘制预算夹具沿用经典 430 首屏几何（与 worldAtScreenX 的 DEFAULT_CAM 同口径；
+     生产首屏 HOME_DIST=3000 由 engine-smoke 首屏用例覆盖）。 */
+  const engine = createCosmosEngine({ container, style, homeDist: 430 });
   engine.setScene(sceneData, "rebuild");
   engine.start();
   let now = 0;

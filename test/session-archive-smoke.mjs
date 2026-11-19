@@ -665,11 +665,10 @@ function buttonTarget(action, sessionId) {
   );
   assert.ok(actionsBody.length > 0, "cardActionsHtml 切片");
   assert.equal((actionsBody.match(/data-action="archive"/g) ?? []).length, 1, "归档按钮稳定钩子 data-action=archive");
-  /* 「打开会话」按导航可用性渲染两条分支（add-cosmos-standalone-window D6）：内嵌态带
-     `aria-keyshortcuts` + 快捷键 title；独立窗口态 `disabled` + 禁用提示 title。两分支都
-     保留 `data-action="open"` 稳定钩子，故切片内出现两次。 */
-  assert.equal((actionsBody.match(/data-action="open"/g) ?? []).length, 2, "打开按钮稳定钩子 data-action=open（可用 / 禁用两分支）");
-  assert.ok(actionsBody.includes("E.sessionNavAvailable"), "导航可用性分流（独立窗口态禁用）");
+  /* 「打开会话」恒可用（独立窗口能力已退役）：单分支 + `aria-keyshortcuts` 快捷键标注。 */
+  assert.equal((actionsBody.match(/data-action="open"/g) ?? []).length, 1, "打开按钮稳定钩子 data-action=open（单分支）");
+  assert.ok(actionsBody.includes('aria-keyshortcuts="Space"'), "打开按钮标注空格快捷键");
+  assert.ok(!actionsBody.includes("sessionNavAvailable"), "无导航可用性分流（独立窗口座位锁退役）");
   assert.ok(actionsBody.includes('data-action="archive" data-session="'), "归档按钮与既有 data-session 钩子并存");
   assert.ok(actionsBody.includes(">打开会话<"), "按钮文案「打开会话」");
   assert.ok(actionsBody.includes(">归档会话<"), "按钮文案「归档会话」");
@@ -681,7 +680,7 @@ function buttonTarget(action, sessionId) {
   assert.equal((engineSource.match(/cardActionsHtml\((?:p\.id, decideButtonHtml\('planet', p\), p|c\.id, '', c)\)/g) ?? []).length, 2, "两调用点把实体传入（活跃口径取卡内实体）");
   assert.ok(actionsBody.includes("ent.state === 'busy' || ent.state === 'waiting' || ent.delegatedBusy === true"), "卡侧活跃谓词（busy ∨ waiting ∨ delegatedBusy）");
   assert.ok(actionsBody.includes("E.labels.card.archiveBusy") && actionsBody.includes("E.labels.card.archiveWaiting"), "活跃门按态 title 走注入文案");
-  assert.equal((actionsBody.match(/disabled/g) ?? []).length, 2, "markup 恰导航不可用 + 实体活跃两分支渲染 disabled（归档在途仍走直接 DOM）");
+  assert.equal((actionsBody.match(/disabled/g) ?? []).length, 1, "markup 仅实体活跃分支渲染 disabled（归档在途仍走直接 DOM）");
   /* 两门叠加恢复路径（3.3/D4）：在途门结束 ≠ 恒可点——恢复按卡内当前实体活跃口径重推导 */
   const restoreFn = engineSource.slice(
     engineSource.indexOf("function setArchiveButtonDisabled"),

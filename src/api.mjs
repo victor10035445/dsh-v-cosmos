@@ -3,8 +3,6 @@
  * - fetchScene：GET /api/dsh-v-cosmos/scene（星空骨架 JSON）；
  * - subscribeEvents：/api/dsh-v-cosmos/events SSE **轻帧**（帧体不带载荷，
  *   客户端收到后自行重拉 scene——hive 同款）。EventSource 自带重连。
- *   例外：`cosmos-presence-changed` 独立窗口占位计数帧（add-cosmos-standalone-window
- *   D2）携带 `count`——计数即载荷，仍属轻帧；`options.role` 为该连接的占位角色标识。
  */
 const API = "/api/dsh-v-cosmos";
 
@@ -53,30 +51,73 @@ export async function bindSession(input) {
 }
 
 /**
+ * 动作执行队列桥（add-cosmos-action-queue 5.1）：与 `fetchScene` / `bindSession` 同款
+ * 容错形（网络/非 2xx/坏体 → `{ok:false, error}`）。
+ */
+
+/**
+ * 全量队列快照（`GET /queue`）：页面加载与收到 `queue-changed` 轻帧后拉取对账。
+ * @returns {Promise<{ok: true, queue: {version: number, revisedAt: number, queues: object}} |
+ *          {ok: false, error: string}>}
+ */
+export async function fetchQueue() {
+  try {
+    const res = await fetch(API + "/queue");
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok || body?.ok !== true || !body.queue) {
+      return { ok: false, error: body?.error || res.status + " " + res.statusText };
+    }
+    return { ok: true, queue: body.queue };
+  } catch (error) {
+    return { ok: false, error: String(error?.message || error) };
+  }
+}
+
+/**
+ * 队列操作（入队 / 排序 / 移出 / 清空 / 暂停 / 恢复）。
+ * @param {"enqueue"|"reorder"|"remove"|"clear"|"pause"|"resume"} action
+ * @param {object} [body]
+ * @returns {Promise<{ok: true, [key: string]: unknown} | {ok: false, error: string, reason?: string, message?: string}>}
+ */
+export async function queueAction(action, body = {}) {
+  try {
+    const res = await fetch(API + "/queue/" + action, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body ?? {})
+    });
+    const payload = await res.json().catch(() => ({}));
+    if (!res.ok || payload?.ok !== true) {
+      return {
+        ok: false,
+        error: payload?.error || res.status + " " + res.statusText,
+        ...(typeof payload?.reason === "string" ? { reason: payload.reason } : {}),
+        ...(typeof payload?.message === "string" ? { message: payload.message } : {})
+      };
+    }
+    return payload;
+  } catch (error) {
+    return { ok: false, error: String(error?.message || error) };
+  }
+}
+
+/**
  * @param {(frame: object) => void} onFrame 轻帧回调（{type:"proposals-changed"} |
- *        {type:"associations-changed"} | {type:"cosmos-presence-changed", count}；坏帧忽略）
- * @param {{role?: string}} [options] 连接角色标识（add-cosmos-standalone-window 3.4）：
- *        独立窗口态传 `COSMOS_WINDOW_ROLE`（`role=cosmos-window`）——宿主据此登记占位并
- *        广播计数帧；内嵌态缺席 = 普通客户端（不登记占位）。
+ *        {type:"associations-changed"} | {type:"queue-changed"}；坏帧忽略）
  * @returns {() => void} 卸载函数
  */
-export function subscribeCosmosEvents(onFrame, options) {
+export function subscribeCosmosEvents(onFrame) {
   if (typeof EventSource === "undefined") return () => {};
-  const role = typeof options?.role === "string" ? options.role.trim() : "";
-  const query = role ? "?role=" + encodeURIComponent(role) : "";
-  const source = new EventSource(API + "/events" + query);
+  const source = new EventSource(API + "/events");
   source.onmessage = (event) => {
     try {
       const frame = JSON.parse(event.data);
-      if (frame?.type === "proposals-changed" || frame?.type === "associations-changed") {
+      if (
+        frame?.type === "proposals-changed" ||
+        frame?.type === "associations-changed" ||
+        frame?.type === "queue-changed"
+      ) {
         onFrame(frame);
-        return;
-      }
-      /* 占位计数帧（add-cosmos-standalone-window D2）：帧体携带 count（最小例外——
-         计数即载荷）；非法计数整体丢弃（防脏帧改写按钮状态）。 */
-      if (frame?.type === "cosmos-presence-changed") {
-        if (Number.isFinite(Number(frame.count))) onFrame(frame);
-        return;
       }
     } catch {
       /* 坏帧忽略 */

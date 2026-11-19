@@ -29,7 +29,7 @@
  * 端点不可达仅本区禁用降级）。
  *
  * 由 client.jsx 注册为 `settings.section`（id `v-cosmos`，order 6——「技能管理」之后）+
- * 六条标签页「通用」（order -1，add-cosmos-standalone-window 2.2）/「快捷动作」（order 0）/
+ * 六条标签页「通用」（order -1）/「快捷动作」（order 0）/
  * 「星座动作」（order 1）/「皮肤」（order 2）/「界面」（order 3）/「快捷键」（order 4）。
  * 视觉参数照 skill-links 设置节（官方 settings section 形状、`--dsw-alias-*` token），
  * 类名统一 `cs-` 前缀避免与其它插件样式互踩。
@@ -256,17 +256,10 @@ export const COSMOS_SETTINGS_CSS = `
 .cs-skinBadge{padding:0 6px;border-radius:999px;background:var(--dsw-alias-interactive-bg-hover-solid);font-size:10px;line-height:16px}
 .cs-skinMode{opacity:.8}
 .cs-skinCount{font-size:12px;line-height:16px;color:var(--dsw-alias-label-secondary)}
-/* ── 导航页签（add-cosmos-zoom-focus-nav 3.1）：进入/返回阈值数字输入 + 指针聚焦开关。
-      即时生效（无草稿-保存）；数字输入/开关触控目标 ≥44px，label + aria 可达。 ── */
+/* ── 导航页签（add-cosmos-zoom-focus-nav 3.1；add-cosmos-zoom-ruler 3.2 删阈值输入）：
+      仅「指针聚焦缩放」开关。即时生效（无草稿-保存）；开关触控目标 ≥44px，label + aria 可达。 ── */
 .cs-nav{display:flex;flex-direction:column;gap:10px;margin-top:2px}
-.cs-navRow{display:flex;flex-direction:column;gap:2px}
-.cs-navField{display:flex;align-items:center;gap:8px;min-height:44px}
 .cs-navLabel{flex:1;min-width:0;font-size:13px;line-height:18px;color:var(--dsw-alias-label-primary)}
-.cs-navInput{width:92px;box-sizing:border-box;min-height:44px;padding:6px 8px;border:1px solid var(--dsw-alias-border-l2);
-  border-radius:6px;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);font:inherit;font-size:13px;
-  line-height:18px;text-align:right;outline:none}
-.cs-navInput:focus{border-color:var(--dsw-alias-border-inverted)}
-.cs-navUnit{flex:none;width:24px;font-size:12px;color:var(--dsw-alias-label-tertiary)}
 .cs-navHint{font-size:12px;line-height:16px;color:var(--dsw-alias-label-tertiary)}
 .cs-navToggle{display:flex;align-items:flex-start;gap:8px;box-sizing:border-box;min-height:44px;padding:8px 9px;
   border:1px solid var(--dsw-alias-border-l2);border-radius:10px;cursor:pointer}
@@ -312,15 +305,12 @@ export const COSMOS_SETTINGS_CSS = `
 .cs-shortcutCount{font-size:12px;line-height:16px;color:var(--dsw-alias-label-secondary)}
 /* 行内快捷键的生效条件注（带前置状态的按钮）：小字、不换行、可悬停看完整说明 */
 .cs-shortcutRowNote{flex:none;font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary);white-space:nowrap}
-/* ── 「通用」页签（add-cosmos-standalone-window 2.2）：打开方式单选（内嵌整页 / 独立窗口）。
-      即时保存（无草稿-保存模式）；桌面形态（非 http(s) 协议）整组禁用 + 说明文案。 ── */
+/* ── 「通用」页签（add-cosmos-rightbar-dock）：打开方式单选（内嵌整页 / 分栏）——
+      即时保存；两档在 web 与桌面形态同效，无形态禁用或降级文案。 ── */
 .cs-launch{display:flex;flex-direction:column;gap:2px;margin:2px 0 0;padding:8px 10px 6px;border:1px solid var(--dsw-alias-border-l2);border-radius:10px}
-.cs-launch[data-desktop=true]{opacity:.75}
 .cs-launchLegend{padding:0 4px;font-size:12px;line-height:16px;color:var(--dsw-alias-label-secondary)}
 .cs-launchRow{display:flex;align-items:flex-start;gap:8px;min-height:44px;padding:6px 0;cursor:pointer;color:var(--dsw-alias-label-primary);font-size:13px;line-height:18px}
 .cs-launchRow input{margin:2px 0 0;cursor:pointer;accent-color:var(--dsw-alias-border-inverted)}
-.cs-launch[data-desktop=true] .cs-launchRow{cursor:not-allowed;color:var(--dsw-alias-label-dimmed)}
-.cs-launch[data-desktop=true] .cs-launchRow input{cursor:not-allowed}
 .cs-launchText{display:flex;flex-direction:column;gap:2px;min-width:0}
 .cs-launchHint{font-size:12px;line-height:16px;color:var(--dsw-alias-label-tertiary)}
 /* ── 「通用」页签·路径区（step2-cosmos-openspec-path-setting 3.1–3.3）：openspecPath /
@@ -389,11 +379,11 @@ const LAUNCH_MODE_FIELDS = Object.freeze([
     hintFallback: "在 DSH 主窗口内以整页覆盖层打开（与变更前一致）。"
   },
   {
-    value: "window",
-    labelKey: "launchModeWindow",
-    fallback: "独立窗口",
-    hintKey: "launchModeWindowHint",
-    hintFallback: "浏览器新开同源窗口，只显示 Cosmos；主壳入口在此期间禁用，分屏时数据实时同态。"
+    value: "dock",
+    labelKey: "launchModeDock",
+    fallback: "分栏（右栏停靠）",
+    hintKey: "launchModeDockHint",
+    hintFallback: "在 DSH 右栏打开 Cosmos 停靠页，与左侧会话并排；动作与跳转在同一窗口内完成，web 与桌面形态一致。"
   }
 ]);
 
@@ -500,25 +490,36 @@ export function CosmosPathsSection(props) {
 }
 
 /**
- * 「通用」标签页（add-cosmos-standalone-window 2.2 / spec「launchMode 配置项」；
- * step2-cosmos-openspec-path-setting 3.1 追加「路径」区）：
- *  - 「打开方式」单选：内嵌整页（缺省）/ 独立窗口——**即时保存**（无草稿-保存模式），
- *    改动经 face.set → `applyLaunchMode`（净房持久化 + 受控镜像）；跨窗口即时生效由
- *    同源 localStorage + `storage` 事件桥承接（座位按钮点击时现读配置）。
- *  - 桌面形态（非 http(s) 协议，无同源 HTTP origin；判据见 fix-cosmos-standalone-desktop-degrade D1）：
- *    整组禁用 + 说明文案——独立窗口无处落地；注入 `desktop` 为浏览器侧可观察事实
- *    （MUST NOT 依赖宿主探测）。
+ * 「通用」标签页（add-cosmos-rightbar-dock / spec「设置 v10 与历史值迁移」；
+ * step2-cosmos-openspec-path-setting 3.1 追加「路径」区；
+ * add-cosmos-template-name-toggle 1.2 追加「星座模板名显示」开关行）：
+ *  - 「打开方式」单选：内嵌整页（缺省）/ 分栏（右栏停靠）——**即时保存**（无草稿-保存
+ *    模式），改动经 face.set → `applyLaunchMode`（净房持久化 + 受控镜像）；跨窗口即时
+ *    生效由同源 localStorage + `storage` 事件桥承接（入口按钮点击时现读配置）。
+ *  - 「星座模板名显示」复选框（缺省关）：独立 face（`templateNames`），改动立即持久化 +
+ *    已打开整页 `setTuning` 热更（同一「即时保存、无暂存钮」纪律，与 launchMode 同款）；
+ *    装饰用途提示走 title + 行内 hint 双通道。
+ *  - 两档在 web 与桌面形态同效，无任何形态禁用或降级说明（独立窗口的协议判据随能力退役）。
  *  - face 缺失（旧宿主未注入）→ 降级占位（不渲染可点却永不生效的控件，与其它页签同纪律）。
- * @param {{t: Function, launch?: object, desktop?: boolean, paths?: object|null}} props
+ * @param {{t: Function, launch?: object, paths?: object|null, templateNames?: object|null}} props
  */
 export function CosmosGeneralPanel(props) {
   const t = props.t;
   const face = props.launch ?? null;
-  const desktop = props.desktop === true;
   const snapshot = useSyncExternalStore(
     face ? face.subscribe : noopSubscribe,
     face ? face.getSnapshot : noopSnapshot
   );
+  /* 星座模板名显示 face（add-cosmos-template-name-toggle 1.2）：独立受控镜像（与
+     launchMode 同款受控读面）；hook 必须先于下方 face===null 早退注册（Hook 顺序恒定）。 */
+  const namesFace = props.templateNames ?? null;
+  const namesSnapshot = useSyncExternalStore(
+    namesFace ? namesFace.subscribe : noopSubscribe,
+    namesFace ? namesFace.getSnapshot : noopSnapshot
+  );
+  const templateNamesOn = namesSnapshot !== null && typeof namesSnapshot === "object"
+    ? namesSnapshot.templateNames === true
+    : false;
   const current = snapshot !== null && typeof snapshot === "object" && COSMOS_LAUNCH_MODES.includes(snapshot.launchMode)
     ? snapshot.launchMode
     : "embedded";
@@ -529,6 +530,18 @@ export function CosmosGeneralPanel(props) {
       console.error("[dsh-v-cosmos] launch mode setting failed:", error);
     }
   };
+  const setTemplateNames = (enabled) => {
+    try {
+      namesFace?.set?.(enabled === true);
+    } catch (error) {
+      console.error("[dsh-v-cosmos] template names setting failed:", error);
+    }
+  };
+  const templateNamesHint = tr(
+    t,
+    "cosmos.settings.templateNamesHint",
+    "在银河星座标签与钻取标牌上追加该星座命中模板的中文名（如「猎户座」）；纯装饰文本，不影响布局与交互。"
+  );
   if (face === null) {
     return (
       <div className="dsh-cosmos-settings-panel" data-plugin-anchor="dsh-v-cosmos:settings-general">
@@ -538,8 +551,8 @@ export function CosmosGeneralPanel(props) {
   }
   return (
     <div className="dsh-cosmos-settings-panel" data-plugin-anchor="dsh-v-cosmos:settings-general">
-      <div className="cs-hint">{tr(t, "cosmos.settings.launchModeHint", "内嵌整页 = 在当前 DSH 窗口内以整页覆盖层打开（现状）；独立窗口 = 以同源新窗口打开只有 Cosmos 内容的页面，可与主窗口分屏（同属一个 DSH、数据实时同态）。独立窗口存在期间主壳入口禁用，关闭窗口即解锁。")}</div>
-      <fieldset className="cs-launch" data-desktop={desktop ? "true" : undefined} disabled={desktop}>
+      <div className="cs-hint">{tr(t, "cosmos.settings.launchModeHint", "内嵌整页 = 在当前 DSH 窗口内以整页覆盖层打开（现状）；分栏 = 在 DSH 右栏打开 Cosmos 停靠页，与左侧会话并排，两边可同时操作且天然联动（存量「独立窗口」配置自动迁移为分栏）。")}</div>
+      <fieldset className="cs-launch">
         <legend className="cs-launchLegend">{tr(t, "cosmos.settings.launchModeLabel", "打开方式")}</legend>
         {LAUNCH_MODE_FIELDS.map((field) => (
           <label key={field.value} className="cs-launchRow">
@@ -548,7 +561,6 @@ export function CosmosGeneralPanel(props) {
               name="cosmos-launch-mode"
               value={field.value}
               checked={current === field.value}
-              disabled={desktop}
               onChange={() => set(field.value)}
             />
             <span className="cs-launchText">
@@ -558,10 +570,25 @@ export function CosmosGeneralPanel(props) {
           </label>
         ))}
       </fieldset>
-      {desktop ? (
-        <div className="cs-hint" role="status" data-notice="desktop">
-          {tr(t, "cosmos.settings.launchModeDesktop", "独立窗口仅 web（浏览器）形态可用：当前为桌面形态，入口固定为内嵌整页（历史配置保留，切回 web 端仍生效）。")}
-        </div>
+      {/* 星座模板名显示（add-cosmos-template-name-toggle 1.2/D1/D3）：独立 face + 即时保存；
+          title 与行内 hint 双通道说明「纯装饰」用途（不新增读屏噪音——aria-label 只给开关名）。
+          face 缺席（旧宿主未注入）→ 整行不渲染（同其它页签纪律：不渲染可点却永不生效的控件）。 */}
+      {namesFace !== null ? (
+        <fieldset className="cs-launch">
+          <legend className="cs-launchLegend">{tr(t, "cosmos.settings.templateNamesLegend", "星座装饰")}</legend>
+          <label className="cs-launchRow" title={templateNamesHint} data-setting="templateNames">
+            <input
+              type="checkbox"
+              checked={templateNamesOn}
+              aria-label={tr(t, "cosmos.settings.templateNamesAria", "星座模板名显示开关")}
+              onChange={(event) => setTemplateNames(event.target.checked)}
+            />
+            <span className="cs-launchText">
+              <span>{tr(t, "cosmos.settings.templateNamesLabel", "星座模板名显示")}</span>
+              <span className="cs-launchHint">{templateNamesHint}</span>
+            </span>
+          </label>
+        </fieldset>
       ) : null}
       <div className="cs-meta">{tr(t, "cosmos.settings.launchModeInstant", "改动立即生效并保存")}</div>
       {/* 路径区（step2-cosmos-openspec-path-setting 3.1）：独立 face，端点不可达时
@@ -1105,9 +1132,9 @@ function CosmosSizeField(props) {
 
 /**
  * 「界面」标签页（add-cosmos-zoom-focus-nav 3.1–3.3 / add-cosmos-layout-tuning 5.1–5.2 /
- * spec「缩放导航设置页签」→「界面」页签）：
- *  - 导航组：「进入星座视图」数字输入（60–140，步长 5，单位 %）、「返回银河视图」
- *    （10–50，步长 5，单位 %）、「指针聚焦缩放」开关（默认开）；
+ * add-cosmos-zoom-ruler 3.2；spec「缩放导航设置页签」→「界面」页签）：
+ *  - 导航组：仅「指针聚焦缩放」开关（默认开）；缩放进入/返回阈值已收敛为引擎常量并
+ *    由 Cosmos 整页顶部缩放标尺呈现，本组 MUST NOT 提供阈值数字输入；
  *  - 界面尺寸组：`COSMOS_SIZE_FIELDS` 12 个像素输入（面板宽高 / 按钮边长 / 动作条 /
  *    搜索框 / 星座标题字号；高度类 0 = 自适应）。
  * **即时生效**（无草稿-保存模式）：改动即 `face.set` → 写持久化偏好 × 已打开整页
@@ -1125,33 +1152,13 @@ export function CosmosNavPanel(props) {
   const healthState = useSyncExternalStore(health ? health.subscribe : noopSubscribe, health ? health.getSnapshot : noopSnapshot);
   const failure = selectFailureOf(healthState);
   const notApplied = failure !== null && failure.face === "nav" ? failure : null;
-  const dive = state !== null && state !== undefined && Number.isFinite(Number(state.zoomDiveRatio))
-    ? Number(state.zoomDiveRatio) : 100;
-  const flyOut = state !== null && state !== undefined && Number.isFinite(Number(state.zoomFlyOutRatio))
-    ? Number(state.zoomFlyOutRatio) : 25;
   const focus = state !== null && state !== undefined ? state.zoomPointerFocus !== false : true;
-  const [diveText, setDiveText] = useState(String(dive));
-  const [flyText, setFlyText] = useState(String(flyOut));
-  useEffect(() => { setDiveText(String(dive)); }, [dive]);
-  useEffect(() => { setFlyText(String(flyOut)); }, [flyOut]);
   const set = (patch) => {
     try {
       face?.set?.(patch);
     } catch (error) {
       console.error("[dsh-v-cosmos] nav setting failed:", error);
     }
-  };
-  const commit = (key, min, max, raw, current) => {
-    const n = Number(raw);
-    if (raw.trim() === "" || !Number.isFinite(n)) return;
-    const clamped = Math.min(max, Math.max(min, Math.round(n)));
-    if (clamped === n && clamped !== current) set({ [key]: clamped });
-  };
-  const normalize = (key, min, max, raw, current, setText) => {
-    const n = Number(raw);
-    const value = Number.isFinite(n) ? Math.min(max, Math.max(min, Math.round(n))) : current;
-    setText(String(value));
-    if (value !== current) set({ [key]: value });
   };
   /** 尺寸字段即时提交（与 nav 的 commit 同纪律：界内整数且与当前不同才写）。 */
   const commitSize = (field, raw, current) => {
@@ -1170,61 +1177,13 @@ export function CosmosNavPanel(props) {
   }
   return (
     <div className="dsh-cosmos-settings-panel" data-plugin-anchor="dsh-v-cosmos:settings-nav">
-      <div className="cs-hint">{tr(t, "cosmos.settings.navHint", "缩放即导航：银河态放大到阈值自动进入星座视图，钻取态缩小到阈值自动返回。两项阈值改动即时生效并持久化，下次打开保持。")}</div>
+      <div className="cs-hint">{tr(t, "cosmos.settings.navHint", "缩放即导航：顶部只读标尺显示当前缩放尺度，刻度 = 钻取参考视距。银河态放大到刻度且最近星座在屏幕中心 25% 范围内即自动进入；钻取态缩小越过刻度下方的滞回下限即自动飞回。两项阈值由引擎常量固定，不设配置项。")}</div>
       {notApplied !== null ? (
         <div className="cs-error" role="status" data-failure-code={notApplied.code}>
           {notAppliedText(t, "cosmos.settings.navNotApplied", "界面设置未生效：插件整页控制器缺失，请重试或刷新页面后重新调整。", notApplied)}
         </div>
       ) : null}
       <div className="cs-nav">
-        <div className="cs-navRow">
-          <div className="cs-navField">
-            <label className="cs-navLabel" htmlFor="cosmos-nav-dive">{tr(t, "cosmos.settings.navDiveLabel", "进入星座视图")}</label>
-            <input
-              id="cosmos-nav-dive"
-              className="cs-navInput"
-              type="number"
-              inputMode="numeric"
-              min={60}
-              max={140}
-              step={5}
-              value={diveText}
-              aria-label={tr(t, "cosmos.settings.navDiveAria", "进入星座视图阈值（百分比）")}
-              aria-describedby="cosmos-nav-dive-hint"
-              onChange={(event) => {
-                setDiveText(event.target.value);
-                commit("zoomDiveRatio", 60, 140, event.target.value, dive);
-              }}
-              onBlur={(event) => normalize("zoomDiveRatio", 60, 140, event.target.value, dive, setDiveText)}
-            />
-            <span className="cs-navUnit" aria-hidden="true">%</span>
-          </div>
-          <div className="cs-navHint" id="cosmos-nav-dive-hint">{tr(t, "cosmos.settings.navDiveHint", "星座放大到钻取参考尺寸的 X% 时自动进入（界 60–140，越小越早触发）。")}</div>
-        </div>
-        <div className="cs-navRow">
-          <div className="cs-navField">
-            <label className="cs-navLabel" htmlFor="cosmos-nav-flyout">{tr(t, "cosmos.settings.navFlyOutLabel", "返回银河视图")}</label>
-            <input
-              id="cosmos-nav-flyout"
-              className="cs-navInput"
-              type="number"
-              inputMode="numeric"
-              min={10}
-              max={50}
-              step={5}
-              value={flyText}
-              aria-label={tr(t, "cosmos.settings.navFlyOutAria", "返回银河视图阈值（百分比）")}
-              aria-describedby="cosmos-nav-flyout-hint"
-              onChange={(event) => {
-                setFlyText(event.target.value);
-                commit("zoomFlyOutRatio", 10, 50, event.target.value, flyOut);
-              }}
-              onBlur={(event) => normalize("zoomFlyOutRatio", 10, 50, event.target.value, flyOut, setFlyText)}
-            />
-            <span className="cs-navUnit" aria-hidden="true">%</span>
-          </div>
-          <div className="cs-navHint" id="cosmos-nav-flyout-hint">{tr(t, "cosmos.settings.navFlyOutHint", "星座缩小到屏幕短边的 X% 时自动返回（界 10–50，默认约 1/4）。")}</div>
-        </div>
         <label className="cs-navToggle">
           <input
             type="checkbox"

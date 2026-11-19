@@ -3,7 +3,8 @@
  *
  * 对应 demo/skins/assets/skinlib.js 的 makeBackground/makeDrawBody 通用工厂，但**接齐
  * 引擎实喂的全量条目分支与转场消费面**（design D5）：
- *   dust / constline（{a,b,alpha} 段对象）/ orbit / star（proto 星胚 + ignite/stamp/surge +
+ *   dust / constline（{a,b,alpha} 段对象）/ patdot（空槽装饰点，图样线顶点微点）/
+ *   orbit / star（proto 星胚 + ignite/stamp/surge +
  *   birth + act 热度）/ planet（colorMix + fx.view + birth + waiting + done-unread +
  *   delegatedBusy + trail）/ suborbit / sat（bornK + colorMix + 迷你光柱）/ comet（同上 +
  *   渐熄）/ wsghost（消散幽灵）/ nova（常规三段 + 星胚低强度 + 风暴降级）/ meteor。
@@ -19,7 +20,7 @@
 import {
   TAU, clamp, lerp, easeOutK, mix, hexA, dimColor, hashSeed, hashRand,
   makeGlowCache, trailStroke, sessColor, mixFade, viewKOf, birthAlphaOf, segAlphaOf,
-  dustBornK, satBornKOf, makeDustSprite, dustBatchDraw
+  dustBornK, satBornKOf, makeDustSprite, dustBatchDraw, patDotDraw
 } from '../skin-kit.mjs';
 
 function resolveBgStars(cfg) {
@@ -306,6 +307,14 @@ export function createGalaxySkin(cfg) {
           ctx.stroke();
         });
         ctx.setLineDash([]);
+        return;
+      }
+
+      if (it.kind === 'patdot') {
+        /* 空槽装饰点（add-cosmos-template-figure-display 3.2）：图样线顶点微点——
+           取色/基线与本皮肤 constline 同源（lineColor × line.alpha），点弱化因子由引擎
+           下发（pt.a < 图样线段 PAT_LINE_DIM）⇒ 恒弱于图样线；纯装饰不参与拾取。 */
+        patDotDraw(ctx, it, lineColor, line.alpha);
         return;
       }
 

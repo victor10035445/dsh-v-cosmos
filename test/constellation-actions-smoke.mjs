@@ -12,11 +12,24 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { ACTION_COOLDOWN_MS, PENDING_ACTION_TTL_MS, createActionExecutor, createActionGate, createPendingActionStore, draftMatches } from "../src/actions.mjs";
 import {
+  FLOAT_ATTACH_WATCH_MS,
+  FLOAT_IMAGE_ACCEPT,
+  FLOAT_IMAGE_TYPES,
   FLOAT_MARKER_TTL_MS,
+  clipboardFilesOf,
   constellationMessageOf,
+  createAttachFace,
   createConstellationExecutor,
   createFloatMarkerStore,
-  floatPresentationOf
+  floatAttachmentsPendingOf,
+  floatImagesOf,
+  floatPresentationOf,
+  floatSendPlanOf,
+  floatWatchOutcomeOf,
+  intakeFloatImages,
+  isFloatImageType,
+  promptFailureTextOf,
+  removeFloatAttachment
 } from "../src/constellation-actions.mjs";
 
 const group = { wsId: "ws1", wsName: "alpha", wsPath: "C:/proj/alpha" };
@@ -201,120 +214,6 @@ const button = { name: "探索新需求", prompt: "请使用 /cosmos-explore 探
   assert.equal(floatPrefHero.peek()?.submit, true, "autoSend 分支仍提交");
 }
 
-/* ── 3b. 独立窗口服务端送达通道（add-cosmos-standalone-jump-feedback D1/D3） ──
-   只承接 autoSend 分支：startSession 服务端落稿、不自动提交、不登记标记、模型切换不执行；
-   float / native 分支分流不变（native 意图被改写由注入方 preflight 反馈）。 */
-{
-  /* autoSend + 通道开启：startSession → 注入方反馈；零 create/open/标记/关页 */
-  {
-    const hero = createPendingActionStore();
-    const floats = createFloatMarkerStore();
-    const calls = [];
-    const notices = [];
-    const executor = createConstellationExecutor({
-      pending: hero,
-      floats,
-      standaloneServerChannel: true,
-      standaloneNotice: (info) => notices.push(info),
-      createSession: async () => {
-        calls.push("create");
-        return "never";
-      },
-      openSession: () => calls.push("open"),
-      closePage: () => calls.push("close"),
-      startSession: async (wsId, message, groupArg) => calls.push({ kind: "start", wsId, message, wsGroup: groupArg }),
-      now: () => 25_000
-    });
-    const auto = await executor.run({
-      button: { ...button, autoSend: true, model: { provider: "deepseek", model: "deepseek-chat" } },
-      group
-    });
-    assert.equal(auto.ok, true);
-    assert.equal(auto.standalone, true, "结果注明独立窗口通道");
-    assert.equal(auto.serverDraft, true, "落稿由 startSession 服务端承担");
-    assert.equal(auto.channel, "standalone-server", "通道观测值 = standalone-server");
-    assert.equal(auto.autoSendSkipped, true, "autoSend 未执行（提交依赖窗口内输入区）");
-    assert.equal(auto.modelSkipped, true, "模型切换未执行");
-    assert.equal(auto.marker, null, "不登记标记（零返回标记）");
-    assert.deepEqual(calls.map((call) => (typeof call === "string" ? call : call.kind)), ["start"], "只走 startSession（零 create、零 openSession、零关页）");
-    assert.equal(calls[0].wsId, "ws1", "startSession 收到工作区 id（replace 语义由注入方承担）");
-    assert.equal(calls[0].message, auto.message, "startSession 收到纯提示词消息");
-    assert.equal(calls[0].wsGroup, group, "startSession 收到钻取分组（实现侧解析权威 id）");
-    assert.deepEqual(notices, [{ autoSend: true }], "通道成功后通知注入方（执行器不感知文案）");
-    assert.equal(hero.peek(), null, "hero 通道零标记（登记恒悬空）");
-    assert.equal(floats.peek(), null, "浮窗通道零标记（分流互斥）");
-  }
-
-  /* 通道开启但未勾选 autoSend：float 分支分流不变（create → open，零关页、零 startSession） */
-  {
-    const hero = createPendingActionStore();
-    const floats = createFloatMarkerStore();
-    const calls = [];
-    const executor = createConstellationExecutor({
-      pending: hero,
-      floats,
-      standaloneServerChannel: true,
-      preflight: () => "float",
-      createSession: async () => "float-sess",
-      openSession: (sessionId) => calls.push("open:" + sessionId),
-      closePage: () => calls.push("close"),
-      startSession: () => calls.push("start"),
-      now: () => 26_000
-    });
-    const floatRun = await executor.run({ button, group });
-    assert.equal(floatRun.ok, true);
-    assert.equal(floatRun.channel, "float", "float 分支分流不变");
-    assert.deepEqual(calls, ["open:float-sess"], "恒新建 → 导航（零关页、零 startSession）");
-    assert.equal(floats.peek()?.targetSessionId, "float-sess", "浮窗标记按既有语义登记");
-  }
-
-  /* 通道开启但未勾选 autoSend：native 分支分流不变（create → open → close） */
-  {
-    const hero = createPendingActionStore();
-    const floats = createFloatMarkerStore();
-    const calls = [];
-    const executor = createConstellationExecutor({
-      pending: hero,
-      floats,
-      standaloneServerChannel: true,
-      preflight: () => "native",
-      createSession: async () => "native-sess",
-      openSession: () => calls.push("open"),
-      closePage: () => calls.push("close"),
-      startSession: () => calls.push("start"),
-      now: () => 27_000
-    });
-    const nativeRun = await executor.run({ button, group });
-    assert.equal(nativeRun.ok, true);
-    assert.equal(nativeRun.channel, "preflight", "native 分支分流不变");
-    assert.deepEqual(calls, ["open", "close"], "恒新建 → 导航 → 关页");
-  }
-
-  /* startSession 失败 → start-failed（零标记、零关页、toast） */
-  {
-    const hero = createPendingActionStore();
-    const calls = [];
-    const executor = createConstellationExecutor({
-      pending: hero,
-      floats: createFloatMarkerStore(),
-      standaloneServerChannel: true,
-      createSession: async () => "never",
-      openSession: () => calls.push("open"),
-      startSession: async () => {
-        throw new Error("host refused");
-      },
-      closePage: () => calls.push("close"),
-      notify: (text, isError) => calls.push({ kind: "notify", text, isError }),
-      now: () => 28_000
-    });
-    const failed = await executor.run({ button: { ...button, autoSend: true }, group });
-    assert.equal(failed.ok, false);
-    assert.equal(failed.reason, "start-failed");
-    assert.equal(failed.standalone, true, "失败结果同样注明通道口径");
-    assert.deepEqual(calls.map((call) => (typeof call === "string" ? call : call.kind)), ["notify"], "失败 toast、零关页");
-    assert.equal(hero.peek(), null, "失败不登记标记");
-  }
-
   /* 缺省关闭：autoSend 行为逐字不变（hero 通道 + 标记提交；零 startSession） */
   {
     const hero = createPendingActionStore();
@@ -329,11 +228,9 @@ const button = { name: "探索新需求", prompt: "请使用 /cosmos-explore 探
     });
     const auto = await executor.run({ button: { ...button, autoSend: true }, group });
     assert.equal(auto.channel, "hero", "缺省关闭 → 既有 hero 通道（行为逐字不变）");
-    assert.equal(auto.standalone, undefined, "无通道标记");
-    assert.deepEqual(calls, ["open"], "恒新建 → 导航（零 startSession）");
+        assert.deepEqual(calls, ["open"], "恒新建 → 导航（零 startSession）");
     assert.equal(hero.peek()?.submit, true, "既有提交意图登记不变");
   }
-}
 
 /* ── 4. 双通道标记隔离（spec 场景「标记互不误食」） ── */
 {
@@ -735,6 +632,280 @@ const button = { name: "探索新需求", prompt: "请使用 /cosmos-explore 探
   floats.arm({ message: "x" });
   assert.equal(heroNotified, 0, "浮窗 arm 不通知 hero 通道");
   assert.ok(typeof floats.subscribe === "function" && typeof floats.getVersion === "function", "store 订阅面齐备");
+}
+
+/* ── 12. 浮窗图片附件纯逻辑（p2-add-const-float-image-attach 1.2/2.x/4.x；spec
+   「浮窗图片附件」）：MIME 白名单本地复刻、剪贴板收集、attachFace 注入面与缺席形态、
+   intake 校验/铸造登记/拒绝释放、移除链路、发送三分、上传门控、观察终态判定。 ── */
+{
+  /* 12a. 白名单（宿主 isImageMediaType 四类本地复刻；bundle 纯洁性禁止跨插件 import）。 */
+  assert.deepEqual(
+    [...FLOAT_IMAGE_TYPES],
+    ["image/png", "image/jpeg", "image/webp", "image/gif"],
+    "白名单 = 四类栅格图（与宿主同源）"
+  );
+  assert.ok(Object.isFrozen(FLOAT_IMAGE_TYPES), "白名单冻结（防运行期改写）");
+  assert.equal(FLOAT_IMAGE_ACCEPT, "image/png,image/jpeg,image/webp,image/gif", "accept 值与白名单同源");
+  assert.equal(isFloatImageType("image/png"), true);
+  assert.equal(isFloatImageType("image/svg+xml"), false, "svg 不在白名单（宿主同口径）");
+  assert.equal(isFloatImageType(undefined), false, "非字符串 MIME → false");
+  assert.equal(FLOAT_ATTACH_WATCH_MS, 10000, "观察态看门狗 10s");
+
+  /* 12b. 剪贴板收集（多文件 / 无文件 / null 项 / 目录成员忽略 / jsdom 索引形状）。 */
+  const png = { name: "a.png", type: "image/png" };
+  const jpg = { name: "b.jpg", type: "image/jpeg" };
+  const pdf = { name: "c.pdf", type: "application/pdf" };
+  const item = (file, kind = "file") => ({ kind, getAsFile: () => file });
+  assert.deepEqual(
+    clipboardFilesOf({ items: [item(png), item(jpg)] }),
+    [png, jpg],
+    "多文件按剪贴板顺序收集"
+  );
+  assert.deepEqual(clipboardFilesOf({ items: [item(pdf)] }), [pdf], "非图片也先收集（白名单过滤在 intake 面）");
+  assert.deepEqual(clipboardFilesOf({ items: [item(null)] }), [], "getAsFile 返回 null → 跳过");
+  assert.deepEqual(clipboardFilesOf({ items: [item(png, "string")] }), [], "非 file 成员（文本）跳过");
+  assert.deepEqual(clipboardFilesOf({ items: [{ kind: "file" }] }), [], "缺 getAsFile → 跳过（形状防御）");
+  assert.deepEqual(clipboardFilesOf({ items: [] }), [], "空剪贴板 → 空");
+  assert.deepEqual(clipboardFilesOf(null), [], "无 clipboardData → 空（零异常）");
+  assert.deepEqual(clipboardFilesOf({}), [], "无 items → 空");
+  /* jsdom 的 DataTransferItemList 是「带 length 的索引对象」（非数组、无可迭代器）。 */
+  assert.deepEqual(
+    clipboardFilesOf({ items: { 0: item(png), 1: item(pdf), length: 2 } }),
+    [png, pdf],
+    "jsdom 索引形状逐索引读取"
+  );
+  /* 目录成员：与宿主差异（宿主用 webkitGetAsEntry 识别）——本能力忽略目录语义，仍按文件收。 */
+  assert.deepEqual(
+    clipboardFilesOf({ items: [{ kind: "file", getAsFile: () => png, webkitGetAsEntry: () => ({ isDirectory: true }) }] }),
+    [png],
+    "目录语义不在图片能力面内（成员按文件收集，由 MIME 过滤）"
+  );
+
+  /* 12c. intake 校验纯片段。 */
+  assert.deepEqual(floatImagesOf([png, pdf, jpg]), { images: [png, jpg], files: 3 }, "图片子集 + 批内文件计数");
+  assert.deepEqual(floatImagesOf([pdf]), { images: [], files: 1 }, "零图片批次（触发「仅支持添加图片」）");
+  assert.deepEqual(floatImagesOf([]), { images: [], files: 0 }, "空批次");
+  assert.deepEqual(floatImagesOf(null), { images: [], files: 0 }, "非数组 → 空批次");
+
+  /* 12d. attachFace：缺席形态（零噪音降级）。 */
+  {
+    const absent = createAttachFace();
+    assert.equal(absent.available, false, "服务不可达 → available=false");
+    assert.throws(() => absent.mint("s", [], true), /附件铸造不可用/, "缺席 mint 抛错（MUST NOT 静默成功/返回 null）");
+    assert.deepEqual(absent.resolve(["a"]), [], "缺席 resolve 恒空（rail 零布局）");
+    assert.doesNotThrow(() => absent.release("a"), "缺席 release = no-op（零抛错）");
+    assert.equal(absent.uploads.getSnapshot(), absent.uploads.getSnapshot(), "缺席上传快照引用稳定");
+    assert.equal(typeof absent.uploads.subscribe(() => {}), "function", "缺席上传订阅返回退订函数");
+    /* 动词漂移（缺一即降级——客户端 SHALL NOT 区分原因）。 */
+    assert.equal(createAttachFace({ service: () => ({ createDrafts: () => [] }) }).available, false, "仅 createDrafts → 降级");
+    assert.equal(
+      createAttachFace({
+        service: () => ({
+          createDrafts: () => [],
+          resolveDraftAttachments: () => [],
+          releaseDraftAttachment: () => {},
+          fileUploads: {}
+        })
+      }).available,
+      false,
+      "fileUploads 面不完整 → 降级"
+    );
+    /* 解析器抛错 → 视同缺席（零降级噪音）。 */
+    assert.equal(createAttachFace({ service: () => { throw new Error("boom"); } }).available, false, "解析器抛错 → 降级");
+  }
+
+  /* 12e. attachFace：可用形态（薄包装语义）。 */
+  {
+    const calls = [];
+    const drafts = [{ id: "d1", kind: "image" }, { id: "d2", kind: "image" }];
+    const service = {
+      createDrafts: (sessionId, files, uploadImages) => {
+        calls.push({ op: "mint", sessionId, files, uploadImages });
+        return drafts;
+      },
+      resolveDraftAttachments: (ids) => ids.map((id) => ({ id })),
+      releaseDraftAttachment: (id) => calls.push({ op: "release", id }),
+      fileUploads: { getSnapshot: () => ({ d1: { status: "uploading" } }), subscribe: () => () => {} }
+    };
+    const face = createAttachFace({
+      service: () => service,
+      uploads: { getSnapshot: () => service.fileUploads.getSnapshot(), subscribe: () => () => {} }
+    });
+    assert.equal(face.available, true, "四件齐备 → available=true");
+    assert.deepEqual(face.mint("s1", [png, jpg], true), { ids: ["d1", "d2"] }, "mint 返回有序 ids");
+    assert.deepEqual(calls[0], { op: "mint", sessionId: "s1", files: [png, jpg], uploadImages: true }, "createDrafts 形参透传");
+    assert.deepEqual(face.resolve(["d1"]), [{ id: "d1" }], "resolve 薄透传");
+    face.release("d1");
+    assert.deepEqual(calls.at(-1), { op: "release", id: "d1" }, "release 薄透传");
+    assert.deepEqual(face.uploads.getSnapshot(), { d1: { status: "uploading" } }, "uploads 取注入面快照");
+    /* 抛错薄透传（组件层 toast error.message；face MUST NOT 吞错）。 */
+    const broken = createAttachFace({
+      service: () => ({ ...service, createDrafts: () => { throw new Error("unsupported image media type: image/bmp"); } })
+    });
+    assert.throws(() => broken.mint("s1", [], true), /unsupported image media type/, "mint 抛错原样上抛");
+    /* 非对象/空 id 的草稿被过滤（防御脏返回值）。 */
+    assert.deepEqual(
+      createAttachFace({ service: () => ({ ...service, createDrafts: () => [null, {}, { id: "" }, { id: "ok" }] }) }).mint("s", [], true),
+      { ids: ["ok"] },
+      "非法草稿条目过滤"
+    );
+  }
+
+  /* 12f. intake 链路：登记成功 / busy 释放 / 铸造抛错 / 零图片 / 服务缺席。 */
+  {
+    const added = [];
+    const released = [];
+    const inputActions = {
+      addAttachments: (ids) => {
+        added.push(ids);
+        return true;
+      }
+    };
+    const face = createAttachFace({ service: () => ({ createDrafts: () => [{ id: "d1" }, { id: "d2" }] }), uploads: { getSnapshot: () => ({}), subscribe: () => () => {} } });
+    /* 该 face 因其余动词缺失而 available=false → 先构造完整服务。 */
+    assert.equal(face.available, false);
+    const service = {
+      createDrafts: () => [{ id: "d1" }, { id: "d2" }],
+      resolveDraftAttachments: () => [],
+      releaseDraftAttachment: (id) => released.push(id),
+      fileUploads: { getSnapshot: () => ({}), subscribe: () => () => {} }
+    };
+    const fullFace = createAttachFace({ service: () => service, uploads: { getSnapshot: () => ({}), subscribe: () => () => {} } });
+    assert.deepEqual(
+      intakeFloatImages({ face: fullFace, inputActions, sessionId: "s1", files: [png], uploadImages: true }),
+      { kind: "added", ids: ["d1", "d2"] },
+      "铸造 → addAttachments 登记成功"
+    );
+    assert.deepEqual(added, [["d1", "d2"]], "登记 ids 原样透传");
+    assert.deepEqual(released, [], "成功路径零释放");
+    /* busy 相位拒绝（addAttachments 返回 false）→ 释放已铸造草稿 + busy outcome。 */
+    const busyActions = { addAttachments: () => false };
+    assert.deepEqual(
+      intakeFloatImages({ face: fullFace, inputActions: busyActions, sessionId: "s1", files: [png] }),
+      { kind: "busy" },
+      "busy 拒绝 → 结构化 busied outcome"
+    );
+    assert.deepEqual(released, ["d1", "d2"], "busy 拒绝释放已铸造草稿（objectURL 回收/上传中止）");
+    /* 铸造抛错 → rejected 携带 error.message（组件 toast 原样文案）。 */
+    const throwing = createAttachFace({
+      service: () => ({ ...service, createDrafts: () => { throw new Error("unsupported image media type: image/bmp"); } }),
+      uploads: { getSnapshot: () => ({}), subscribe: () => () => {} }
+    });
+    assert.deepEqual(
+      intakeFloatImages({ face: throwing, inputActions, sessionId: "s1", files: [png] }),
+      { kind: "rejected", message: "unsupported image media type: image/bmp" },
+      "铸造抛错 → rejected（不吞错）"
+    );
+    /* 校验优先级：零图片批次 / 空批 / 服务缺席。 */
+    assert.deepEqual(
+      intakeFloatImages({ face: fullFace, inputActions, files: [pdf] }),
+      { kind: "image-only" },
+      "批内含文件但零图片 → image-only（toast「仅支持添加图片」）"
+    );
+    assert.deepEqual(
+      intakeFloatImages({ face: fullFace, inputActions, files: [] }),
+      { kind: "empty" },
+      "空批 → empty（零 toast）"
+    );
+    assert.deepEqual(
+      intakeFloatImages({ face: createAttachFace(), inputActions, files: [png] }),
+      { kind: "unavailable" },
+      "服务缺席 → unavailable（降级粘贴零噪音）"
+    );
+    /* uploadImages 缺省 true（浮窗目标恒普通会话）/ 显式 false 透传。 */
+    const captured = [];
+    const spyFace = createAttachFace({
+      service: () => ({ ...service, createDrafts: (sid, files, uploadImages) => { captured.push(uploadImages); return [{ id: "x" }]; } }),
+      uploads: { getSnapshot: () => ({}), subscribe: () => () => {} }
+    });
+    intakeFloatImages({ face: spyFace, inputActions, sessionId: "s", files: [png] });
+    intakeFloatImages({ face: spyFace, inputActions, sessionId: "s", files: [png], uploadImages: false });
+    assert.deepEqual(captured, [true, false], "uploadImages 缺省 true、可显式关闭");
+    /* 零残留（task 2.3）：intake 链路不写草稿、不动文本面——只经 addAttachments 入机器状态。 */
+    const draftWrites = [];
+    const residueActions = {
+      setDraft: (text) => draftWrites.push(text),
+      addAttachments: () => true,
+      submit: () => draftWrites.push("submit")
+    };
+    intakeFloatImages({ face: fullFace, inputActions: residueActions, sessionId: "s1", files: [png] });
+    assert.deepEqual(draftWrites, [], "intake 零草稿写入零提交（草稿文本与输入状态零残留）");
+  }
+
+  /* 12g. 移除链路：机器成功 → 释放；busy 拒绝 → 零释放。 */
+  {
+    const released = [];
+    const face = createAttachFace({ service: () => ({ releaseDraftAttachment: (id) => released.push(id) }) });
+    assert.equal(removeFloatAttachment({ face, inputActions: { removeAttachment: () => true }, id: "d1" }), true, "移除成功 → 释放");
+    assert.deepEqual(released, ["d1"], "释放顺序 = 机器移除之后");
+    assert.equal(removeFloatAttachment({ face, inputActions: { removeAttachment: () => false }, id: "d2" }), false, "busy 相位拒绝 → 失败");
+    assert.deepEqual(released, ["d1"], "拒绝时 MUST NOT 释放（机器仍持有该 id）");
+    assert.equal(removeFloatAttachment({ face, inputActions: { removeAttachment: () => undefined }, id: "d3" }), true, "void 返回按成功处理（InputActions 契约为 void）");
+    assert.equal(removeFloatAttachment({ face, inputActions: null, id: "d4" }), false, "输入面缺失 → false（零抛错）");
+    assert.equal(removeFloatAttachment({ face, inputActions: { removeAttachment: () => true }, id: "" }), false, "非法 id → false");
+  }
+
+  /* 12h. 发送三分（含空输入判据扩展）。 */
+  assert.equal(floatSendPlanOf({ draft: "", attachmentIds: [] }), "empty", "空文本 + 无附件 → empty（宿主 no-op）");
+  assert.equal(floatSendPlanOf({ draft: "   \n", attachmentIds: [] }), "empty", "仅空白字符 → empty");
+  assert.equal(floatSendPlanOf({ draft: "hi", attachmentIds: [] }), "text", "纯文本 → text（发送即关）");
+  assert.equal(floatSendPlanOf({ draft: "/goal x", attachmentIds: [] }), "command", "命令草稿 → command（既有链路）");
+  assert.equal(floatSendPlanOf({ draft: "/goal x", attachmentIds: ["a"] }), "command", "命令 + 附件 → command 优先（已知边界）");
+  assert.equal(floatSendPlanOf({ draft: "", attachmentIds: ["a"] }), "watch", "空文本 + 有附件 → watch（附件使输入非空）");
+  assert.equal(floatSendPlanOf({ draft: "hi", attachmentIds: ["a"] }), "watch", "文本 + 附件 → watch（结果感知关闭）");
+  assert.equal(floatSendPlanOf({}), "empty", "缺省参数防御");
+  assert.equal(floatSendPlanOf({ draft: 3, attachmentIds: null }), "empty", "非字符串/非数组 → 按空输入");
+
+  /* 12i. 上传门控（对齐原生 uploadsPending 口径）。 */
+  const image = (id) => ({ id, kind: "image" });
+  const file = (id) => ({ id, kind: "file" });
+  assert.equal(floatAttachmentsPendingOf([image("a")], { a: { status: "uploading" } }), true, "uploading → 待就绪");
+  assert.equal(floatAttachmentsPendingOf([image("a")], { a: { status: "error" } }), true, "error → 待就绪（失败也拦发送）");
+  assert.equal(floatAttachmentsPendingOf([image("a")], { a: { status: "ready", receiptId: "r" } }), false, "全部 ready → 解禁");
+  assert.equal(floatAttachmentsPendingOf([image("a")], {}), false, "图片无上传态 → 视为就绪（原生口径）");
+  assert.equal(floatAttachmentsPendingOf([file("a")], {}), true, "file 无上传态 → 未就绪（原生口径）");
+  assert.equal(floatAttachmentsPendingOf([image("a"), image("b")], { a: { status: "ready" }, b: { status: "uploading" } }), true, "任一非 ready → 拦");
+  assert.equal(floatAttachmentsPendingOf([], {}), false, "零附件 → 不拦");
+  assert.equal(floatAttachmentsPendingOf(null, null), false, "参数防御");
+
+  /* 12j. 观察态终态判定（成功 / 失败 / 在途）。 */
+  const baseline = null;
+  assert.deepEqual(floatWatchOutcomeOf({ phase: "sending", attachmentIds: ["a"], promptError: null, baseline }), { kind: "pending" }, "在途 → 继续观察");
+  assert.deepEqual(floatWatchOutcomeOf({ phase: "plain", attachmentIds: [], promptError: null, baseline }), { kind: "success" }, "附件清空 + plain → 成功终态");
+  const err1 = { op: "send", error: { code: "session/attachment-invalid", message: "too many images" } };
+  assert.deepEqual(
+    floatWatchOutcomeOf({ phase: "plain", attachmentIds: ["a"], promptError: err1, baseline }),
+    { kind: "failure", message: "too many images", code: "session/attachment-invalid" },
+    "plain + 新错误 → 失败终态（草稿与附件保留）"
+  );
+  assert.deepEqual(
+    floatWatchOutcomeOf({ phase: "plain", attachmentIds: ["a"], promptError: err1, baseline: err1 }),
+    { kind: "pending" },
+    "与武装基线同一错误对象 → 非新错误（继续观察）"
+  );
+  const err2 = { op: "send", error: { code: "session/attachment-invalid", message: "too many images" } };
+  assert.equal(
+    floatWatchOutcomeOf({ phase: "plain", attachmentIds: ["a"], promptError: err2, baseline: err1 }).kind,
+    "failure",
+    "同文案新错误实例（引用不同）→ 仍是新错误"
+  );
+  assert.deepEqual(
+    floatWatchOutcomeOf({ phase: "plain", attachmentIds: ["a"], promptError: { op: "send" }, baseline }),
+    { kind: "pending" },
+    "promptError 形状不含 error → 不误判失败"
+  );
+  assert.deepEqual(
+    floatWatchOutcomeOf({ phase: "plain", attachmentIds: ["a"], promptError: null, baseline: err1 }),
+    { kind: "pending" },
+    "基线有错、当前清空（成功提交清错）且附件仍在 → 继续观察"
+  );
+  assert.deepEqual(floatWatchOutcomeOf({}), { kind: "success" }, "缺省（plain + 零附件）→ 成功");
+  /* 失败文案（spec：{message}（{code}））。 */
+  assert.equal(promptFailureTextOf({ message: "too many images", code: "session/attachment-invalid" }), "too many images（session/attachment-invalid）", "message（code）");
+  assert.equal(promptFailureTextOf({ message: "boom", code: "" }), "boom", "无错误码 → 仅 message");
+  assert.equal(promptFailureTextOf({ message: "", code: "e/code" }), "e/code", "无 message → 仅 code");
+  assert.equal(promptFailureTextOf({ message: "", code: "" }), "", "两者皆空 → 空串（调用方回落文案）");
+  assert.equal(promptFailureTextOf(null), "", "null 防御");
 }
 
 console.log("constellation-actions-smoke: all assertions passed");

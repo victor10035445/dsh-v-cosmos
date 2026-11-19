@@ -38,7 +38,7 @@ import {
   TAU, clamp, lerp, easeOutK, mix, hexA, hashSeed, hashRand,
   makeGlowCache, trailStroke, sessColor, mixFade, viewKOf, birthAlphaOf, segAlphaOf,
   dustBornK, satBornKOf, createVesselGuard, vesselAnchor,
-  makeDustSprite, dustBatchDraw
+  makeDustSprite, dustBatchDraw, patDotDraw
 } from '../skin-kit.mjs';
 
 /* ── 荧光探针常数（demo 血统：DAPI 蓝 / GFP 绿 / mCherry 暖红 三通道） ── */
@@ -376,6 +376,14 @@ export function createSkinFluoro() {
           }
           ctx.globalAlpha = 1;
         });
+        return;
+      }
+
+      if (it.kind === 'patdot') {
+        /* 空槽装饰点（add-cosmos-template-figure-display 3.2）：微管顶点微点——
+           取膜青、基线 0.22（= 本皮肤微管基线），点弱化因子由引擎下发；
+           纯装饰（不进 picks / 无 hover / 无名牌）。 */
+        patDotDraw(ctx, it, MEMBRANE, 0.22);
         return;
       }
 

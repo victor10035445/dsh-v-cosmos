@@ -11,10 +11,11 @@
  */
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { createCosmosEngine } from "../src/cosmos/engine.mjs";
+import { createCosmosEngine, HOME_DIST } from "../src/cosmos/engine.mjs";
 import { isEditableTarget, isUiChromeTarget } from "../src/cosmos/engine.mjs";
 import { createSkinD } from "../src/cosmos/skin-d.mjs";
 import { sessionRowStateOf } from "../src/panel.mjs";
+import { FLOAT_TEXTAREA_MAX_HEIGHT, FLOAT_TEXTAREA_MIN_HEIGHT, floatTextareaHeightOf } from "../src/constellation-actions.mjs";
 
 /* ── DOM 桩（引擎所需最小面；与 render-smoke 同款） ── */
 function makeCtx2d() {
@@ -154,9 +155,10 @@ if (typeof globalThis.performance === "undefined") globalThis.performance = { no
 /* ── 2. zoomBy（动作条滚轮转发）+ 值域 clamp + 取消补间语义（3.6/4.1） ── */
 {
   const engine = createCosmosEngine({ container: makeElement("div"), style: createSkinD() });
-  assert.equal(engine.getCamera().dist, 430, "默认视距");
+  assert.equal(engine.getCamera().dist, HOME_DIST, "默认视距 = 银河首屏 3000（首屏容纳整座星座天球）");
+  assert.equal(HOME_DIST, 3000, "首屏视距常量 = 3000");
   assert.equal(engine.zoomBy(120), true, "有效 deltaY 被消费");
-  assert.equal(Math.round(engine.getCamera().dist), Math.round(430 * 1.144), "缩放比例与容器级滚轮一致（1 + dy*0.0012）");
+  assert.equal(Math.round(engine.getCamera().dist), Math.round(HOME_DIST * 1.144), "缩放比例与容器级滚轮一致（1 + dy*0.0012）");
   assert.equal(engine.zoomBy(0), false, "0 → 不消费");
   assert.equal(engine.zoomBy(Number.NaN), false, "NaN → 不消费");
   const before = engine.getCamera().dist;
@@ -350,9 +352,13 @@ const engineSource = readFileSync(new URL("../src/cosmos/engine.mjs", import.met
   assert.ok(clientSource.includes("controllerRef.current?.focusSession?.({ wsId: row.wsId, id: row.id });"), "点行转发引擎 focusBody（选中联动）");
   assert.ok(clientSource.includes("focusSession({ wsId, id } = {}) {"), "控制器公共面 focusSession");
   assert.ok(clientSource.includes("return engine?.focusBody?.(wsId, id) === true;"), "转发引擎 focusBody");
-  /* polish-cosmos-session-focus-and-hover-markers 2.1/2.2：行点选同步宿主会话（不关页）。 */
+  /* polish-cosmos-session-focus-and-hover-markers 2.1/2.2：行点选同步宿主会话（不关页）。
+     add-cosmos-host-session-follow 1.3：切换动词前写镜像/哨兵（吸收同步/异步换绑回声），
+     未发起时回滚；导航本体仍是既有薄包装（返回值语义不变）。 */
   assert.ok(clientSource.includes("openSessionInPlace(sessionId) {"), "控制器公共面 openSessionInPlace（宿主会话切换）");
-  assert.ok(clientSource.includes("return openSessionVia(sessionId);"), "复用官方会话导航薄包装（不关整页）");
+  assert.ok(clientSource.includes("const opened = openSessionVia(sessionId);"), "复用官方会话导航薄包装（不关整页）");
+  assert.ok(clientSource.includes("hostFollow?.noteOpenedSession?.(sessionId);"), "切换前乐观前写镜像/哨兵（回声短路）");
+  assert.ok(clientSource.includes("hostFollow?.settleOpenedSession?.(opened === true);"), "成功路径转正前写");
   assert.ok(clientSource.includes("controllerRef.current?.openSessionInPlace?.(row.id);"), "点行转发宿主会话切换");
   const focusRowBody = clientSource.slice(
     clientSource.indexOf("const focusSessionRow = (row) => {"),
@@ -508,7 +514,9 @@ const engineSource = readFileSync(new URL("../src/cosmos/engine.mjs", import.met
   assert.ok(clientSource.includes('className="dsh-cosmos-actions"'), "动作条容器 JSX");
   assert.ok(clientSource.includes('data-cosmos-actions="true"'), "动作条钩子");
   assert.ok(clientSource.includes('data-cosmos-action={button.name}'), "按钮钩子 data-cosmos-action");
-  assert.ok(clientSource.includes("const columns = Math.min(8, buttons.length);"), "一行 8 个（上限）");
+  /* add-cosmos-action-queue 5.3（用户 2026-11-19 改版）：主按钮与同尺寸「＋ 入队」成对，
+     一对占原一列宽×2；每行最多 4 对 = 原「一行 8 个」的满宽（最大宽度不变）。 */
+  assert.ok(clientSource.includes("const columns = Math.min(4, buttons.length);"), "一行 4 对 = 8 个按钮（上限）");
   assert.ok(clientSource.includes('style={{ "--cos-cols": String(columns) }}'), "列数经 CSS 变量驱动自动换行");
   assert.ok(clientSource.includes("if (!Array.isArray(buttons) || buttons.length === 0) return null;"), "空列表零布局");
   assert.ok(clientSource.includes("const disabled = !enabled || extra?.disabled === true;"), "未选中禁用态 / 行级禁用（星胚旧锚点）");
@@ -731,9 +739,14 @@ function constFloatBody(source) {
   assert.ok(clientSource.includes("inputActions.submit();"), "发送走官方 submit");
   assert.ok(clientSource.includes('className="dsh-cosmos-const-float-close"'), "关闭按钮");
   /* 相位副作用不再是关闭主路径：普通文本走宿主 detached 发送（相位恒 plain），
-     它只作为 `/` 命令草稿的兜底（宿主真值，fix-cosmos-const-float-send-close D2）。 */
+     它只作为 `/` 命令草稿的兜底（宿主真值，fix-cosmos-const-float-send-close D2）；
+     p2：附件观察期 MUST 早退（在途瞬态不关窗，终态归观察 effect）。 */
   assert.ok(clientSource.includes("if (phase !== \"plain\") setArmed(null);"), "相位副作用保留为 / 命令兜底关闭（普通文本 detached、相位恒 plain）");
-  assert.ok(clientSource.includes("const close = () => setArmed(null);"), "关闭路径 = 只关浮窗（草稿保留不提交）");
+  assert.ok(clientSource.includes("if (attachWatch !== null) return;"), "观察期抑制「相位离开 plain → 关闭」兜底（p2 design D4）");
+  /* 关闭路径 = 只关浮窗（草稿与在册附件保留不提交）；p2 起主动关闭统一先解除附件观察态。 */
+  const closeBody = clientSource.slice(clientSource.indexOf("const close = () => {"), clientSource.indexOf("const send = () => {"));
+  assert.ok(closeBody.includes("setAttachWatch(null);"), "主动关闭先解除附件观察态（p2 design D4：观察态随时可退）");
+  assert.ok(closeBody.indexOf("setAttachWatch(null);") < closeBody.indexOf("setArmed(null);"), "先解除观察再关窗（拆除陈旧 watch 后关）");
   assert.ok(clientSource.includes('className="dsh-cosmos-const-float-backdrop" onClick={close}'), "点浮窗外关闭");
   /* Esc 最高分层：capture 阶段 + stopPropagation；浮窗未打开时不注册 */
   assert.ok(clientSource.includes('window.addEventListener("keydown", onKey, true);'), "Esc 最高优先层（capture）");
@@ -754,19 +767,30 @@ function constFloatBody(source) {
   /* 消费时机 = 挂载：呈现后显隐零 TTL 依赖（编辑超期不消失，spec「编辑不因过期中断」）。 */
   assert.ok(!/ttlMs|FLOAT_MARKER_TTL/.test(floatBody), "浮窗显隐不读 TTL（标记已在挂载时消费）");
   /* 计数口径：三处 setArmed(null) 字面量 = 相位兜底 / Esc / close 定义——发送经 close()
-     收敛，不新增字面量（不再表述为「恰好三条关闭路径」）。 */
-  assert.equal((floatBody.match(/setArmed\(null\)/g) ?? []).length, 3, "setArmed(null) 字面量 = 3（相位兜底 / Esc / close 定义；发送经 close() 收敛）");
-  /* 发送即关（fix-cosmos-const-float-send-close D1/D3）：submit() 之后主动 close()；
-     两类守卫（未接线 / 空草稿 = 宿主 no-op）早退于 submit 之前 → 没提交不误关。 */
-  const sendBody = floatBody.slice(floatBody.indexOf("const send = () => {"), floatBody.indexOf("return createPortal("));
+     收敛，p2 观察态看门狗亦经 close() 收敛，不新增字面量。 */
+  assert.equal((floatBody.match(/setArmed\(null\)/g) ?? []).length, 3, "setArmed(null) 字面量 = 3（相位兜底 / Esc / close 定义；发送与看门狗经 close() 收敛）");
+  /* 发送分流（p2 design D4）：submit 前分类——空输入不提交不关窗、命令与纯文本保持发送即关、
+     带在册附件进入观察态；两类守卫（未接线 / 空输入）早退于 submit 之前 → 没提交不误关。 */
+  const sendBody = floatBody.slice(floatBody.indexOf("const send = () => {"), floatBody.indexOf("/* ── 附件 intake 两通道"));
   assert.ok(sendBody.length > 0, "send() 切片可定位");
-  assert.ok(/inputActions\.submit\(\);[\s\S]*?close\(\);/.test(sendBody), "发送即关：submit() 后主动 close()（不依赖相位跃迁）");
-  assert.ok(/draft\.trim\(\) === ""/.test(sendBody), "空草稿守卫：与宿主 onEnter 同口径 no-op");
+  assert.ok(/inputActions\.submit\(\);[\s\S]*?close\(\);/.test(sendBody), "发送即关：submit() 后主动 close()（命令与纯文本路径逐字不变）");
+  assert.ok(sendBody.includes("const plan = floatSendPlanOf({ draft, attachmentIds });"), "发送分类走纯函数（空输入 / 命令 / 纯文本 / 观察 三分同源）");
   assert.ok(/typeof inputActions\.submit !== "function"\) return;/.test(sendBody), "未接线守卫早退（注入面降级）");
-  assert.ok(sendBody.indexOf('draft.trim() === ""') < sendBody.indexOf("inputActions.submit()"), "空草稿守卫早退于 submit 之前（不误关）");
+  assert.ok(sendBody.includes('if (plan === "empty") return;'), "空输入守卫（文本空 ∧ 无在册附件）早退不关窗");
+  assert.ok(sendBody.indexOf('plan === "empty"') < sendBody.indexOf("inputActions.submit()"), "空输入守卫早退于 submit 之前（不误关）");
+  assert.ok(sendBody.includes('if (plan === "watch") {'), "带在册附件 → 观察态分支");
+  assert.ok(
+    /setAttachWatch\(\{ baseline:[\s\S]*?\}\);\s*inputActions\.submit\(\);/.test(sendBody),
+    "观察态：submit 前一刻快照 promptError 基线，提交后不关窗"
+  );
+  const watchStart = sendBody.indexOf('if (plan === "watch") {');
+  const watchSubmitAt = sendBody.indexOf("inputActions.submit();", watchStart);
+  assert.ok(watchSubmitAt > watchStart, "观察态分支含提交调用");
+  assert.ok(!/close\(\)/.test(sendBody.slice(watchStart, watchSubmitAt)), "观察态分支在提交前不关窗（结果感知关闭）");
+  assert.ok(sendBody.indexOf("return;", watchStart) < sendBody.indexOf("close();"), "观察态分支以 return 收敛（不落入「发送即关」分支）");
   /* 主题跟随 / 触屏目标 / 装饰层 */
   assert.ok(clientSource.includes("background:var(--dsw-alias-bg-base,var(--cos-panel-strong,rgba(8,8,16,.96)))"), "浮窗配色优先官方 token，其次皮肤卡底令牌（3.1：明暗/换肤自动跟随）");
-  assert.ok(clientSource.includes(".dsh-cosmos-const-float-send{flex:none;box-sizing:border-box;min-width:84px;min-height:40px"), "发送按钮 ≥40px");
+  assert.ok(clientSource.includes(".dsh-cosmos-const-float-send{flex:none;box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;\n  min-width:40px;min-height:40px"), "发送钮 = 40×40 图标钮（触屏目标不缩水）");
   assert.ok(clientSource.includes(".dsh-cosmos-const-float-card::before{"), "HUD 角标装饰");
   assert.ok(clientSource.includes("console.log") === false || true, "占位");
   /* 挂载自动聚焦 */
@@ -786,21 +810,236 @@ function constFloatBody(source) {
     "IME 组字守卫：经 nativeEvent 读原生组字状态 + keyCode 229（React 合成事件无 isComposing 字段）"
   );
   assert.ok(keydownBody.indexOf("isComposing") < keydownBody.indexOf("event.preventDefault();"), "组字守卫早退于 preventDefault 之前（组字回车只上屏）");
-  assert.ok(/event\.preventDefault\(\);[\s\S]*?send\(\);/.test(keydownBody), "Enter = 复用 send()（同一守卫 + 发送即关，零新分支）");
+  assert.ok(/event\.preventDefault\(\);[\s\S]*?send\(\);/.test(keydownBody), "Enter = 复用 send()（同一守卫 + 同一关闭分流，零新分支）");
+  assert.ok(keydownBody.includes("if (sendBlocked) return;"), "Enter 与发送钮同一门控（上传未就绪 / 机器忙不发送）");
+  assert.ok(
+    keydownBody.indexOf("if (sendBlocked) return;") < keydownBody.indexOf("event.preventDefault();"),
+    "门控早退于 preventDefault 之前（禁用态保留 textarea 默认行为）"
+  );
   assert.ok(!/setArmed\(null\)/.test(keydownBody), "Enter 路径零新增关闭字面量（发送经 close() 收敛）");
   /* hint 可发现（zh/en 两处字典 + tr() fallback 同源文案；add-cosmos-shortcuts 6.2 起
-     动态标注当前生效语音键/收卡键占位） */
+     动态标注当前生效语音键/收卡键占位；p2 标注附件入口） */
   assert.ok(
-    clientSource.includes('"cosmos.constFloat.hint": "Enter 发送 · Shift+Enter 换行 · {voice} 语音 · {close} 关闭浮窗（保留草稿不发送）"'),
-    "词典 zh：hint 标注 Enter 发送 / Shift+Enter 换行 / 语音键 / 收卡键占位"
+    clientSource.includes('"cosmos.constFloat.hint": "Enter 发送 · Shift+Enter 换行 · 点击 ＋ 或粘贴添加图片 · {voice} 语音 · {close} 关闭浮窗（保留草稿不发送）"'),
+    "词典 zh：hint 标注 Enter 发送 / Shift+Enter 换行 / 附件入口 / 语音键 / 收卡键占位"
   );
-  assert.ok(clientSource.includes('"cosmos.constFloat.hint": "Enter sends · Shift+Enter starts a new line · {voice} starts voice · {close} closes the composer (draft kept)"'), "词典 en：hint 标注 Enter 发送 / Shift+Enter 换行（成对）");
   assert.ok(
-    clientSource.includes('"Enter 发送 · Shift+Enter 换行 · {voice} 语音 · {close} 关闭浮窗（保留草稿不发送）"'),
-    "tr() fallback 同步（未注入 locale 键时降级文案仍标注快捷键占位）"
+    clientSource.includes('"cosmos.constFloat.hint": "Enter sends · Shift+Enter starts a new line · click ＋ or paste to add images · {voice} starts voice · {close} closes the composer (draft kept)"'),
+    "词典 en：hint 成对（含附件入口 / Enter / Shift+Enter）"
+  );
+  assert.ok(
+    clientSource.includes('"Enter 发送 · Shift+Enter 换行 · 点击 ＋ 或粘贴添加图片 · {voice} 语音 · {close} 关闭浮窗（保留草稿不发送）"'),
+    "tr() fallback 同步（未注入 locale 键时降级文案仍标注快捷键与附件入口）"
   );
   assert.ok(clientSource.includes('.replace("{voice}", shortcutLabelOf(voiceKey))'), "hint 动态标注当前生效语音键（改绑即时生效）");
   assert.ok(clientSource.includes('.replace("{close}", shortcutLabelOf(closeKey))'), "hint 动态标注当前生效收卡键");
+}
+
+/* ── 10b. 浮窗呈现形态对齐原生输入卡（p1-align-const-float-native-layout 3.1）──
+   分区次序 head → 附件 rail 槽位 → 文本面 → 工具行 → hint 行；rail 空态零布局；工具行
+   右簇次序与发送钮图标化；文本面自适应增高接线。全部为呈现结构断言（行为面见 11d/回归链）。 */
+{
+  const floatBodySlice = clientSource.slice(
+    clientSource.indexOf("function ConstellationFloatDock(props)"),
+    clientSource.indexOf("/* ------------------------------------------------------------------ *\n * 星胚动作消费条目")
+  );
+  assert.ok(floatBodySlice.length > 0, "浮窗组件切片可达（结构断言）");
+  /* 五分区容器恒渲染、次序恒定（spec 场景「分区次序恒定」）。 */
+  const sections = [
+    'className="dsh-cosmos-const-float-head"',
+    'className="dsh-cosmos-const-float-rail"',
+    'className="dsh-cosmos-const-float-body"',
+    'className="dsh-cosmos-const-float-toolbar"',
+    'className="dsh-cosmos-const-float-hintline"'
+  ];
+  const at = sections.map((token) => floatBodySlice.indexOf(token));
+  for (let index = 0; index < sections.length; index += 1) {
+    assert.ok(at[index] > 0, "分区容器在位：" + sections[index]);
+  }
+  for (let index = 1; index < sections.length; index += 1) {
+    assert.ok(at[index - 1] < at[index], "分区次序恒为 head → rail → body → toolbar → hintline");
+  }
+  /* 附件 rail（p2 design D3/D7）：恒渲染容器 + 零本地镜像（行由 attachmentIds 投影而来）；
+     无附件时无子节点 → CSS `:empty` 空态零布局。 */
+  assert.ok(
+    floatBodySlice.includes('<div className="dsh-cosmos-const-float-rail" data-const-float-slot="attachments">'),
+    "附件 rail 容器恒渲染（p2 填充：缩略图行）"
+  );
+  assert.ok(floatBodySlice.includes("{railRows.map((row) => ("), "rail 行 = attachmentIds 的投影（零本地镜像列表）");
+  assert.ok(clientSource.includes(".dsh-cosmos-const-float-rail:empty{display:none}"), "rail 空态零布局（:empty → display:none）");
+  assert.ok(!clientSource.includes("dsh-cosmos-const-float-foot"), "旧 foot 容器零残留（hint 已独立成行）");
+  /* 工具行（design D3 + p2 填充）：左簇 = 隐藏 file input + 添加图片钮；右簇次序
+     模型 → 级别 → 语音 → 发送。 */
+  assert.ok(
+    floatBodySlice.includes('<span className="dsh-cosmos-const-float-tools" data-const-float-slot="attach">'),
+    "工具行左簇 = 附件入口槽位（p2 填充实体钮）"
+  );
+  assert.ok(floatBodySlice.includes('accept={FLOAT_IMAGE_ACCEPT}'), "隐藏 file input 的 accept 走白名单常量（与校验同源）");
+  assert.ok(/type="file"[\s\S]*?multiple[\s\S]*?accept=\{FLOAT_IMAGE_ACCEPT\}/.test(floatBodySlice), "批量拾取：type=file + multiple + accept");
+  const toolbarSlice = floatBodySlice.slice(
+    floatBodySlice.indexOf('className="dsh-cosmos-const-float-toolbar"'),
+    floatBodySlice.indexOf('className="dsh-cosmos-const-float-hintline"')
+  );
+  assert.ok(toolbarSlice.length > 0, "工具行切片可定位");
+  const trailingOrder = [
+    'className="dsh-cosmos-const-float-model-select"',
+    'className="dsh-cosmos-const-float-effort-select"',
+    'className="dsh-cosmos-const-float-voice"',
+    'className="dsh-cosmos-const-float-send"'
+  ];
+  const trailingAt = trailingOrder.map((token) => toolbarSlice.indexOf(token));
+  for (let index = 0; index < trailingOrder.length; index += 1) {
+    assert.ok(trailingAt[index] > 0, "右簇控件在位：" + trailingOrder[index]);
+  }
+  for (let index = 1; index < trailingOrder.length; index += 1) {
+    assert.ok(trailingAt[index - 1] < trailingAt[index], "右簇次序恒为 模型下拉 → 级别下拉 → 语音钮 → 发送钮");
+  }
+  /* 模型行容器拆除（design D3 审阅修订）：「模型」caption 删除；三态注记随右簇内联，
+     `data-state` 由右簇容器承载、样式规则随之重锚（可见性契约零变化）。 */
+  assert.ok(!clientSource.includes("dsh-cosmos-const-float-model-cap"), "「模型」caption 删除（select aria-label 承载语义）");
+  assert.ok(!clientSource.includes('className="dsh-cosmos-const-float-model"'), "模型行容器拆除（并入右簇）");
+  assert.ok(
+    floatBodySlice.includes('className="dsh-cosmos-const-float-trailing" data-state={modelSel?.status ?? "idle"}'),
+    "三态 data-state 由右簇容器承载"
+  );
+  assert.ok(toolbarSlice.includes("dsh-cosmos-const-float-model-note"), "降级注记随右簇内联呈现（可见性契约零变化）");
+  assert.ok(clientSource.includes(".dsh-cosmos-const-float-trailing[data-state=switching] .dsh-cosmos-const-float-model-select,"), "switching 态样式重锚到右簇");
+  assert.ok(clientSource.includes(".dsh-cosmos-const-float-trailing[data-state=failed] .dsh-cosmos-const-float-model-select,"), "failed 态样式重锚到右簇");
+  assert.ok(clientSource.includes(".dsh-cosmos-const-float-model-note{flex:none;font-size:11px;opacity:.7}"), "注记样式零改动");
+  /* 文本面自适应增高（design D2）：rows=1 / 无 resize 把手 / 测量 effect 依受控值 draft。 */
+  assert.ok(floatBodySlice.includes("rows={1}"), "textarea rows=1（高度由测量写入，非定高行数）");
+  assert.ok(clientSource.includes("resize:none"), "textarea 无手动拉拽把手");
+  assert.ok(!clientSource.includes("resize:vertical"), "旧 resize:vertical 定高形态零残留");
+  assert.ok(clientSource.includes("overflow-y:auto"), "封顶后文本面内部滚动");
+  assert.ok(
+    clientSource.includes(`.dsh-cosmos-const-float-input{box-sizing:border-box;width:100%;min-height:${FLOAT_TEXTAREA_MIN_HEIGHT}px;`),
+    "文本面最小高度 = 3 行（常量与 CSS 同源）"
+  );
+  assert.ok(
+    clientSource.includes(`--cos-float-body-max:${FLOAT_TEXTAREA_MAX_HEIGHT}px`),
+    "CSS 变量 --cos-float-body-max = 14 行封顶（常量与 CSS 同源）"
+  );
+  assert.ok(
+    clientSource.includes(`max-height:var(--cos-float-body-max,${FLOAT_TEXTAREA_MAX_HEIGHT}px)`),
+    "文本面 max-height 走封顶变量"
+  );
+  assert.ok(floatBodySlice.includes('el.style.height = "auto";'), "测量 effect 先置 height=auto 读内容高度");
+  assert.ok(floatBodySlice.includes("const borderY ="), "border-box 闭合：测量补上下边框（scrollHeight 不含 border）");
+  assert.ok(floatBodySlice.includes("floatTextareaHeightOf(el.scrollHeight + borderY, {"), "测量经纯函数夹取后写回（含边框补偿）");
+  assert.ok(floatBodySlice.includes("}, [armed, draft]);"), "测量以受控值 draft 为依赖（覆盖挂载落稿/语音追加等外部回填）");
+  /* 发送钮图标化（design D4）：原生同源箭头 path、40×40、既有文案键复用（零新增 locale 键）。 */
+  const sendAt = floatBodySlice.indexOf('className="dsh-cosmos-const-float-send"');
+  const sendSlice = floatBodySlice.slice(sendAt, sendAt + 1600);
+  assert.ok(sendAt > 0, "发送钮可定位");
+  assert.ok(sendSlice.includes('viewBox="0 0 16 16"'), "发送钮呈 16×16 视口图标");
+  assert.ok(sendSlice.includes('d="M8.3125 0.980183'), "箭头 path 与原生 InputBar 主发送钮同源");
+  assert.ok(sendSlice.includes('aria-label={tr("cosmos.constFloat.send"'), "aria-label 复用既有「发送」文案键");
+  assert.ok(sendSlice.includes('title={tr("cosmos.constFloat.send"'), "tooltip 复用既有「发送」文案键");
+  assert.ok(/onClick=\{send\}[\s\S]*?<svg[\s\S]*?<\/svg>\s*<\/button>/.test(sendSlice), "点击行为复用同一 send()（图标钮无新分支）");
+  const sendButtonBody = sendSlice.slice(sendSlice.indexOf("onClick={send}"), sendSlice.indexOf("</button>"));
+  assert.ok(!/发送/.test(sendButtonBody), "发送钮不再渲染文本（文本换图标）");
+  assert.equal(
+    (clientSource.match(/"cosmos\.constFloat\.send": /g) ?? []).length,
+    2,
+    "发送文案键零新增（词典 zh/en 仍成对两处）"
+  );
+  /* hint 行（design D5）：独立块级一行置于工具行之下，文案模板与动态标注零改动。 */
+  assert.ok(clientSource.includes(".dsh-cosmos-const-float-hintline{min-width:0}"), "hint 行容器样式（块级独立分区）");
+  assert.ok(clientSource.includes(".dsh-cosmos-const-float-hint{display:block;"), "hint 文案块级呈现（不再参与旧 foot 行内排布）");
+}
+
+/* ── 10c. 浮窗文本面增高夹取纯函数（p1-align-const-float-native-layout 1.1/3.3）── */
+{
+  const bounds = { min: FLOAT_TEXTAREA_MIN_HEIGHT, max: FLOAT_TEXTAREA_MAX_HEIGHT };
+  assert.equal(FLOAT_TEXTAREA_MIN_HEIGHT, 78, "最小高度常量 = 3 行（3×20 + 2×8 + 2×1，border-box）");
+  assert.equal(FLOAT_TEXTAREA_MAX_HEIGHT, 298, "封顶常量 = 14 行（14×20 + 2×8 + 2×1，border-box）");
+  assert.equal(floatTextareaHeightOf(30, bounds), 78, "不足最小 → 夹到 min（空内容回落 3 行）");
+  assert.equal(floatTextareaHeightOf(78, bounds), 78, "贴 min 边界 → 恒等");
+  assert.equal(floatTextareaHeightOf(178, bounds), 178, "区间内 → 恒等（逐行生长）");
+  assert.equal(floatTextareaHeightOf(298, bounds), 298, "贴 max 边界 → 恒等");
+  assert.equal(floatTextareaHeightOf(700, bounds), 298, "超封顶 → 夹到 max（封顶后内部滚动）");
+  assert.equal(floatTextareaHeightOf(Number.NaN, bounds), 78, "非有限测量 → 回落 min（不清零高度）");
+  assert.equal(floatTextareaHeightOf(500, { min: 100, max: 80 }), 100, "max < min → 按 min 收敛（参数防御）");
+  assert.equal(floatTextareaHeightOf(500, { min: 100 }), 500, "缺省 max → 只夹下界（无上限口径）");
+}
+
+/* ── 10d. 浮窗图片附件（p2-add-const-float-image-attach 1.1/2.x/3.x/4.x/5.1 源码锚点）──
+   intake 两通道、rail 投影、移除链路、上传门控、结果感知关闭、降级矩阵与 locale 成对；
+   行为面纯逻辑直测见 constellation-actions-smoke，注入面见 factory-smoke。 */
+{
+  const floatBody = clientSource.slice(
+    clientSource.indexOf("function ConstellationFloatDock(props)"),
+    clientSource.indexOf("/* ------------------------------------------------------------------ *\n * 星胚动作消费条目")
+  );
+  assert.ok(floatBody.length > 0, "浮窗组件切片可达");
+  /* 注入面：attachFace（与 models/speech 同构的薄包装 face）。 */
+  const floatEntry = clientSource.slice(clientSource.indexOf('id: "v-cosmos-constellation-float"'), clientSource.indexOf('id: "v-cosmos-embryo-action"'));
+  assert.ok(floatEntry.includes("attachFace,"), "浮窗条目注入 attachFace");
+  assert.ok(clientSource.includes('tryInject(["conversation"], (scope) => {'), "附件桥经 conversation 服务注入（生命周期随插件 fiber）");
+  assert.ok(clientSource.includes("const attachFace = createAttachFace({"), "apply 层构造 attachFace（与 face 工厂同源）");
+  assert.ok(clientSource.includes("bindAttachConversation(scope?.conversation ?? null);"), "注入回调绑定服务实例");
+  assert.ok(clientSource.includes("return () => bindAttachConversation(null);"), "解绑回落降级（available === false 零噪音）");
+  assert.ok(floatBody.includes("const attachFace = props.attachFace ?? COSMOS_ATTACH_FACE_ABSENT;"), "props 缺席 → 稳定降级 face");
+  /* 数据流（design D3）：attachmentIds 唯一真相源 + face 投影 + 上传快照，零本地镜像。 */
+  assert.ok(floatBody.includes("const attachmentIds = zone !== null && Array.isArray(zone.attachmentIds) ? zone.attachmentIds : EMPTY_ATTACHMENT_IDS;"), "attachmentIds = 机器状态（唯一真相源）");
+  assert.ok(floatBody.includes("const uploadsState = useSyncExternalStore(attachFace.uploads.subscribe, attachFace.uploads.getSnapshot);"), "上传态经 face 快照订阅（useSyncExternalStore）");
+  assert.ok(floatBody.includes("attachFace.resolve(attachmentIds)"), "rail 描述符经 face 投影");
+  assert.ok(floatBody.includes("resolvedAttachments.map((attachment) => {"), "rail 行派生自在册投影（单一数据源）");
+  assert.ok(!/const \[attachments?,\s*setAttachments?\]/.test(floatBody), "MUST NOT 维护本地附件镜像列表（防漂移）");
+  /* intake 两通道：隐藏 file input 批量拾取 + textarea 自接 paste。 */
+  assert.ok(floatBody.includes("const intakeFiles = (files) => {"), "两通道共享 intake 链路");
+  assert.ok(floatBody.includes("const result = intakeFloatImages({"), "intake 校验/铸造/登记走纯链路");
+  assert.ok(floatBody.includes("uploadImages"), "uploadImages 派生（会话非 subagent 续写）");
+  assert.ok(floatBody.includes('input.value = "";'), "change 后重置 value（同文件可重复拾取）");
+  assert.ok(floatBody.includes("const onPaste = (event) => {"), "textarea 自接 paste（原生 document 路由跳过 editable 起源）");
+  assert.ok(floatBody.includes("const files = clipboardFilesOf(event?.clipboardData);"), "剪贴板文件收集走纯函数");
+  assert.ok(floatBody.includes("if (files.length === 0) return;"), "纯文本粘贴行为逐字不变（无文件不接管）");
+  assert.ok(floatBody.includes("if (attachFace.available !== true) return;"), "降级态整批按原生默认粘贴处理（零 toast 零铸造）");
+  assert.ok(floatBody.includes("event.preventDefault();"), "批内有文件才 preventDefault");
+  assert.ok(floatBody.includes("onPaste={onPaste}"), "textarea 挂载 paste 监听");
+  assert.ok(floatBody.includes('tr("cosmos.constFloat.attachImageOnly", "仅支持添加图片")'), "零图片批次 toast（MUST NOT 静默）");
+  assert.ok(floatBody.includes('tr("cosmos.constFloat.attachBusy", "当前不可添加附件")'), "busy 相位拒绝 toast");
+  assert.ok(floatBody.includes("notify?.(result.message, true);"), "铸造抛错 toast 错误文案（face 薄透传）");
+  assert.ok(floatBody.includes('tr("cosmos.constFloat.attachUnavailable", "跳转会话页可用原生添加图片")'), "降级点击引导 toast");
+  /* rail 渲染：缩略图 + 上传态角标（uploading/error/ready）+ 移除钮。 */
+  assert.ok(floatBody.includes('className="dsh-cosmos-const-float-thumb"'), "缩略图行");
+  assert.ok(floatBody.includes('className="dsh-cosmos-const-float-thumb-img"'), "objectURL 封面");
+  assert.ok(floatBody.includes('data-state="uploading"'), "上传中角标");
+  assert.ok(floatBody.includes('data-state="error"'), "失败角标");
+  assert.ok(floatBody.includes("title={row.reason}"), "失败角标 title 标注原因");
+  assert.ok(floatBody.includes('className="dsh-cosmos-const-float-thumb-remove"'), "移除钮（触屏恒显见 CSS）");
+  /* 移除链路：机器先移除、再经 face 释放（顺序同原生）。 */
+  assert.ok(floatBody.includes("removeFloatAttachment({ inputActions, face: attachFace, id })"), "移除走纯链路（成功才释放）");
+  /* 上传门控与结果感知关闭。 */
+  assert.ok(floatBody.includes("const uploadsPending = floatAttachmentsPendingOf(resolvedAttachments, uploadsState);"), "上传门控（任一非 ready → 禁用）");
+  assert.ok(floatBody.includes("disabled={sendBlocked}"), "发送钮 disabled 门控（Enter 同口径）");
+  assert.ok(floatBody.includes("const outcome = floatWatchOutcomeOf({"), "观察态终态判定走纯函数");
+  assert.ok(floatBody.includes("if (outcome.kind === \"success\") {"), "成功终态 → 关窗");
+  assert.ok(floatBody.includes("if (outcome.kind === \"failure\") {"), "失败终态 → toast + 留存");
+  assert.ok(floatBody.includes("promptFailureTextOf(outcome)"), "失败文案 {message}（{code}）");
+  assert.ok(floatBody.includes("FLOAT_ATTACH_WATCH_MS"), "10s 看门狗兜底关窗");
+  assert.ok(floatBody.includes("setAttachWatch(null);"), "解除观察（失败终态 / 主动关闭 / 新呈现）");
+  /* CSS：rail 单行横向 + 隐藏滚动条；置灰置可点；发送禁用态。 */
+  assert.ok(clientSource.includes(".dsh-cosmos-const-float-rail{display:flex;flex-wrap:nowrap;"), "rail 单行横向（不折行）");
+  assert.ok(clientSource.includes("scrollbar-width:none"), "滚动条隐藏");
+  assert.ok(clientSource.includes(".dsh-cosmos-const-float-attach[data-state=unavailable]{opacity:.6;cursor:not-allowed;"), "置灰样式（不吞事件）");
+  assert.ok(!/\.dsh-cosmos-const-float-attach\[data-state=unavailable\][^}]*pointer-events:none/.test(clientSource), "置灰钮 MUST NOT pointer-events:none（引导需可触达）");
+  assert.ok(clientSource.includes(".dsh-cosmos-const-float-send:disabled{"), "发送禁用态样式");
+  assert.ok(clientSource.includes("@media (hover: none), (pointer: coarse)"), "触屏恒显移除钮");
+  /* locale：新增键 zh/en 成对（attach 四键 + 移除钮 aria）。 */
+  for (const key of ["attach", "attachUnavailable", "attachImageOnly", "attachBusy", "attachRemove"]) {
+    assert.equal(
+      (clientSource.match(new RegExp('"cosmos\\.constFloat\\.' + key + '": ', "g")) ?? []).length,
+      2,
+      "词典 zh/en 成对：cosmos.constFloat." + key
+    );
+  }
+  /* 导出面（6.4）：纯逻辑登记 hive exports（bundle 级冒烟可直测）。 */
+  const exportSurface = clientSource.slice(clientSource.indexOf("export {"), clientSource.indexOf("/* 文案"));
+  assert.ok(exportSurface.length > 0, "hive exports 切片可定位");
+  for (const name of ["clipboardFilesOf", "FLOAT_IMAGE_TYPES", "FLOAT_IMAGE_ACCEPT", "FLOAT_ATTACH_WATCH_MS", "createAttachFace", "floatSendPlanOf", "floatWatchOutcomeOf", "floatAttachmentsPendingOf", "intakeFloatImages", "removeFloatAttachment"]) {
+    assert.ok(exportSurface.includes(" " + name + ",") || exportSurface.includes(" " + name + " }"), "hive exports 登记：" + name);
+  }
 }
 
 /* ── 11. 源码锚点：通道标记隔离（spec「标记互不误食」；rework：浮动原生窗口通道拆除） ── */
@@ -901,7 +1140,9 @@ function constFloatBody(source) {
      钮不派发 click，提示与引导将永远无法触达。 */
   const voiceBranchStart = dockBody.indexOf("语音钮三分支");
   assert.ok(voiceBranchStart > 0, "语音钮可见性分支（三分支）在位");
-  const voiceBranch = dockBody.slice(voiceBranchStart, dockBody.indexOf("dsh-cosmos-const-float-hint", voiceBranchStart));
+  /* 语音钮切片右界 = 发送钮注释（p2：发送钮起带 `disabled={sendBlocked}`，不属置灰语音钮
+     语义；语音钮在工具行右簇内，其后为发送钮与 hint 行）。 */
+  const voiceBranch = dockBody.slice(voiceBranchStart, dockBody.indexOf("发送钮图标化", voiceBranchStart));
   assert.ok(voiceBranch.includes("data-state={voiceState}"), "可用 → 正常状态机钮");
   assert.ok(voiceBranch.includes('data-state="unavailable"'), "不可用 → 置灰呈现（data-state=unavailable）");
   assert.ok(voiceBranch.includes('aria-disabled="true"'), "不可用语义经 aria-disabled 承载");
@@ -909,6 +1150,13 @@ function constFloatBody(source) {
   const unavailableHalf = voiceBranch.slice(voiceBranch.indexOf('data-state="unavailable"'));
   assert.ok(!/\sdisabled=\{/.test(unavailableHalf), "置灰钮 MUST NOT 原生 disabled（否则点击/引导不可达）");
   assert.ok(unavailableHalf.includes("onClick={voiceUnavailableNotice}"), "置灰钮点击走引导");
+  /* 附件入口钮同一口径（p2 spec「降级置灰引导」）：置灰可点 + aria-disabled，非原生 disabled。 */
+  const attachSlice = dockBody.slice(dockBody.indexOf('className="dsh-cosmos-const-float-attach"'), dockBody.indexOf("dsh-cosmos-const-float-trailing"));
+  assert.ok(attachSlice.length > 0, "添加图片钮切片可定位");
+  assert.ok(attachSlice.includes('data-state={attachFace.available === true ? "available" : "unavailable"}'), "降级态 data-state=unavailable");
+  assert.ok(attachSlice.includes('aria-disabled={attachFace.available === true ? undefined : "true"}'), "降级语义经 aria-disabled 承载");
+  assert.ok(!/\sdisabled=\{/.test(attachSlice), "添加图片钮 MUST NOT 原生 disabled（否则点击/引导不可达）");
+  assert.ok(attachSlice.includes("onClick={onAttachClick}"), "点击走降级分派（可用 → 拾取器 / 降级 → 引导 toast）");
   assert.ok(dockBody.includes("speech?.openBundle?.()"), "引导跳语音 Bundle 详情页（桥缺席降级纯 toast）");
   assert.ok(dockBody.includes('"cosmos.constFloat.voiceUnavailable"'), "不可用提示文案（词典键）");
   assert.ok(dockBody.includes("dsh-cosmos-const-float-voice"), "语音钮稳定钩子");
@@ -974,7 +1222,7 @@ function constFloatBody(source) {
   assert.ok(apiSource.includes("return { ok: true, bound: Array.isArray(body.bound) ? body.bound : [] };"), "成功面 {ok, bound}");
   assert.ok(apiSource.includes("return { ok: false, error: body?.error || res.status"), "失败面 {ok:false, error}（fetchScene 同款容错）");
   assert.ok(
-    clientSource.includes('import { fetchScene, subscribeCosmosEvents, bindSession } from "./api.mjs";'),
+    /import \{[^}]*\bbindSession\b[^}]*\} from "\.\/api\.mjs";/.test(clientSource),
     "client 引入 bindSession"
   );
   assert.ok(clientSource.includes("bindSession: (input) => bindSession(input),"), "提案执行器注入绑定通道");
@@ -1117,7 +1365,7 @@ function goldLiteralsOutsideVarFallback(source) {
   /* role="status" 计数 = 三处「未生效」提示条 + 两处跨域冲突提示（快捷键页签 + 两动作页签共用
      一处渲染：动作面板一份、快捷键面板两份——冲突块与未生效块各一）。 */
   assert.ok((settingsSource.match(/role="status"/g) ?? []).length >= 3, "提示条以 status 语义播报");
-  /* add-cosmos-standalone-window 2.2 + step2-cosmos-openspec-path-setting 3.1：face 缺失
+  /* add-cosmos-rightbar-dock + step2-cosmos-openspec-path-setting 3.1：face 缺失
      占位/早退分支持同款纪律——四页签 + 「通用」页签路径区共 5 处；`notApplied` 仍为三处
      （通用页签无引擎写入依赖，不进 health 通道）。 */
   assert.equal((settingsSource.match(/data-state="face-missing"/g) ?? []).length, 5, "face 缺失占位稳定钩子（四页签 + 路径区）");
@@ -1213,17 +1461,17 @@ function goldLiteralsOutsideVarFallback(source) {
   assert.ok(cardActions.includes('data-action="archive" data-session="'), "归档按钮与既有 data-session 并存");
   assert.equal((engineSource.match(/\+\s*cardActionsHtml\(/g) ?? []).length, 2, "行星卡与彗星卡各挂一次双按钮组");
   assert.ok(engineSource.includes("cardActionsHtml(p.id, decideButtonHtml('planet', p), p)") && engineSource.includes("cardActionsHtml(c.id, '', c)"), "两调用点把实体传入（活跃口径取卡内实体，3.1）");
-  /* 禁用态语义分档（add-cosmos-standalone-window D6 细化；活跃门 add-cosmos-session-archive-busy-gate
-     3.1/D1）：归档**在途**禁用是瞬态，MUST NOT 经 cardHtml 重渲染（直接 DOM 切换，见下方
-     click 断言）；**导航不可用**（独立窗口态）与**实体活跃**（busy ∨ waiting ∨ delegatedBusy）
-     都是持续状态态、随 sig 翻转经差分守卫重渲染，允许进 markup（disabled + 按态 title）。 */
-  assert.ok(cardActions.includes("E.sessionNavAvailable"), "导航可用性分流（独立窗口态禁用）");
-  assert.equal((cardActions.match(/disabled/g) ?? []).length, 2, "markup 恰导航不可用 + 实体活跃两分支渲染 disabled（归档在途仍走直接 DOM）");
+  /* 禁用态语义分档（add-cosmos-session-archive-busy-gate 3.1/D1）：归档**在途**禁用是
+     瞬态，MUST NOT 经 cardHtml 重渲染（直接 DOM 切换，见下方 click 断言）；**实体活跃**
+     （busy ∨ waiting ∨ delegatedBusy）是持续状态，随 sig 翻转经差分守卫重渲染，允许进
+     markup（disabled + 按态 title）。「打开会话」恒可用（dock/embedded 导航均可用）。 */
+  assert.ok(!cardActions.includes("sessionNavAvailable"), "无独立窗口导航禁用分流");
+  assert.equal((cardActions.match(/disabled/g) ?? []).length, 1, "markup 仅实体活跃分支渲染 disabled（归档在途仍走直接 DOM）");
   assert.ok(cardActions.includes("ent.state === 'busy' || ent.state === 'waiting' || ent.delegatedBusy === true"), "卡侧活跃谓词与恒星活力「活跃」同源（busy ∨ waiting ∨ delegatedBusy）");
   assert.ok(cardActions.includes("E.labels.card.archiveBusy") && cardActions.includes("E.labels.card.archiveWaiting"), "活跃门按态 title 走注入文案（locale 同源）");
   assert.ok(cardActions.includes("escapeHtml(archiveTitle)"), "归档按钮说明 title 经 escapeHtml");
   assert.ok(engineSource.includes("if (ent.kind === 'planet' || ent.kind === 'comet') sig += '|db:' + (ent.data?.delegatedBusy === true ? 1 : 0);"), "sig 纳入 delegatedBusy（委托忙碌翻转经差分守卫承接，3.2）");
-  assert.ok(cardActions.includes("escapeHtml(E.labels.card.openDisabled)"), "禁用态 title 走注入文案（locale 同源）");
+  assert.ok(!cardActions.includes("openDisabled"), "「打开会话」无禁用文案（独立窗口能力已退役）");
   const cardClick = engineSource.slice(
     engineSource.indexOf("E.el.card.addEventListener('click'"),
     engineSource.indexOf("function isEmptyConstellation")
@@ -1312,7 +1560,7 @@ function goldLiteralsOutsideVarFallback(source) {
   assert.ok(fallbackBody.includes("notify(degradedLabel"), "降级先 toast 注明");
   /* client 接线 */
   assert.ok(clientSource.includes('keepPage: () => notifyToast?.(tr("cosmos.actions.keepOpenNotice"'), "client 注入 keepPage = 引擎 toast");
-  assert.ok(clientSource.includes("closePage: () => cosmosOpenStore.set(false),"), "client 注入 closePage = 关整页");
+  assert.ok(clientSource.includes("closePage: () => closePageAfterJump(),"), "client 注入 closePage = 统一裁决（embedded 关整页 / dock no-op）");
   assert.ok(!/closePageForProposalAction|actionJumpNewSession/.test(clientSource), "旧页面级偏好分流已移除");
   /* 页面偏好面零改动（跳转属按钮配置） */
   const settingsModule = readFileSync(new URL("../src/settings.mjs", import.meta.url), "utf8");
@@ -1386,7 +1634,8 @@ function goldLiteralsOutsideVarFallback(source) {
   /* 4.1 点击守卫引擎感知：顺序 = 拖拽豁免 → 作用面 → 引擎选中 → 清空。
      作用域精确到「画布起指的点击」：左下「＋」/星座卡片/天体信息卡等非画布区域不受引擎
      选中影响，照常清除（spec「点击其他区域取消选中」列出「＋」）。 */
-  const clickStart = clientSource.indexOf("onClick={(event) => {");
+  const frameStart = clientSource.indexOf('className={dock ? "cos-page cos-page-dock" : "cos-page"}');
+  const clickStart = clientSource.indexOf("onClick={(event) => {", frameStart);
   const clickBody = clientSource.slice(clickStart, clientSource.indexOf("setSelectedKey(null);", clickStart));
   assert.ok(clickStart > 0 && clickBody.length > 0, "页面 onClick 切片可定位");
   const guardAt = clickBody.indexOf("inspectSelection?.() != null");
@@ -1651,8 +1900,11 @@ function goldLiteralsOutsideVarFallback(source) {
      的星↔行星段（提案 links 段不再有 seg.rel 点亮分支）；图样连线通道落位。 */
   assert.ok(engineSource.includes("rel: true, relAlpha: alpha"), "constline 段 rel 标记（星↔行星关系段，relSetOf 单点）");
   assert.ok(!engineSource.includes("links: E.relLast.links"), "星↔星提案 links 观测面解除（relLast 快照无 links 映射）");
-  assert.ok(engineSource.includes("ws.patternLines"), "图样连线通道落位（patternLines 消费）");
-  assert.ok(engineSource.includes("PAT_LINE_DIM"), "图样连线弱化因子落位（seg.alpha 自缩）");
+  assert.ok(engineSource.includes("const pattern = ws.pattern;"), "图样全量通道落位（ws.pattern 静态几何消费，add-cosmos-template-figure-display）");
+  assert.ok(engineSource.includes("PAT_LINE_DIM"), "图样连线弱化因子落位（seg.alpha 自缩、统一口径）");
+  assert.ok(engineSource.includes("segIndex: si"), "图样观测面新形态（{wsId, segIndex, alpha}，槽位段无星 id 键）");
+  assert.ok(engineSource.includes("kind: 'patdot'"), "空槽装饰点渲染层条目落位（patdot 装饰层）");
+  assert.ok(engineSource.includes("PAT_DOT_DIM") && engineSource.includes("export function patEmptySlotsOf"), "空槽判定纯函数 + 点弱化因子落位（冒烟直测面）");
   assert.ok(engineSource.includes("pushSatEnvelope(items, cam, p, W, H, ws, t, planetAlpha, relSet"), "挂卫星子轨道环同源增亮");
   assert.ok(engineSource.includes("starPlanetIdsOf"), "恒星→行星反向映射经 merge 层纯函数消费");
 
@@ -2107,6 +2359,19 @@ function goldLiteralsOutsideVarFallback(source) {
   assert.ok(chromeCss.includes("mask-composite:exclude") && chromeCss.includes("-webkit-mask-composite:xor"), "双层 mask 挖空 1px 边环（含 -webkit 前缀）");
   assert.ok(chromeCss.includes("animation:cos-state-chrome-flow 2.4s linear infinite"), "流动周期 2.4s linear（光带走完整圈可被视线跟随）");
   assert.ok(chromeCss.includes("@keyframes cos-state-chrome-flow{to{--cos-chrome-flow:360deg}}"), "流动关键帧 = 角度属性 0→360deg 插值（绕环顺时针一周）");
+
+  /* 进行中通道取色（align-cosmos-flow-host-color 1.1/2.1/3.1）：派生局部通道挂
+     .cos-page（与皮肤 HUD 令牌同址），fallback 链 = 宿主进行中 alias → 皮肤 accent →
+     硬兜底；@supports 分支以 color-mix 组合 α 叠层，动画形态逐字不动。 */
+  assert.ok(chromeCss.includes(".cos-page{--cos-flow-channel:var(--dsw-alias-state-business-primary,var(--cos-accent,#ffd28a))}"), "派生通道定义于 .cos-page 作用域（宿主 business alias → 皮肤 accent fallback 链）");
+  const channelDefAt = chromeCss.indexOf(".cos-page{--cos-flow-channel:");
+  assert.ok(channelDefAt >= 0 && channelDefAt < chromeCss.indexOf(".dsh-cosmos-session-row[data-state=busy]::before"), "通道定义先于消费规则（继承链单点下发）");
+  const flowSupportsAt = chromeCss.indexOf("@supports (background: color-mix(in srgb, red 50%, transparent)){");
+  assert.ok(flowSupportsAt > chromeCss.indexOf("@keyframes cos-state-chrome-flow"), "@supports 升级位于 accent 基线声明之后（级联覆盖，降级保留基线）");
+  const flowSupportsCss = chromeCss.slice(flowSupportsAt, chromeCss.indexOf(".dsh-cosmos-session-row[data-state=done-unread]::before"));
+  assert.ok(flowSupportsCss.includes("color-mix(in srgb,var(--cos-flow-channel) 95%,transparent)"), "亮带 α.95 由 color-mix 自通道组合（hex 令牌无 RGB 三元组）");
+  assert.ok(flowSupportsCss.includes("linear-gradient(color-mix(in srgb,var(--cos-flow-channel) 28%,transparent),color-mix(in srgb,var(--cos-flow-channel) 28%,transparent))"), "常亮基线 α.28 同通道组合（描边连续可见不变）");
+  assert.ok(flowSupportsCss.includes("conic-gradient(from var(--cos-chrome-flow,0deg),transparent 0deg,transparent 250deg,") && flowSupportsCss.includes("360deg),"), "动画形态逐字不动（conic 巡游角度表达式保留）");
   assert.ok(chromeCss.includes(".dsh-cosmos-session-row[data-state=done-unread]::before{border:1px solid var(--dsw-alias-state-success-primary,var(--cos-done,#5affc0));"), "done-unread 静态高亮（宿主 alias → 皮肤 done 令牌级联）");
   assert.ok(chromeCss.includes("box-shadow:0 0 10px var(--dsw-alias-state-success-primary,var(--cos-done,#5affc0))"), "done-unread glow 挂环带层（light 覆盖块不触及伪元素）");
   assert.ok(chromeCss.includes(".dsh-cosmos-session-row[data-state=waiting]::before{border:1px solid var(--dsw-alias-state-warn-primary,var(--cos-waiting,#ffaa4a));"), "waiting 脉冲静态基底 = 可见 warning 色");
@@ -2128,20 +2393,29 @@ function goldLiteralsOutsideVarFallback(source) {
   assert.ok(selectedCss.includes("animation:none"), "选中期间状态动画停止（静态状态色保留）");
   assert.ok(selectedCss.includes("background:rgb(var(--cos-accent-rgb,255 210 140) / .5)"), "选中态 busy/active 降级 = accent 均匀静态色环（MUST NOT 冻结动画中间帧的不对称亮块）");
   assert.ok(chromeCss.includes(".dsh-cosmos-panel-card[data-selected=true][data-act=active]::before"), "提案卡选中同规则（无双动画叠加）");
+  assert.ok(selectedCss.includes("background:color-mix(in srgb,var(--cos-flow-channel) 50%,transparent)"), "选中态静态色环 @supports 分支改走进行中通道 α.5（accent 基线保留降级）");
 
   /* reduced-motion：时长归零 + background 覆盖为均匀静态色环（色信息保留、非冻结帧）。 */
   const reducedCss = chromeCss.slice(reducedRuleAt);
   assert.ok(reducedCss.includes(".dsh-cosmos-session-row[data-state=busy]::before,\n  .dsh-cosmos-panel-card[data-act=active]::before{animation-duration:0s;animation-iteration-count:1;\n    background:rgb(var(--cos-accent-rgb,255 210 140) / .5)}"), "降级覆盖流动命中元素（时长归零 + 均匀静态色环）");
   assert.ok(reducedCss.includes(".dsh-cosmos-session-row[data-state=waiting]::before"), "降级覆盖 waiting 脉冲");
   assert.ok(reducedCss.includes("animation-duration:0s;animation-iteration-count:1"), "时长归零（静态同色描边，区别于 loader 慢转）");
+  assert.ok(reducedCss.includes("background:color-mix(in srgb,var(--cos-flow-channel) 50%,transparent)"), "reduced-motion 静态色环 @supports 分支同走进行中通道 α.5（色信息保留）");
 
   /* 色令牌与可区分性纪律：零新 HUD 令牌、零裸色值背景、左缘生命周期色条不被覆盖、无虚线。
      --cos-chrome-flow 为 @property 注册的动画驱动属性（本提案白名单），非 HUD 令牌。 */
   assert.ok(chromeCss.includes("var(--cos-done,#5affc0)") && chromeCss.includes("var(--cos-waiting,#ffaa4a)"), "语义色经皮肤令牌兜底（直接量仅 fallback 位）");
   assert.ok(!/background:#[0-9a-f]{6}/i.test(chromeCss), "背景无裸色值");
-  assert.deepEqual([...new Set(chromeCss.match(/--cos-[a-z0-9-]+\s*:/g) ?? [])], ["--cos-chrome-flow:"], "零新增 HUD 令牌（仅消费既有变量；--cos-chrome-flow: 仅现于 @property 驱动的 keyframes 目标）");
+  assert.deepEqual([...new Set(chromeCss.match(/--cos-[a-z0-9-]+\s*:/g) ?? [])], ["--cos-flow-channel:", "--cos-chrome-flow:"], "零新增 HUD 令牌（--cos-flow-channel 为派生局部通道、--cos-chrome-flow 为 @property 动画驱动属性）");
   assert.ok(!chromeCss.includes("data-lifecycle") && !chromeCss.includes("border-left-color"), "左缘生命周期色条规则未被覆盖（两通道并存）");
   assert.ok(!chromeCss.includes("dashed"), "状态描边无虚线（虚线语义为星胚专有）");
+
+  /* 3.3 回归范围：通道仅状态描边层消费——--cos-accent-rgb 其余消费位（导航 chrome /
+     徽标 / 按钮 / 进度条 tint / loader）与画布 palette.sess.busy 零改动（分层：星图
+     说皮肤语言，面板层说宿主状态语言）。 */
+  const outsideChrome = clientSource.replace(chromeCss, "");
+  assert.ok(!outsideChrome.includes("--cos-flow-channel"), "通道仅状态描边层消费（其余 accent 消费位零改动）");
+  assert.equal((chromeCss.match(/var\(--cos-flow-channel\)/g) ?? []).length, 5, "通道消费位恰为 5：流光 3（亮带 1 + 基线 2）+ 选中 1 + reduced-motion 1");
 }
 
 /* ── 26. 源码锚点：跨面板悬停关联标记（p2-add-cosmos-cross-hover-markers 1.1–1.3 / 3.1–3.3） ──
@@ -2186,7 +2460,6 @@ function goldLiteralsOutsideVarFallback(source) {
   );
   assert.ok(rowHoverBody.length > 0, "行悬停切片可定位");
   assert.ok(rowHoverBody.includes('setPanelHover({ source: "row", wsId: row.wsId, kind: row.kind, id: row.id });'), "行源描述 = {source:row, wsId, kind, id}");
-  assert.ok(rowHoverBody.includes("if (!STANDALONE) {"), "独立窗口座位锁定态（禁用面板）不注入");
   assert.ok(rowHoverBody.includes("controllerRef.current?.setExternalHover?.({ wsId: row.wsId, kind: row.kind, id: row.id });"), "行悬停经 controller 转发引擎注入（kind 取行形态）");
   assert.ok(rowHoverBody.includes("setPanelHover(null);") && rowHoverBody.includes("controllerRef.current?.setExternalHover?.(null);"), "离场清除悬停并注入 null");
   const cardHoverBody = clientSource.slice(
@@ -2260,6 +2533,245 @@ function goldLiteralsOutsideVarFallback(source) {
   assert.ok(!markerRules.includes("::before"), "槽位取 ::after（::before 归状态描边层，两族互不覆盖）");
   assert.ok(!markerRules.includes("animation"), "静态三角无动效（动效预算留给状态描边层）");
   assert.ok(!markerRules.includes("data-selected") && !markerRules.includes(":hover") && !markerRules.includes("data-lifecycle"), "MUST NOT 触及选中/悬停/生命周期权重（仅 data-linked 选择器）");
+}
+
+/* ── 星座模板名显示设置面（add-cosmos-template-name-toggle 1.2/3.1）：源码锚点 ──
+   React 树 Node 侧不可挂载 → 控件/face 接线与词典成对走源码锚点；净房与引擎呈现分别由
+   settings-panel-smoke（4.1）与 engine-smoke（4.3）运行时直测。 */
+{
+  /* ① 「通用」页签开关行：checkbox + aria + title/hint + 独立 face + 即时保存。 */
+  assert.ok(settingsSource.includes('data-setting="templateNames"'), "「通用」页签开关行挂点（data-setting）");
+  assert.ok(settingsSource.includes('"cosmos.settings.templateNamesLabel"'), "开关标签走词典");
+  assert.ok(settingsSource.includes('"cosmos.settings.templateNamesAria"'), "checkbox aria-label 走词典");
+  assert.ok(settingsSource.includes('aria-label={tr(t, "cosmos.settings.templateNamesAria"'), "aria-label 绑定到 checkbox");
+  assert.ok(settingsSource.includes('title={templateNamesHint}'), "装饰用途提示经 title 通道（悬停可读）");
+  assert.ok(settingsSource.includes('type="checkbox"') && settingsSource.includes("checked={templateNamesOn}"), "受控 checkbox（受控镜像回显）");
+  assert.ok(settingsSource.includes("setTemplateNames(event.target.checked)"), "onChange 即时写（无暂存钮）");
+  assert.ok(settingsSource.includes("const namesFace = props.templateNames ?? null;"), "独立 templateNames face（与 launch 正交）");
+  assert.ok(settingsSource.includes("namesFace?.set?.(enabled === true)"), "face.set 只接受布尔（非 true 一律关闭）");
+
+  /* ② client 接线：受控镜像 + 控制器写入（持久化 → 引擎热更 → 镜像）+ face 三件套 + 注入。 */
+  assert.ok(clientSource.includes("const cosmosTemplateNamesStore = createSnapshotStore({ templateNames: loadCosmosSettings().templateNames });"),
+    "受控镜像冷启动读持久值");
+  assert.ok(clientSource.includes("saveTemplateNames(enabled) {") && clientSource.includes("saveCosmosSettings({ templateNames: enabled === true })"),
+    "控制器写入：净房持久化（布尔归一口径）");
+  assert.ok(clientSource.includes("engine?.setTuning(merged);") && clientSource.includes("cosmosTemplateNamesStore.set({ templateNames: merged.templateNames });"),
+    "写入链：引擎 setTuning 热更 + 受控镜像同步");
+  const namesFaceBody = clientSource.slice(
+    clientSource.indexOf("const templateNamesFace = {"),
+    clientSource.indexOf("ctx.slots.inject(SETTINGS_TAB_SLOT", clientSource.indexOf("const templateNamesFace = {"))
+  );
+  assert.ok(namesFaceBody.includes("getSnapshot:"), "face.getSnapshot");
+  assert.ok(namesFaceBody.includes("subscribe:"), "face.subscribe");
+  assert.ok(namesFaceBody.includes("set:"), "face.set");
+  assert.ok(namesFaceBody.includes("controller.saveTemplateNames"), "整页存活 → 控制器写入（热更通道）");
+  assert.ok(namesFaceBody.includes("saveCosmosSettings({ templateNames: enabled === true })"), "整页未开 → 仍即时持久化（下次开页读回）");
+  assert.ok(clientSource.includes("inject: () => ({ launch: launchFace, paths: pathsSettings, templateNames: templateNamesFace })"),
+    "「通用」页签注入 templateNames face");
+  assert.ok(clientSource.includes("cosmosTemplateNamesStore.set({ templateNames: next.templateNames });"),
+    "storage 跨窗桥同步 templateNames 镜像");
+  assert.ok(clientSource.includes("controllerRef.current?.getEngine?.()?.setTuning?.({ templateNames: next.templateNames === true });"),
+    "storage 跨窗桥：已打开整页热更（他窗翻转即时生效，仅本键真实翻转时触达）");
+  assert.ok(clientSource.includes("cosmosTemplateNamesStore,") && clientSource.includes("cosmosTemplateNamesStore"),
+    "受控镜像导出面（观测/冒烟）");
+
+  /* ③ 引擎接线：镜像初值、setTuning 布尔分支 + chip 显式刷新、chip/badge 组装同源。 */
+  assert.ok(engineSource.includes("templateNames: opts.settings?.templateNames === true,"), "引擎镜像初值（非显式 true 一律关闭）");
+  assert.ok(engineSource.includes("typeof settings?.templateNames === \"boolean\" && settings.templateNames !== E.templateNames"),
+    "setTuning 布尔入参 + 值变才动作（部分写语义）");
+  assert.ok(engineSource.includes("if (E.scene && Array.isArray(E.scene.ws)) updateChipText();"),
+    "chip 文本非逐帧通道 → 翻转显式刷新（不需下一帧）");
+  assert.ok(engineSource.includes("function templateNameHtmlOf(ws) {"), "chip/badge 共用副行组装式（单一出处）");
+  assert.ok(engineSource.includes("tplZh: typeof w.tplZh === \"string\" && w.tplZh ? w.tplZh : null,"), "buildScenePure 透传 tplZh（缺席容忍）");
+
+  /* ④ 词典 zh/en 成对（标签 / 提示 / aria / 图例四键）。 */
+  const dictKeys = ["templateNamesLegend", "templateNamesLabel", "templateNamesHint", "templateNamesAria"];
+  for (const key of dictKeys) {
+    assert.equal(
+      (clientSource.match(new RegExp('"cosmos\\.settings\\.' + key + '": ', "g")) ?? []).length,
+      2,
+      "词典 zh/en 成对：cosmos.settings." + key
+    );
+  }
+}
+
+/* ── 浮签与 UI 铬件的遮挡避让与命中隔离（polish-cosmos-tip-ui-avoidance 2.1–2.3 / 3.1–3.4 /
+      4.1–4.2 / 5.2 源码锚点）：React 树 Node 侧不可挂载 → 收集/发布接线与引擎消费点走
+      源码锚点，几何与门禁行为由 engine-smoke 的 B/C 两段运行时直测（5.1–5.5）。 ── */
+{
+  /* ① 收集表（2.1）：选择器 + 类别单点维护，覆盖全部交互 chrome 与引擎自建 HUD */
+  assert.ok(clientSource.includes("const COSMOS_CHROME_RECTS = ["), "矩形收集表单点定义（MUST NOT 在别处散写选择器）");
+  for (const pair of [
+    '[".dsh-cosmos-panel", "panel"],',
+    '[".dsh-cosmos-queue", "queue"],',
+    '[".dsh-cosmos-sessions", "sessions"],',
+    '[".dsh-cosmos-actions", "actions"],',
+    '[".cos-add-btn", "add"],',
+    '[".cos-search", "search"],',
+    '[".cos-home-btn", "home"],',
+    '[".cos-dragpan-btn", "dragpan"],',
+    '[\'.cos-wsbar-side[data-side="left"]\', "wsbar-left"],',
+    '[\'.cos-wsbar-side[data-side="right"]\', "wsbar-right"]'
+  ]) {
+    assert.ok(clientSource.includes(pair), "收集表覆盖：" + pair);
+  }
+  assert.ok(clientSource.includes('const COSMOS_CHROME_DRILL_ONLY = new Set(["wsbar-left", "wsbar-right"]);'),
+    "钻取态专属类别（银河态槽位不可见 → MUST NOT 参与判定，防隐形阻挡带）");
+  assert.ok(clientSource.includes("if (drill == null && COSMOS_CHROME_DRILL_ONLY.has(kind)) continue;"),
+    "银河态跳过 wsbar 槽位矩形（呈现态才参与）");
+  assert.ok(!clientSource.includes('[\'.dsh-cosmos-const-float\', "float"]'),
+    "浮窗不进矩形表（全屏模态 → 引擎 isFloatOpen 探针等价覆盖，零开合订阅）");
+
+  /* ② 坐标口径（2.1 / D2）：窗口视口坐标减引擎根容器原点 → 容器坐标 + 原点同批发布 */
+  assert.ok(clientSource.includes("const originBox = host.getBoundingClientRect();"),
+    "原点 = 引擎根容器（hostRef）的 getBoundingClientRect（窗口原点 ≠ 容器原点）");
+  assert.ok(clientSource.includes("left: box.left - originX,") && clientSource.includes("bottom: box.bottom - originY"),
+    "矩形归一化到容器坐标（逐边减原点）");
+  assert.ok(clientSource.includes("controllerRef.current?.setUiChromeRects?.(rects, { x: originX, y: originY })"),
+    "发布载荷 = { rects, origin }（原点随矩形同批）");
+  assert.ok(clientSource.includes("if (applied) lastSignature = signature;"),
+    "发布成功才写缓存（引擎缺席时不吞掉重试机会）");
+  assert.ok(clientSource.includes("if (!(box.width > 0) || !(box.height > 0)) continue;"),
+    "零尺寸（未布局/已卸载）条目跳过（与引擎规范化同口径）");
+
+  /* ③ 重算触发面（2.2）：布局事实驱动 + rAF 合并 + client 侧签名缓存（MUST NOT 逐帧测量） */
+  assert.ok(clientSource.includes('if (typeof ResizeObserver !== "undefined") resizeObserver = new ResizeObserver(schedule);'),
+    "页面容器与每个 chrome 共挂 ResizeObserver（内容驱动高度变化同触发）");
+  assert.ok(clientSource.includes("mutationObserver.observe(frame, { childList: true, subtree: true });"),
+    "子节点增删（面板挂载/卸载、搜索框随钻取态、引擎 HUD 建树）走 MutationObserver");
+  assert.ok(clientSource.includes("if (!raf) raf = requestAnimationFrame(collect);"),
+    "rAF 合并发布（同帧多次变化只发一次）");
+  assert.ok(clientSource.includes('const signature = originX.toFixed(1) + "," + originY.toFixed(1) + "|" + parts.join(";");')
+    && clientSource.includes("if (signature !== lastSignature) {"),
+    "client 侧缓存上次值：布局未变零发布");
+  assert.ok(clientSource.includes("resizeObserver.observe(node);") && clientSource.includes("resizeObserver.unobserve?.(node);"),
+    "订阅集随 DOM 增删同步（每轮收集后重挂）");
+  assert.ok(clientSource.includes("}, [drill]);"),
+    "订阅重建以钻取态为唯一 React 依赖（其余靠观察者，避免逐帧重算）");
+  assert.ok(clientSource.includes("schedule(); // 首帧即发布：引擎首帧就要矩形，不能等第一个布局事件"),
+    "挂载首帧即发布（引擎首帧判定不空转）");
+
+  /* ④ 控制器转发（2.3）：与 setExternalHover 同款可选链接线，引擎缺席静默降级 */
+  assert.ok(clientSource.includes("setUiChromeRects(rects, origin) {")
+    && clientSource.includes("return engine?.setUiChromeRects?.({ rects, origin }) === true;"),
+    "控制器转发：可选链 + 布尔返回（引擎未挂载/未升级 → false 不抛错）");
+
+  /* ⑤ 引擎消费点（3.x / 4.x）：单点判定 + 各自族规则 + 事件级门禁 */
+  assert.ok(engineSource.includes("export function normalizeUiRects(rects) {"), "矩形规范化纯函数（发布面净房点）");
+  assert.ok(engineSource.includes("export function boxInRects(box, rects, ignoreKinds) {")
+    && engineSource.includes("export function pointInRects(x, y, rects, ignoreKinds) {"),
+    "相交谓词单点实现（盒 + 点；D3 与 D4 共用）");
+  assert.ok(engineSource.includes("export function tipAvoidanceOf(candidate, rects, bounds) {"),
+    "避让决策纯函数（keep / hide / place / degraded）");
+  assert.ok(engineSource.includes("function pointInUiRects(x, y, ignoreKinds) {")
+    && engineSource.includes("function intersectsUiRects(box, ignoreKinds) {"),
+    "引擎态薄包装（E.uiRects 绑定，唯一消费入口）");
+  assert.ok(engineSource.includes("uiRects: [],") && engineSource.includes("uiOrigin: { x: 0, y: 0 },"),
+    "引擎缓存 = 矩形集 + 容器原点（帧内只比对数组）");
+  assert.ok(engineSource.includes("setUiChromeRects(payload) {") && engineSource.includes("inspectUiRects() {"),
+    "公共面 setUiChromeRects + 观测面 inspectUiRects");
+  /* 3.1 chip：相交即隐藏（走既有 .on/内联 opacity 路径，MUST NOT 平移锚点） */
+  assert.ok(engineSource.includes("if (uiModalOpen() || intersectsUiRects(chipBoxOf(chipX, chipY, chipHalf, chipHeightOf(el)))) {"),
+    "chip 相交 → 本帧隐藏（判定在定位算出之后、写 transform 之前）");
+  const chipHideBlock = engineSource.slice(
+    engineSource.indexOf("if (uiModalOpen() || intersectsUiRects(chipBoxOf("),
+    engineSource.indexOf("el.style.transform = 'translate(' + chipX.toFixed(1)")
+  );
+  assert.ok(chipHideBlock.includes("el.classList.remove('on');") && chipHideBlock.includes("el.style.opacity = ''"),
+    "chip 隐藏复用既有「.on 移除 + 内联 opacity 清理」路径（显隐机制零新增）");
+  assert.ok(chipHideBlock.includes("return;") && !chipHideBlock.includes("chipX ="), "MUST NOT 平移 chip 锚点");
+  /* 3.2 卡：既有翻转/钳位结果再过 tipAvoidanceOf，pe 降级单写点 */
+  assert.ok(engineSource.includes("const avoid = tipAvoidanceOf("), "信息卡避让接入（UI 感知钳位）");
+  assert.ok(engineSource.includes("if (E.el.card.style.pointerEvents !== cardPe) E.el.card.style.pointerEvents = cardPe;"),
+    "降级单写点（相交帧 pe:none、离开即清回 auto；不重建 DOM、不进内容签名）");
+  assert.ok(engineSource.includes("hx: snap1(scr2.x + cardDir * scr2.r), hy: snap1(scr2.y),"),
+    "引线起笔侧随避让后的卡侧（端点与判定同一组数）");
+  /* 3.3 兜底族：切换条目 / 回到银河 / 拖拽开关；名牌与引线显式不参与 */
+  assert.ok(engineSource.includes("syncWsbarItems(uiChromeSafeItemsOf("), "切换条目纳入同一相交兜底（自遮挡排除同侧槽）");
+  assert.ok(engineSource.includes("function uiChromeSafeItemsOf(items) {") && engineSource.includes("const selfKind = 'wsbar-' + entry.side;"),
+    "条目兜底判据：自身槽类别忽略（否则永远与自己相交）");
+  assert.ok(engineSource.includes("syncHudOcclusion(E.el.homeBtn, 'home');") && engineSource.includes("syncHudOcclusion(E.el.dragPanBtn, 'dragpan');"),
+    "回到银河 / 拖拽开关兜底判定（逐帧幂等 class 切换）");
+  assert.ok(engineSource.includes("function syncHudOcclusion(el, kind) {") && engineSource.includes("const own = uiRectOfKind(kind);")
+    && engineSource.includes("const hidden = uiModalOpen() || (own ? intersectsUiRects(own, kind) : false);"),
+    "HUD 兜底：自身类别的真实 rect + 浮窗模态，缺矩形按未命中");
+  assert.ok(engineSource.includes(".cos-hud-occluded { opacity: 0; pointer-events: none; }"),
+    "遮挡让位样式（视觉退场 + 命中放行，键盘等价路径仍在）");
+  assert.ok(!/intersectsUiRects\([^)]*slab/.test(engineSource), "名牌（slab）显式不参与避让判定");
+  /* 3.4 单帧判定：updateOverlay 内零 DOM 测量（chip 高/卡盒均为 data 缓存） */
+  const updateOverlayBody = engineSource.slice(
+    engineSource.indexOf("function updateOverlay() {"),
+    engineSource.indexOf("function measureCardBox() {")
+  );
+  assert.ok(updateOverlayBody.length > 1000, "updateOverlay 切片有效（帧内判定唯一计算点）");
+  assert.ok(!updateOverlayBody.includes("getBoundingClientRect"), "帧循环内零 rect 查询（D7 性能红线）");
+  assert.ok(updateOverlayBody.includes("chipHeightOf(el)"), "chip 盒高走 data-h 缓存（同 data-w 纪律）");
+  assert.ok(updateOverlayBody.includes("const avoid = tipAvoidanceOf("), "避让判定收敛在 updateOverlay 本帧");
+  /* 4.1 / 4.2 命中门禁：pointerdown 布防 + click 首行消费 + 同谓词复检 */
+  assert.ok(engineSource.includes("function uiGateArm(clientX, clientY, ignoreKinds) {")
+    && engineSource.includes("function uiGateTake() {"),
+    "门禁一次性抑制（pointerdown 布防 / click 消费）");
+  assert.ok(engineSource.includes("chip.addEventListener('pointerdown', function (ev) {")
+    && engineSource.includes("E.el.card.addEventListener('pointerdown', function (ev) {"),
+    "chip 与信息卡 pointerdown 布防（D4 首行落点门禁）");
+  for (const site of ["item.addEventListener('click', function (ev) {", "homeBtn.addEventListener('click', function (ev) {"]) {
+    assert.ok(engineSource.includes(site), "click 处理器带事件参数：" + site);
+  }
+  const gateCount = (engineSource.match(/if \(uiGateTake\(\)\) return;/g) ?? []).length;
+  assert.equal(gateCount, 5, "五处可交互浮签均消费门禁（chip / 卡 / 切换条目 / home / dragpan）");
+  const blockCount = (engineSource.match(/if \(uiHitBlocked\(ev\?\.clientX/g) ?? []).length;
+  assert.equal(blockCount, 5, "五处 click 均做同谓词复检（防 pointerdown 后矩形更新窗口）");
+  assert.ok(engineSource.includes("function uiPointOf(clientX, clientY) {")
+    && engineSource.includes("return { x: x - E.uiOrigin.x, y: y - E.uiOrigin.y };"),
+    "事件级换算：clientX/clientY − 缓存原点（零 DOM 测量）");
+  assert.ok(engineSource.includes("function uiHitBlocked(clientX, clientY, ignoreKinds) {")
+    && engineSource.includes("if (uiModalOpen()) return true;"),
+    "门禁判据：浮窗模态 → 整屏视为命中铬件");
+  /* 6.3 文档注释：引擎头注 + client 发布处引用设计裁决 */
+  assert.ok(engineSource.includes("polish-cosmos-tip-ui-avoidance（浮签与 UI 铬件的遮挡避让与命中隔离）："),
+    "引擎头注补充本提案裁决（呈现与命中分离）");
+  assert.ok(clientSource.includes("UI 铬件矩形收集与发布（polish-cosmos-tip-ui-avoidance 2.1/2.2 / design D2）"),
+    "client 发布处注释引用 design D2（坐标口径与触发面）");
+  assert.ok(engineSource.includes("矩形契约缺席") || engineSource.includes("契约缺席"),
+    "引擎注释声明「矩形契约缺席 → 现状回落」红线");
+}
+
+/* ── N. 顶部缩放标尺（add-cosmos-zoom-ruler 2.1–2.4）：源码锚点 + 布局/只读/缓动纪律 ──
+   React 组件树在 Node 侧不可挂载 → DOM/CSS 走源码锚点；映射、缓动分型与数据通道门限由
+   engine-smoke 直测（纯函数 + 引擎接线）。 */
+{
+  assert.ok(clientSource.includes('className="cos-zoom-ruler"'), "标尺覆盖层 JSX");
+  assert.ok(clientSource.includes('data-plugin-anchor="dsh-v-cosmos:zoom-ruler"'), "标尺插件锚点");
+  assert.ok(clientSource.includes('className="cos-zoom-ruler-track"'), "轨道元素");
+  assert.ok(clientSource.includes('className="cos-zoom-ruler-tick"'), "刻度元素");
+  assert.ok(clientSource.includes('className="cos-zoom-ruler-thumb"'), "游标元素");
+  assert.ok(clientSource.includes("zoomMeterTrackOf(meter.dist, meter.distMin, meter.distMax)"), "thumb 位置 = 引擎对数映射同源");
+  assert.ok(clientSource.includes("zoomRulerMotionOf(previous / 100, track)"), "缓动分型 = 引擎纯函数同源");
+  assert.ok(clientSource.includes("engine.onZoomMeter(applyMeter)"), "订阅引擎标尺数据通道（不轮询）");
+  assert.ok(!clientSource.includes("inspectZoomNav"), "页面侧无逐帧轮询路径（只走 onZoomMeter 回调）");
+  assert.ok(clientSource.includes("ZOOM_RULER_EASE_MS + 60"), "缓动到位兜底移除（transitionend 之外）");
+  assert.ok(clientSource.includes('thumb.addEventListener("transitionend"'), "到位移除过渡类");
+  assert.ok(clientSource.includes("const ZOOM_RULER_TICK_PCT = zoomMeterTrackOf(ZOOM_RULER_TICK, ZOOM_RULER_DIST_MIN, ZOOM_RULER_DIST_MAX) * 100;"), "tick 位置与引擎常量同源（一次计算）");
+  /* 只读：无交互语义、不进键盘焦点链、指针事件穿透 */
+  const rulerStart = clientSource.indexOf('className="cos-zoom-ruler"');
+  const rulerBlock = clientSource.slice(rulerStart, clientSource.indexOf("</div>", rulerStart) + 6);
+  assert.ok(rulerBlock.length > 0, "标尺 JSX 切片可定位");
+  assert.ok(!/tabIndex|onClick|onWheel|onKeyDown/.test(rulerBlock), "标尺无交互语义（不进键盘焦点链，无点击/滚轮处理器）");
+  assert.ok(rulerBlock.includes('aria-hidden="true"'), "标尺对辅助技术隐藏（纯视觉指示）");
+  /* 嵌入式布局：顶缘水平居中、宽高、z 序低于搜索框 */
+  assert.ok(clientSource.includes(".cos-zoom-ruler{position:absolute;top:0;left:50%;transform:translateX(-50%);z-index:24"), "嵌入式：顶缘水平居中（z 序 24 < 搜索框 40）");
+  assert.ok(clientSource.includes("width:min(520px,44vw);height:12px"), "嵌入式：宽 min(520px,44vw)、高 12px（10–14px 带内）");
+  assert.ok(clientSource.includes("padding:5px 0;pointer-events:none}"), "只读：pointer-events:none（滚轮/指针穿透画布）");
+  assert.ok(clientSource.includes(".cos-zoom-ruler-thumb.cos-zoom-ruler-ease{transition:left 200ms ease-out}"), "跳变缓动 = 200ms ease-out");
+  /* dock 布局避让与窄宽隐藏 */
+  assert.ok(clientSource.includes(".cos-page-dock .cos-zoom-ruler{left:calc(8px + min(var(--cos-search-w,320px), calc(100% - 16px)) + 8px);right:8px"), "dock：左缘 = 搜索框右缘 + 8px、右缘留 8px");
+  assert.ok(clientSource.includes("max-width:min(300px,34vw)"), "dock：宽上限 min(300px,34vw)");
+  assert.ok(clientSource.includes('[data-narrow="true"]{display:none}'), "dock：可用宽 <160px 整体隐藏");
+  assert.ok(clientSource.includes('data-narrow={rulerNarrow ? "true" : undefined}'), "窄宽判定下发 data-narrow");
+  assert.ok(clientSource.includes("const available = width - 16 - searchW - 8;") && clientSource.includes("setRulerNarrow(available < 160)"), "可用宽阈值 160px（ResizeObserver 实测）");
+  /* 视觉令牌复用风格 D HUD 族（--cos-line / --cos-accent） */
+  assert.ok(clientSource.includes("background:var(--cos-line,rgba(255,210,140,.35))"), "轨道复用 --cos-line 令牌");
+  assert.ok(clientSource.includes("background:var(--cos-accent,#ffd28a)"), "游标复用 --cos-accent 令牌");
 }
 
 console.log("client-ui-smoke: all assertions passed");

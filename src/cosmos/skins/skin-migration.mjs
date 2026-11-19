@@ -28,7 +28,7 @@ import {
   TAU, clamp, lerp, easeOutK, mix, hexA, hashSeed, hashRand,
   makeGlowCache, trailStroke, sessColor, mixFade, viewKOf, birthAlphaOf, segAlphaOf,
   dustBornK, satBornKOf, createVesselGuard, vesselAnchor,
-  makeDustSprite, dustBatchDraw
+  makeDustSprite, dustBatchDraw, patDotDraw
 } from '../skin-kit.mjs';
 
 /* ── 肤色（暮色紫橙主调；design D5 词汇映射后的四态 / 五态） ── */
@@ -365,6 +365,14 @@ export function createSkinMigration() {
           ctx.stroke();
         });
         ctx.setLineDash([]);
+        return;
+      }
+
+      if (it.kind === 'patdot') {
+        /* 空槽装饰点（add-cosmos-template-figure-display 3.2）：航线顶点微标——
+           暖白、基线 0.24（= 本皮肤航线基线），点弱化因子由引擎下发；
+           纯装饰（不进 picks / 无 hover / 无名牌）。 */
+        patDotDraw(ctx, it, '#e8d2b4', 0.24);
         return;
       }
 

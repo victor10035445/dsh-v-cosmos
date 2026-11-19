@@ -32,14 +32,6 @@
  *  - 消息落稿在消费相位（hero / native 或浮窗挂载）经 `setDraft` 写入（标记带落稿意图）；
  *  - **废除** `whenDraftExists: 'replace'` 主路径覆盖语义（BREAKING）；该语义只保留在
  *    `sessions.create` 失败后的降级回落链路。
- *
- * 独立窗口服务端送达通道（add-cosmos-standalone-jump-feedback D1/D2）：
- * 构造期可选 `standaloneServerChannel` 开关**只承接 autoSend 分支**——独立窗口内 hero
- * 相位不可达（标记是每窗口内存 store），开启时该分支跳过「create + hero 标记 +
- * openSession」，改走注入的 `startSession`（调用方带 `whenDraftExists: 'replace'`）
- * 服务端落稿；**不自动提交**（提交依赖窗口内会话输入区）、不登记标记、模型切换不执行。
- * float / native 分支分流逻辑不变（独立窗口的 native 意图由注入方 preflight 强制回
- * float 并附带反馈）。缺省关闭 = 既有行为逐字不变。
  */
 import { buttonModelOf, createActionGate, createPendingActionStore, draftMatches, isBlankDraft } from "./actions.mjs";
 
@@ -119,6 +111,385 @@ export function floatPresentationOf(input = {}) {
 }
 
 /**
+ * 浮窗文本面自适应增高的高度口径（p1-align-const-float-native-layout design D2）：
+ * 行高 20px、垂直 padding 2 × 8px、上下边框 2 × 1px —— 高度按 **border-box** 闭合
+ * （`scrollHeight` 含 padding 不含 border，故测量侧补边框后传入）：
+ *  - 最小 3 行 = `3 × 20 + 2 × 8 + 2 × 1 = 78`；
+ *  - 封顶 14 行（与原生编辑器 14 行封顶同源）= `14 × 20 + 2 × 8 + 2 × 1 = 298`。
+ * CSS 侧同值（`.dsh-cosmos-const-float-input` 的 `min-height` 与
+ * `--cos-float-body-max`），冒烟以本常量交叉校验防漂移。
+ */
+export const FLOAT_TEXTAREA_MIN_HEIGHT = 78;
+export const FLOAT_TEXTAREA_MAX_HEIGHT = 298;
+
+/**
+ * 文本面自适应增高的高度夹取（p1-align-const-float-native-layout design D2）。
+ *
+ * 浮窗 textarea 的测量 effect 先置 `height='auto'` 读 `scrollHeight`（含垂直 padding，
+ * 与 `box-sizing:border-box` 的高度同口径），再经本函数夹取后写回受控高度：内容不足
+ * 保底最小可视高度（3 行），超出封顶（14 行）后由 CSS `overflow-y:auto` 内部滚动。
+ * 清空回落最小高度由同一函数覆盖（`scrollHeight ≤ min` 时取 min）。纯函数（零 DOM），
+ * `test/client-ui-smoke.mjs` 直测夹取 / 边界 / 恒等。
+ *
+ * @param {number} scrollHeight 文本面内容高度（含 padding；非有限值按最小值兜底）
+ * @param {{min?: number, max?: number}} [bounds] 夹取边界（`max < min` 时按 min 收敛）
+ * @returns {number} 夹取后的高度（px）
+ */
+export function floatTextareaHeightOf(scrollHeight, bounds = {}) {
+  const min = Number.isFinite(bounds.min) ? bounds.min : 0;
+  const max = Number.isFinite(bounds.max) ? Math.max(bounds.max, min) : Number.POSITIVE_INFINITY;
+  const measured = Number.isFinite(scrollHeight) ? scrollHeight : min;
+  return Math.min(Math.max(measured, min), max);
+}
+
+/* ------------------------------------------------------------------ *
+ * 浮窗图片附件纯逻辑（p2-add-const-float-image-attach 1.2 / 2.x / 4.x；
+ * spec cosmos-constellation-actions「浮窗图片附件」）
+ * ------------------------------------------------------------------ */
+
+/**
+ * 浮窗图片 MIME 白名单：宿主 `isImageMediaType`（`dsh-client-ui-conversation`
+ * `service.ts`）的**本地复刻**——bundle 纯洁性禁止跨插件 import 宿主内部模块。
+ * 四类栅格图与原生 composer 完全同源（`SubmitAttachment` 收窄面亦为这四类）。
+ */
+export const FLOAT_IMAGE_TYPES = Object.freeze(["image/png", "image/jpeg", "image/webp", "image/gif"]);
+
+/** 隐藏 file input 的 `accept` 值（与白名单同源，防两处漂移）。 */
+export const FLOAT_IMAGE_ACCEPT = FLOAT_IMAGE_TYPES.join(",");
+
+/**
+ * 带在册附件的发送**观察态**看门狗（design D4）：10s 内无终态信号（宿主在途悬挂）→
+ * 关闭浮窗。与旧「发送即关」的最坏失败面等价（已知局限，spec 如实标注）。
+ */
+export const FLOAT_ATTACH_WATCH_MS = 10_000;
+
+/** 降级 face 的稳定空上传快照（`useSyncExternalStore` 要求 getSnapshot 引用稳定）。 */
+const EMPTY_FLOAT_UPLOADS = Object.freeze({});
+
+/**
+ * 降级上传面（face 缺席时的 no-op 投影；快照恒为空、订阅恒无事件）。
+ */
+export const FLOAT_ATTACH_ABSENT_UPLOADS = Object.freeze({
+  getSnapshot: () => EMPTY_FLOAT_UPLOADS,
+  subscribe: () => () => {}
+});
+
+/**
+ * 单文件是否浮窗可收的图片类型。
+ * @param {unknown} type 浏览器声明的 MIME
+ * @returns {boolean}
+ */
+export function isFloatImageType(type) {
+  return typeof type === "string" && FLOAT_IMAGE_TYPES.includes(type);
+}
+
+/**
+ * 剪贴板文件收集（宿主 `input/file-intake.ts` `clipboardFiles` 的图片能力子集复刻）：
+ * `items` 中 `kind === 'file'` 的成员经 `getAsFile()` 取出，`null` 与目录成员一律跳过
+ * （图片能力无目录语义——design D2）。纯函数、零 DOM：jsdom 的 `DataTransferItemList`
+ * 是「带 length 的索引对象」（非数组）→ 逐索引读取，不依赖迭代器。
+ *
+ * @param {{items?: unknown}} transfer 粘贴事件的 `clipboardData`
+ * @returns {File[]} 剪贴板中的文件（按剪贴板顺序）
+ */
+export function clipboardFilesOf(transfer) {
+  const files = [];
+  if (transfer === null || typeof transfer !== "object") return files;
+  const items = transfer.items;
+  if (items === null || typeof items !== "object") return files;
+  const length = Number.isFinite(items.length) ? Math.max(0, Math.floor(items.length)) : 0;
+  for (let index = 0; index < length; index += 1) {
+    let item = null;
+    try {
+      item = items[index] ?? null;
+    } catch {
+      item = null;
+    }
+    if (item === null || typeof item !== "object" || item.kind !== "file") continue;
+    if (typeof item.getAsFile !== "function") continue;
+    let file = null;
+    try {
+      file = item.getAsFile();
+    } catch {
+      file = null;
+    }
+    if (file !== null && typeof file === "object") files.push(file);
+  }
+  return files;
+}
+
+/**
+ * intake 共享校验的纯片段：批次内的图片子集（非图片忽略，目录成员不在文件能力面内）。
+ * @param {readonly File[]} files 拾取 / 粘贴的批次
+ * @returns {{images: File[], files: number}} 图片子集与批内文件计数（`files === 0` = 空批）
+ */
+export function floatImagesOf(files) {
+  const list = Array.isArray(files) ? files : [];
+  const images = [];
+  let seen = 0;
+  for (const file of list) {
+    if (file === null || typeof file !== "object") continue;
+    seen += 1;
+    if (isFloatImageType(file.type)) images.push(file);
+  }
+  return { images, files: seen };
+}
+
+/** attachFace 的必备动词（缺一即降级——客户端 SHALL NOT 区分原因）。 */
+const FLOAT_ATTACH_VERBS = ["createDrafts", "resolveDraftAttachments", "releaseDraftAttachment"];
+
+/**
+ * 判定 conversation 服务是否具备浮窗附件能力（服务可达 ∧ 三动词 ∧ 上传投影面齐备）。
+ * @param {unknown} service `ctx.get('conversation')` 的运行时面
+ * @returns {object|null} 合格服务（否则 null）
+ */
+function attachServiceOf(service) {
+  if (service === null || typeof service !== "object") return null;
+  for (const verb of FLOAT_ATTACH_VERBS) {
+    if (typeof service[verb] !== "function") return null;
+  }
+  const uploads = service.fileUploads;
+  if (uploads === null || typeof uploads !== "object") return null;
+  if (typeof uploads.getSnapshot !== "function" || typeof uploads.subscribe !== "function") return null;
+  return service;
+}
+
+/**
+ * 构造 `attachFace`（design D1：与 models/speech 注入面同构的薄包装 face）。
+ *
+ * 浮窗只依赖 face、不直接触达 `conversation` 服务——`createDrafts` /
+ * `resolveDraftAttachments` / `releaseDraftAttachment` / `fileUploads` 是服务的
+ * **包内附件操作**（`IConversation` 冻结契约只承诺 input/blocks/send/updateQueue/
+ * cancel/loadOlder），随宿主升级可能漂移：缺席或形状不符 → `available === false`，
+ * 添加图片钮转「置灰可点」引导态，零降级噪音。
+ *
+ * 错误纪律（design D1）：`mint` 的抛错**薄透传**（如不支持的 MIME），由组件层
+ * `try/catch` 捕获后 toast `error.message`——face MUST NOT 吞错转 null。
+ *
+ * @param {object} [options]
+ * @param {() => unknown} [options.service] 服务解析器（惰性读取，缺席/抛错即降级）
+ * @param {{getSnapshot: () => object, subscribe: (fn: Function) => (() => void)}} [options.uploads]
+ *        上传态快照面（apply 侧注入受控镜像；缺席回落稳定空面）
+ * @returns {{available: boolean, mint: Function, resolve: Function, release: Function, uploads: object}}
+ */
+export function createAttachFace(options = {}) {
+  const serviceOf = typeof options.service === "function" ? options.service : () => null;
+  const uploads = options.uploads === null || typeof options.uploads !== "object"
+    ? FLOAT_ATTACH_ABSENT_UPLOADS
+    : options.uploads;
+  const current = () => {
+    try {
+      const service = serviceOf();
+      return service !== null && typeof service === "object" ? service : null;
+    } catch {
+      return null;
+    }
+  };
+  return {
+    /** 可用判定（每次读取现算：服务注册晚于插件装配时也能在首次交互前就绪）。 */
+    get available() {
+      return attachServiceOf(current()) !== null;
+    },
+    /**
+     * 铸造草稿附件（`createDrafts` 薄包装，同步）。
+     * @param {string} sessionId 目标会话 id
+     * @param {readonly File[]} files 已过白名单的图片
+     * @param {boolean} uploadImages 是否后台立即上传（浮窗目标恒普通会话 → true）
+     * @returns {{ids: string[]}} 有序 `DraftAttachmentId`
+     */
+    mint(sessionId, files, uploadImages) {
+      const service = current();
+      if (service === null || typeof service.createDrafts !== "function") {
+        throw new Error("附件铸造不可用：宿主未提供附件服务");
+      }
+      const drafts = service.createDrafts(sessionId, files, uploadImages !== false);
+      const list = Array.isArray(drafts) ? drafts : [];
+      const ids = [];
+      for (const draft of list) {
+        const id = draft !== null && typeof draft === "object" ? draft.id : draft;
+        if (typeof id === "string" && id !== "") ids.push(id);
+      }
+      return { ids };
+    },
+    /**
+     * 解析在册 id 的运行时描述符（previewUrl / 宽高 / file；降级恒空）。
+     * @param {readonly string[]} ids 输入状态的附件 id
+     * @returns {readonly object[]}
+     */
+    resolve(ids) {
+      const service = current();
+      const requested = Array.isArray(ids) ? ids : [];
+      if (service === null || typeof service.resolveDraftAttachments !== "function" || requested.length === 0) return [];
+      const resolved = service.resolveDraftAttachments(requested);
+      return Array.isArray(resolved) ? resolved : [];
+    },
+    /**
+     * 释放一枚草稿附件（中止上传、回收 objectURL；降级/非法 id 零噪音）。
+     * @param {string} id 附件 id
+     */
+    release(id) {
+      const service = current();
+      if (service === null || typeof service.releaseDraftAttachment !== "function") return;
+      if (typeof id !== "string" || id === "") return;
+      service.releaseDraftAttachment(id);
+    },
+    uploads: {
+      getSnapshot: () => uploads.getSnapshot(),
+      subscribe: (listener) => uploads.subscribe(listener)
+    }
+  };
+}
+
+/**
+ * 两通道共享的 intake 链路（design D2/D3）：白名单过滤 → 铸造 → `addAttachments` 登记；
+ * 登记被 busy 相位拒绝（返回 false）→ **释放已铸造草稿**（objectURL 回收、上传中止）。
+ * 纯编排（服务与宿主动词全部由调用方注入），返回结构化 outcome 供组件映射 toast。
+ *
+ * @param {object} options
+ * @param {object|null} options.face attachFace
+ * @param {object|null} options.inputActions 会话 `InputActions`
+ * @param {string} [options.sessionId] 目标会话 id
+ * @param {readonly File[]} [options.files] 拾取 / 粘贴批次
+ * @param {boolean} [options.uploadImages] 是否后台上传（缺省 true）
+ * @returns {{kind: "added", ids: string[]} | {kind: "empty"} | {kind: "unavailable"}
+ *   | {kind: "image-only"} | {kind: "busy"} | {kind: "rejected", message: string}}
+ */
+export function intakeFloatImages(options = {}) {
+  const face = options.face ?? null;
+  const inputActions = options.inputActions ?? null;
+  const files = Array.isArray(options.files) ? options.files : [];
+  if (files.length === 0) return { kind: "empty" };
+  if (face === null || typeof face !== "object" || face.available !== true) return { kind: "unavailable" };
+  const { images } = floatImagesOf(files);
+  if (images.length === 0) return { kind: "image-only" };
+  if (inputActions === null || typeof inputActions.addAttachments !== "function") return { kind: "unavailable" };
+  let ids = [];
+  try {
+    const minted = face.mint(options.sessionId, images, options.uploadImages !== false);
+    ids = minted !== null && typeof minted === "object" && Array.isArray(minted.ids) ? minted.ids : [];
+  } catch (error) {
+    return { kind: "rejected", message: String(error?.message || error) };
+  }
+  if (ids.length === 0) return { kind: "empty" };
+  const added = inputActions.addAttachments(ids);
+  if (added === false) {
+    for (const id of ids) face.release(id);
+    return { kind: "busy" };
+  }
+  return { kind: "added", ids };
+}
+
+/**
+ * 移除链路（design D5）：`removeAttachment(id)` 成功后才经 face 释放（顺序同原生——
+ * 先出机器状态、再中止上传回收 objectURL）；busy 相位拒绝（返回 false）MUST NOT 释放
+ * （机器仍持有该 id，释放会让 rail 与输入状态漂移）。
+ *
+ * @param {object} options
+ * @param {object|null} options.inputActions 会话 `InputActions`
+ * @param {object|null} options.face attachFace
+ * @param {string} options.id 附件 id
+ * @returns {boolean} 是否完成移除 + 释放
+ */
+export function removeFloatAttachment(options = {}) {
+  const inputActions = options.inputActions ?? null;
+  const face = options.face ?? null;
+  const id = options.id;
+  if (inputActions === null || typeof inputActions.removeAttachment !== "function") return false;
+  if (typeof id !== "string" || id === "") return false;
+  const removed = inputActions.removeAttachment(id);
+  if (removed === false) return false;
+  if (face !== null && typeof face === "object" && typeof face.release === "function") face.release(id);
+  return true;
+}
+
+/**
+ * 发送分类（design D4 三分 + 空输入守卫扩展）：`/` 命令路径与纯文本路径逐字不变，
+ * 带在册附件才进入观察态。「空输入」= 文本空 ∧ 无在册附件（附件使输入非空）。
+ *
+ * @param {{draft?: unknown, attachmentIds?: unknown}} [input]
+ * @returns {"empty"|"command"|"text"|"watch"}
+ */
+export function floatSendPlanOf(input = {}) {
+  const draft = typeof input.draft === "string" ? input.draft : "";
+  const attachmentIds = Array.isArray(input.attachmentIds) ? input.attachmentIds : [];
+  const trimmed = draft.trim();
+  if (trimmed === "" && attachmentIds.length === 0) return "empty";
+  if (trimmed.startsWith("/")) return "command";
+  if (attachmentIds.length === 0) return "text";
+  return "watch";
+}
+
+/**
+ * 上传门控（design D5，对齐原生 `InputBar.tsx` 的 `uploadsPending` 口径）：
+ * file 附件无上传态视为未就绪、图片无上传态视为就绪（本链路 `uploadImages` 恒 true，
+ * 图片恒有上传态）；任一在册附件非 `ready` → 发送禁用。
+ *
+ * @param {readonly object[]} attachments 在册描述符（`attachmentIds` 的解析投影）
+ * @param {object|null} uploads `fileUploads` 快照（id → DraftFileUpload）
+ * @returns {boolean}
+ */
+export function floatAttachmentsPendingOf(attachments, uploads) {
+  const list = Array.isArray(attachments) ? attachments : [];
+  const states = uploads !== null && typeof uploads === "object" ? uploads : {};
+  return list.some((attachment) => {
+    if (attachment === null || typeof attachment !== "object") return false;
+    const upload = states[attachment.id];
+    if (attachment.kind === "file") return upload === undefined || upload?.status !== "ready";
+    return upload !== undefined && upload?.status !== "ready";
+  });
+}
+
+/**
+ * 归一化会话快照的 `promptError`（宿主 `SessionSnapshot.promptError = { op, error }`）。
+ * @param {unknown} value
+ * @returns {{raw: object, message: string, code: string}|null}
+ */
+function promptFailureOf(value) {
+  if (value === null || typeof value !== "object") return null;
+  const error = value.error;
+  if (error === null || typeof error !== "object") return null;
+  return {
+    raw: value,
+    message: typeof error.message === "string" ? error.message : "",
+    code: typeof error.code === "string" ? error.code : ""
+  };
+}
+
+/**
+ * 观察态终态判定（design D4）：
+ *  - 提交相位非 `plain` → 在途（owner 期兜底关闭由调用方抑制）；
+ *  - 相位回 `plain` ∧ `attachmentIds` 清空 → **成功**（Host 受理、机器消费附件与草稿）；
+ *  - 相位回 `plain` ∧ `promptError` 出现**新**错误（与武装基线引用不同）→ **失败**；
+ *  - 其余 → 继续观察（含「基线自身即错误」的重复失败同形情形由引用比较区分）。
+ *
+ * @param {{phase?: unknown, attachmentIds?: unknown, promptError?: unknown, baseline?: unknown}} [input]
+ * @returns {{kind: "pending"} | {kind: "success"}
+ *   | {kind: "failure", message: string, code: string}}
+ */
+export function floatWatchOutcomeOf(input = {}) {
+  const phase = typeof input.phase === "string" ? input.phase : "plain";
+  if (phase !== "plain") return { kind: "pending" };
+  const attachmentIds = Array.isArray(input.attachmentIds) ? input.attachmentIds : [];
+  if (attachmentIds.length === 0) return { kind: "success" };
+  const failure = promptFailureOf(input.promptError);
+  if (failure === null) return { kind: "pending" };
+  if (failure.raw === (input.baseline ?? null)) return { kind: "pending" };
+  return { kind: "failure", message: failure.message, code: failure.code };
+}
+
+/**
+ * 失败终态的呈现文案（spec：`{message}（{code}）`）；两者皆空返回 ""（调用方回落文案）。
+ * @param {{message?: unknown, code?: unknown}} failure
+ * @returns {string}
+ */
+export function promptFailureTextOf(failure) {
+  const message = typeof failure?.message === "string" ? failure.message.trim() : "";
+  const code = typeof failure?.code === "string" ? failure.code.trim() : "";
+  if (message !== "" && code !== "") return `${message}（${code}）`;
+  return message !== "" ? message : code;
+}
+
+/**
  * 星座动作执行链路（fix-cosmos-action-draft-block D1/D6；add-cosmos-native-composer
  * D1–D4；rework：浮动原生窗口设计经宿主槽位核查为结构性死锁后回退——native 分支呈现
  * 归位「关页跳转原生会话页」；spec「点击执行链路（星座模式）」「autoSend 分流与标记隔离」
@@ -155,13 +526,6 @@ export function floatPresentationOf(input = {}) {
  * @param {object} [options.labels] 文案（degraded——降级注释；缺省内置中文）
  * @param {() => number} [options.now] 私有门时钟（未注入 gate 时生效）
  * @param {number} [options.cooldownMs] 私有门冷却窗（未注入 gate 时生效）
- * @param {boolean} [options.standaloneServerChannel] 独立窗口**服务端送达通道**
- *        （add-cosmos-standalone-jump-feedback D1）：只作用于 autoSend 分支——开启时
- *        跳过「create + hero 标记 + openSession」，改走 `startSession`（调用方注入
- *        `whenDraftExists: "replace"`）服务端落稿，不自动提交、不登记标记、模型切换
- *        不执行。float / native 分支分流不变。缺省 false（行为与从前逐字一致）。
- * @param {(info: {autoSend: boolean}) => void} [options.standaloneNotice]
- *        服务端通道成功后的呈现通知（注入方 toast；执行器不感知文案）。缺省静默。
  * @returns {{run: (input: {button: object, group: object}) => Promise<object>}}
  */
 export function createConstellationExecutor(options = {}) {
@@ -175,8 +539,6 @@ export function createConstellationExecutor(options = {}) {
   const openSession = typeof options.openSession === "function" ? options.openSession : null;
   const startSession = options.startSession;
   const notify = typeof options.notify === "function" ? options.notify : () => {};
-  const standaloneServerChannel = options.standaloneServerChannel === true;
-  const standaloneNotice = typeof options.standaloneNotice === "function" ? options.standaloneNotice : null;
   const degradedLabel = typeof options.labels?.degraded === "string" && options.labels.degraded
     ? options.labels.degraded
     : "新建会话通道不可用，已降级为复用空白会话";
@@ -208,18 +570,10 @@ export function createConstellationExecutor(options = {}) {
       /* 三分支分流（D1）：勾选 autoSend = hero 接力（点击即发）；未勾选按设置面分支——
          float（缺省）= 浮窗补写、星空保持；native = hero 落稿 + 关页跳转原生会话页。 */
       const submit = button?.autoSend === true;
-      /* 独立窗口服务端通道**只承接 autoSend 分支**（D1）：提交意图在独立窗口不可达
-         （依赖窗口内会话输入区），故只落草稿、不自动提交、不登记 hero 标记——每个窗口的
-         标记 store 是独立内存实例，跨窗口恒悬空。float / native 分流不变。 */
-      const serverAutoSend = standaloneServerChannel && submit;
-      if (serverAutoSend && typeof startSession !== "function") {
-        notify("创建会话不可用（当前宿主未提供）", true);
-        return { ok: false, reason: "unavailable" };
-      }
       const native = !submit && resolvePreflight() === "native";
       const channel = submit ? HERO_CHANNEL : native ? PREFLIGHT_CHANNEL : FLOAT_CHANNEL;
       const store = submit || native ? pending : floats;
-      if (!serverAutoSend && store === null) return { ok: false, reason: "unavailable" };
+      if (store === null) return { ok: false, reason: "unavailable" };
       /** native 分支关整页（主路径与降级路径同用——两路呈现收敛于原生会话页）。 */
       const settlePage = () => {
         if (native) closePage();
@@ -230,29 +584,6 @@ export function createConstellationExecutor(options = {}) {
       const meta = { channel, wsId: group.wsId, wsName: String(group.wsName ?? ""), buttonName: String(button?.name ?? "") };
       let marker = null;
       try {
-        if (serverAutoSend) {
-          /* 独立窗口服务端送达（D1）：只落草稿、不自动提交（标记不登记——跨窗口不可达）。
-             反馈交给注入方（`standaloneNotice`），执行器不感知文案。 */
-          try {
-            await startSession(group.wsId, message, group);
-          } catch (error) {
-            const detail = String(error?.message || error);
-            notify("创建会话失败：" + detail, true);
-            return { ok: false, reason: "start-failed", error: detail, standalone: true };
-          }
-          standaloneNotice?.({ autoSend: true });
-          return {
-            ok: true,
-            message,
-            marker: null,
-            channel: "standalone-server",
-            degraded: false,
-            standalone: true,
-            serverDraft: true,
-            autoSendSkipped: true,
-            modelSkipped: model !== undefined
-          };
-        }
         if (!canCreateNew) {
           notify(degradedLabel + "：当前宿主未提供新建会话通道");
           marker = store.arm({ message, model, submit, meta });

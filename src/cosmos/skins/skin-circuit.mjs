@@ -29,7 +29,7 @@ import {
   TAU, clamp, lerp, easeOutK, mix, hexA, hashSeed, hashRand,
   makeGlowCache, trailStroke, sessColor, mixFade, viewKOf, birthAlphaOf, segAlphaOf,
   dustBornK, satBornKOf, createVesselGuard, vesselAnchor,
-  makeDustSprite, dustBatchDraw
+  makeDustSprite, dustBatchDraw, patDotDraw
 } from '../skin-kit.mjs';
 
 /** demo draft `#9ab0a0` 的偏冷支抬亮、向青偏移（上电冷亮；in-progress 暖金归 executed 金域）。 */
@@ -467,6 +467,14 @@ export function createSkinCircuit() {
             ctx.stroke();
           }
         });
+        return;
+      }
+
+      if (it.kind === 'patdot') {
+        /* 空槽装饰点（add-cosmos-template-figure-display 3.2）：走线顶点焊盘微点——
+           取金、基线 0.32（低于本皮肤走线金芯系数），点弱化因子由引擎下发；
+           纯装饰（不进 picks / 无 hover / 无名牌）。 */
+        patDotDraw(ctx, it, GOLD, 0.32);
         return;
       }
 
