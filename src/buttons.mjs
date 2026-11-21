@@ -4,9 +4,10 @@
  * 独立纯逻辑模块——宿主半区（configstore 节归一化 + 设置命名空间校验）与浏览器半区
  * （设置页草稿校验 / 动作条投影）共用，test/buttons-schema-smoke.mjs 直测。
  *
- * 模型：`{ name, prompt, autoSend, newSession, jumpNewSession?, prepend?, model?, preState?, shortcut? }`
+ * 模型：`{ name, prompt, autoSend, newSession, jumpNewSession?, prepend?, model?, preState?, shortcut?, embryoDismiss? }`
  *  - `name`   显示名（非空，trim 后去重；允许中文，不套用 commands 的小写正则）；
- *  - `prompt` 提示词（非空）；
+ *  - `prompt` 提示词（非空——**唯一豁免**：`embryoDismiss` 为 `true` 的直执行条目允许为空，
+ *    trim 后空串合法且归一化恒输出 `prompt: ""` 保持键序恒定；直执行链路零消费 prompt）；
  *  - `autoSend` **必填布尔，归一化恒输出**：缺省/null 视为 false，其余非布尔值拒绝；
  *  - `newSession` **语义常量恒 true**（「新增会话」为固定模式）：缺失/null 补 true
  *    （旧数据零迁移），其余非 true 值拒绝；归一化恒输出 `newSession: true`；
@@ -28,10 +29,15 @@
  *    **仅设置时输出该键**（缺省/null/`""` = 未提供 → 存储最小形「无快捷键」）；池外值 /
  *    组合键 / 非字符串保存拒绝。跨条目及与全局键的并集查重由**保存面**统一执行
  *    （`shortcuts.mjs` `shortcutsIssue`），宿主单节 normalize 保持「单条枚举校验」口径。
+ *  - `embryoDismiss` 可选布尔（add-cosmos-embryo-dismiss-button 1.x / spec cosmos-actions
+ *    「按钮配置模型」）：**星胚直执行模式**——仅布尔 `true` ∧ `preState === "proto"` 时输出
+ *    该键（键序最末）；`false`/`null`/缺省按未提供处理（不落键不拒绝，与 `prepend` 同款
+ *    布尔最小形纪律）；布尔 `true` 出现在非 proto / 缺省 `preState` 行保存拒绝；其余非布尔
+ *    值保存拒绝。读面容错模式（`tolerateUnknownEmbryoDismiss`）保留漂移值不回写。
  *
  * 键序固定 name → prompt → autoSend → newSession → jumpNewSession → prepend → model
- * → preState → shortcut（`preState` / `shortcut` 依次追加尾部，既有条目序列化逐字节
- * 不变；客户端 `JSON.stringify` 比较依赖键序稳定）。
+ * → preState → shortcut → embryoDismiss（`preState` / `shortcut` / `embryoDismiss` 依次
+ * 追加尾部，既有条目序列化逐字节不变；客户端 `JSON.stringify` 比较依赖键序稳定）。
  */
 
 import { SHORTCUT_BUTTON_KEYS, isButtonShortcut } from "./shortcuts.mjs";
@@ -88,20 +94,23 @@ export function normalizeButtonModel(raw, name) {
  * 的显式决策（spec 场景要求拒绝而非静默）。`preState` 不参与去重。
  *
  * @param {unknown} raw
- * @param {{tolerateUnknownPreState?: boolean, tolerateUnknownShortcut?: boolean}} [options]
+ * @param {{tolerateUnknownPreState?: boolean, tolerateUnknownShortcut?: boolean,
+ *          tolerateUnknownEmbryoDismiss?: boolean}} [options]
  *        读面容错（默认严格）：`tolerateUnknownPreState` = true → 未知 `preState` 字符串原样
  *        保留（不回写、不丢弃该条）；`tolerateUnknownShortcut` = true → 池外 `shortcut`
- *        字符串原样保留（设置页回显「不可用」）；保存路径 MUST NOT 使用任一模态
- *        （写入校验恒严格，见 configstore.writeSections）。
+ *        字符串原样保留（设置页回显「不可用」）；`tolerateUnknownEmbryoDismiss` = true →
+ *        非 proto 行上的 `embryoDismiss: true` 漂移值原样保留（设置页回显「不可用」并拒绝
+ *        保存）。保存路径 MUST NOT 使用任一模态（写入校验恒严格，见 configstore.writeSections）。
  * @returns {Array<{name: string, prompt: string, autoSend: boolean, newSession: boolean,
  *          jumpNewSession?: false, prepend?: true,
  *          model?: {provider: string, model: string, reasoningEffort?: string},
- *          preState?: string, shortcut?: string}>}
+ *          preState?: string, shortcut?: string, embryoDismiss?: true}>}
  * @throws {TypeError} 形状非法 / 名称重复 / 超上限
  */
 export function normalizeButtons(raw, options = {}) {
   const tolerateUnknownPreState = options?.tolerateUnknownPreState === true;
   const tolerateUnknownShortcut = options?.tolerateUnknownShortcut === true;
+  const tolerateUnknownEmbryoDismiss = options?.tolerateUnknownEmbryoDismiss === true;
   let list = [];
   if (Array.isArray(raw)) list = raw;
   else if (raw && typeof raw === "object" && Array.isArray(raw.buttons)) list = raw.buttons;
@@ -115,12 +124,9 @@ export function normalizeButtons(raw, options = {}) {
     const prompt = item.prompt.trim();
     if (!name && !prompt) continue; // 完全空条目剔除（半空条目仍校验）
     if (!name) throw new TypeError("button name must not be empty");
-    if (!prompt) throw new TypeError(`button "${name}" prompt must not be empty`);
-    if (prompt.length > MAX_PROMPT_CHARS) {
-      throw new TypeError(`button "${name}" prompt exceeds ${MAX_PROMPT_CHARS} chars`);
-    }
     /* preState（add-cosmos-action-prestate-gate）：仅设置时输出（尾部键序）；枚举外
-       保存拒绝。读面容错模式保留未知字符串原值（设置页漂移回显；门控永不命中）。 */
+       保存拒绝。读面容错模式保留未知字符串原值（设置页漂移回显；门控永不命中）。
+       解析前置于 prompt 校验：`embryoDismiss` 的 proto 绑定与 prompt 豁免都要用它。 */
     let preState;
     let driftedPreState = false;
     if (item.preState !== undefined && item.preState !== null) {
@@ -138,6 +144,28 @@ export function normalizeButtons(raw, options = {}) {
       }
     }
     const isProto = preState === "proto";
+    /* 星胚直执行键（add-cosmos-embryo-dismiss-button 1.1–1.4）：仅布尔 true ∧ proto 时
+       输出（键序最末）；false/null/缺省按未提供处理（不落键不拒绝）；其余非布尔值保存
+       拒绝；非 proto（或缺省 preState）行携带 true → 保存拒绝，读面容错模式
+       （`tolerateUnknownEmbryoDismiss`）原样保留漂移值（设置页回显「不可用」）。 */
+    const rawDismiss = item.embryoDismiss;
+    if (rawDismiss !== undefined && rawDismiss !== null && typeof rawDismiss !== "boolean") {
+      throw new TypeError(`button "${name}" embryoDismiss must be a boolean`);
+    }
+    const wantsDismiss = rawDismiss === true;
+    if (wantsDismiss && !isProto && !tolerateUnknownEmbryoDismiss) {
+      throw new TypeError(
+        `button "${name}" embryoDismiss: 直达移除仅限前置状态为待创建（星胚）的按钮`
+      );
+    }
+    /* prompt 非空校验的**唯一豁免**（1.3）：直执行按钮点击即删锚点，链路零消费 prompt
+       → trim 后空串合法，归一化恒输出 `prompt: ""`（键序不变）。其余组合逐字不变。 */
+    if (!prompt && !(wantsDismiss && (isProto || tolerateUnknownEmbryoDismiss))) {
+      throw new TypeError(`button "${name}" prompt must not be empty`);
+    }
+    if (prompt.length > MAX_PROMPT_CHARS) {
+      throw new TypeError(`button "${name}" prompt exceeds ${MAX_PROMPT_CHARS} chars`);
+    }
     if (item.autoSend !== undefined && item.autoSend !== null && typeof item.autoSend !== "boolean") {
       throw new TypeError(`button "${name}" autoSend must be a boolean`);
     }
@@ -196,6 +224,8 @@ export function normalizeButtons(raw, options = {}) {
     if (preState !== undefined) entry.preState = preState;
     /* 快捷键键序恒在尾部（preState 之后）：无键条目序列化逐字节不变。 */
     if (shortcut !== undefined) entry.shortcut = shortcut;
+    /* 星胚直执行键序最末（shortcut 之后）：无该键条目序列化逐字节不变。 */
+    if (wantsDismiss) entry.embryoDismiss = true;
     out.push(entry);
     if (out.length > MAX_BUTTONS) throw new TypeError(`buttons exceeds ${MAX_BUTTONS} entries`);
   }
@@ -205,9 +235,11 @@ export function normalizeButtons(raw, options = {}) {
 /**
  * 浏览器半区的**容错投影**（读面，不抛错）：非法/残缺条目直接跳过，条目重建走
  * `normalizeButtons` 的同款键序与条件键口径（单条失败即丢弃该条，SHALL NOT 波及其余）。
- * 读面容错模式（`tolerateUnknownPreState` / `tolerateUnknownShortcut`）保留未知
- * `preState` / 池外 `shortcut` 原值——设置页据此「原样回显标不可用」，动作条门控/分发
- * 对未知值恒不命中（自然隐藏 / 不可触发）。
+ * 读面容错模式（`tolerateUnknownPreState` / `tolerateUnknownShortcut` /
+ * `tolerateUnknownEmbryoDismiss`）保留未知 `preState` / 池外 `shortcut` / 非 proto 行的
+ * `embryoDismiss` 原值——设置页据此「原样回显标不可用」，动作条门控/分发对未知值恒不命中
+ * （自然隐藏 / 不可触发）。直执行条目（proto ∧ `embryoDismiss: true`）的**空 prompt 合法**
+ * ——此处的 `prompt` 非空前置过滤同口径豁免，否则免提示词的按钮会被投影静默丢弃。
  * @param {unknown} section 设置节（`scope.getSnapshot().value` 或 `/config` 的 value）
  * @returns {Array<object>}
  */
@@ -217,15 +249,32 @@ export function buttonsSectionOf(section) {
   for (const item of section.buttons) {
     if (!item || typeof item !== "object") continue;
     if (typeof item.name !== "string" || typeof item.prompt !== "string") continue;
-    if (!item.name.trim() || !item.prompt.trim()) continue;
+    if (!item.name.trim()) continue;
+    if (!item.prompt.trim() && !isEmbryoDismissButton(item)) continue;
     try {
-      const [entry] = normalizeButtons([item], { tolerateUnknownPreState: true, tolerateUnknownShortcut: true });
+      const [entry] = normalizeButtons([item], {
+        tolerateUnknownPreState: true,
+        tolerateUnknownShortcut: true,
+        tolerateUnknownEmbryoDismiss: true
+      });
       if (entry) out.push(entry);
     } catch {
       /* 单条非法：跳过（读面容错） */
     }
   }
   return out;
+}
+
+/**
+ * 星胚直执行按钮判据（add-cosmos-embryo-dismiss-button / spec cosmos-actions
+ * 「星胚直执行执行链路」）：`preState === "proto"` ∧ `embryoDismiss === true`。
+ * 单一谓词供客户端分流（`runButton`）、行级禁用豁免（`actionButtonStateOf`）、设置页控件
+ * 启用态与读面容错投影共用，MUST NOT 在各处重写条件。
+ * @param {{preState?: string, embryoDismiss?: boolean}|null|undefined} button 按钮配置条目
+ * @returns {boolean}
+ */
+export function isEmbryoDismissButton(button) {
+  return button?.preState === "proto" && button?.embryoDismiss === true;
 }
 
 /**
@@ -254,8 +303,8 @@ export function actionButtonVisible(button, target) {
  * 设置命名空间 schema（宿主 `settings.register` 用；形状对齐 schemastery 最小契约：
  * 可调用 + type/dict + toJSON）。本插件不注册宿主 settings 命名空间（design D7 的
  * 「自营 API 首选」决策），此函数保留给宿主设置服务 fallback 的完整性校验与冒烟。
- * 条目可选键：`jumpNewSession` / `prepend` / `model` / `preState` / `shortcut`
- * （add-cosmos-shortcuts 3.1 尾部追加；口径由 `normalizeButtons` 单条枚举校验）。
+ * 条目可选键：`jumpNewSession` / `prepend` / `model` / `preState` / `shortcut` /
+ * `embryoDismiss`（尾部依次追加；口径由 `normalizeButtons` 单条枚举/绑定校验）。
  * @returns {(value: unknown) => { buttons: Array<object> }}
  */
 export function buttonsSchema() {

@@ -142,12 +142,17 @@ const SECTION_NORMALIZERS = {
 
 /**
  * 节**读面**归一化器表（add-cosmos-action-prestate-gate 4.1；add-cosmos-shortcuts 起
- * 同步容忍 `shortcut` 漂移）：与写路径同口径，但 `preState` 手工编辑漂移（枚举外字符串）
- * 与 `shortcut` 池外字符串**原样保留**——设置页据 value 原样回显「不可用」并在保存时拒绝
- * （写路径仍走严格表）。其余非法形状照旧丢弃该节。
+ * 同步容忍 `shortcut` 漂移，add-cosmos-embryo-dismiss-button 起同步容忍 `embryoDismiss`
+ * 漂移）：与写路径同口径，但 `preState` 手工编辑漂移（枚举外字符串）、`shortcut` 池外
+ * 字符串与非 proto 行的 `embryoDismiss: true` **原样保留**——设置页据 value 原样回显
+ * 「不可用」并在保存时拒绝（写路径仍走严格表）。其余非法形状照旧丢弃该节。
  */
 const SECTION_READ_NORMALIZERS = {
-  buttons: (raw) => normalizeButtons(raw, { tolerateUnknownPreState: true, tolerateUnknownShortcut: true }),
+  buttons: (raw) => normalizeButtons(raw, {
+    tolerateUnknownPreState: true,
+    tolerateUnknownShortcut: true,
+    tolerateUnknownEmbryoDismiss: true
+  }),
   constellationButtons: (raw) => normalizeConstButtons(raw, { tolerateUnknownShortcut: true }),
   /* paths：读路径净房与写路径同口径（纯形态校验恒成功，垃圾形状归一为未配置形状）。 */
   paths: (raw) => normalizePaths(raw)

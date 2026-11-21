@@ -27,6 +27,7 @@ import { MAX_BUTTONS, PRE_STATES } from "./buttons.mjs";
 import { MAX_CONST_BUTTONS } from "./const-buttons.mjs";
 import { buttonModelOf } from "./actions.mjs";
 import { isButtonShortcut } from "./shortcuts.mjs";
+import { isEmbryoDismissButton } from "./buttons.mjs";
 
 /**
  * 按钮草稿条目构造（键序固定 name → prompt → autoSend → newSession → jumpNewSession →
@@ -59,6 +60,9 @@ export function buttonDraftOf(source) {
   /* 快捷键（add-cosmos-shortcuts 3.3）：仅非空字符串落键；漂移值原样保留供回显。 */
   const rawShortcut = typeof source?.shortcut === "string" && source.shortcut.trim() ? source.shortcut.trim() : undefined;
   if (rawShortcut !== undefined) entry.shortcut = rawShortcut;
+  /* 星胚直执行键（add-cosmos-embryo-dismiss-button 5.3）：仅 true 落键（键序最末）；
+     漂移值（非 proto 行 + true）原样保留供回显，保存由 `buttonIssue` 拒绝。 */
+  if (source?.embryoDismiss === true) entry.embryoDismiss = true;
   return entry;
 }
 
@@ -74,7 +78,12 @@ export function buttonIssue(list) {
     if (!name) return "buttonNameRequired";
     if (seen.has(name)) return "buttonDup";
     seen.add(name);
-    if (!String(button?.prompt ?? "").trim()) return "buttonPromptRequired";
+    /* 直执行键（add-cosmos-embryo-dismiss-button 5.3）：判据用 preState 字面值（校验前后
+       一致），`true` 仅在的 proto 行合法；非布尔值一律拒绝。 */
+    const dismiss = button?.embryoDismiss;
+    const directDraft = dismiss === true && typeof button?.preState === "string" && button.preState.trim() === "proto";
+    /* prompt 非空校验的唯一豁免 = 直执行行（trim 后空串合法；保存按 schema 恒落 ""）。 */
+    if (!String(button?.prompt ?? "").trim() && !directDraft) return "buttonPromptRequired";
     /* 前置状态：仅枚举内字符串合法（漂移值可回显，但保存 MUST 拒绝并保留草稿修正）。 */
     const preState = button?.preState;
     if (preState !== undefined && preState !== null) {
@@ -86,6 +95,12 @@ export function buttonIssue(list) {
     if (!isProto && button?.newSession !== undefined && button?.newSession !== null && button?.newSession !== true) {
       return "buttonNewSessionFixed";
     }
+    /* 星胚直执行键：非布尔拒绝；非 proto 行携带 true 拒绝（设置页在前置状态切走时自动
+       清勾，此处为手工编辑漂移的兜底）。 */
+    if (dismiss !== undefined && dismiss !== null && typeof dismiss !== "boolean") {
+      return "buttonEmbryoDismissInvalid";
+    }
+    if (dismiss === true && !isProto) return "buttonEmbryoDismissProtoOnly";
     /* 快捷键：仅按钮键域枚举内字符串合法（漂移值可回显，但保存 MUST 拒绝）；空串按
        「无」（未提供）处理，与宿主 normalize 口径一致。 */
     const shortcut = button?.shortcut;
@@ -163,6 +178,8 @@ export const CONSTELLATION_PROFILE = Object.freeze({
   supportsJump: false,
   /* 星座动作无提案选中上下文 → 无「前置状态」控件（spec「星座动作行不呈现」）。 */
   supportsPreState: false,
+  /* 星胚直执行需要 proto 前置状态 + 提案选中上下文 → 星座行无该控件。 */
+  supportsEmbryoDismiss: false,
   draftOf: constButtonDraftOf,
   issue: constButtonIssue
 });
@@ -192,6 +209,7 @@ const DEFAULT_PROFILE = {
   supportsPrepend: true,
   supportsJump: true,
   supportsPreState: true,
+  supportsEmbryoDismiss: true,
   draftOf: buttonDraftOf,
   issue: buttonIssue,
   maxEntries: MAX_BUTTONS
@@ -216,6 +234,8 @@ export function createButtonSettingsController(scope, profile) {
   const supportsPrepend = raw.supportsPrepend !== false;
   const supportsJump = raw.supportsJump !== false;
   const supportsPreState = raw.supportsPreState !== false;
+  /* 星胚直执行复选框（add-cosmos-embryo-dismiss-button 5.1）：仅快捷动作 profile 提供。 */
+  const supportsEmbryoDismiss = raw.supportsEmbryoDismiss !== false;
   const draftOf = typeof raw.draftOf === "function" ? raw.draftOf : DEFAULT_PROFILE.draftOf;
   const issue = typeof raw.issue === "function" ? raw.issue : DEFAULT_PROFILE.issue;
   const crossIssue = typeof raw.crossIssue === "function" ? raw.crossIssue : null;
@@ -317,21 +337,38 @@ export function createButtonSettingsController(scope, profile) {
       commitDraft(draftBase().filter((_button, i) => i !== index));
     },
     /**
-     * 编辑第 index 条的字段（name/prompt/autoSend/jumpNewSession/prepend/model/preState/shortcut）。
-     * `model`/`prepend`/`jumpNewSession`/`preState`/`shortcut` 走 draftOf 特判：取消勾选/
-     * 解绑/清空 MUST 删键（否则草稿残留显式 false/undefined，与存储条目不再逐字同形，
-     * dirty 永不回清）。`prepend`/`jumpNewSession`/`preState` 在对应 `supports*: false` 的
-     * profile（星座动作）里是空操作。
+     * 编辑第 index 条的字段（name/prompt/autoSend/jumpNewSession/prepend/model/preState/
+     * shortcut/embryoDismiss）。
+     * `model`/`prepend`/`jumpNewSession`/`preState`/`shortcut`/`embryoDismiss` 走 draftOf
+     * 特判：取消勾选/解绑/清空 MUST 删键（否则草稿残留显式 false/undefined，与存储条目不再
+     * 逐字同形，dirty 永不回清）。`prepend`/`jumpNewSession`/`preState`/`embryoDismiss` 在
+     * 对应 `supports*: false` 的 profile（星座动作）里是空操作。
+     *
+     * 两个联动纪律（add-cosmos-embryo-dismiss-button 5.2）：
+     *  - 勾选 `embryoDismiss` → 草稿提示词**即时清空**（直执行行不残留死文案；保存落
+     *    `prompt: ""`），取消勾选只删键（提示词控件回到可编辑，文案不回填）；
+     *  - `preState` 切走「待创建（星胚）」→ 直执行勾选自动清除（保存面 `buttonIssue`
+     *    归一化拒绝兜底）。
      */
     editButton(index, field, value) {
       if (field === "prepend" && !supportsPrepend) return;
       if (field === "jumpNewSession" && !supportsJump) return;
       if (field === "preState" && !supportsPreState) return;
+      if (field === "embryoDismiss" && !supportsEmbryoDismiss) return;
       commitDraft(draftBase().map((button, i) => {
         if (i !== index) return button;
         if (field === "model") return draftOf({ ...button, model: value });
         if (field === "prepend") return draftOf({ ...button, prepend: value });
-        if (field === "preState") return draftOf({ ...button, preState: value });
+        if (field === "preState") {
+          /* 前置状态切走 proto：直执行勾选自动清勾（草稿态即时联动）。 */
+          const keepDismiss = typeof value === "string" && value.trim() === "proto" ? button.embryoDismiss : undefined;
+          return draftOf({ ...button, preState: value, embryoDismiss: keepDismiss });
+        }
+        /* 星胚直执行（5.2）：勾选时即时清空提示词；取消勾选仅删键。 */
+        if (field === "embryoDismiss") {
+          if (value === true) return draftOf({ ...button, embryoDismiss: true, prompt: "" });
+          return draftOf({ ...button, embryoDismiss: undefined });
+        }
         /* 快捷键（add-cosmos-shortcuts 3.3）：值 = 规范形字符串，`undefined`/`""` = 无
            （草稿删键，存储最小形）；漂移值原样保留供回显。 */
         if (field === "shortcut") return draftOf({ ...button, shortcut: value });
@@ -401,6 +438,9 @@ export function createButtonSettingsController(scope, profile) {
           /* 快捷键（add-cosmos-shortcuts 3.3）：键序尾部；无键不落（存储最小形）。 */
           const shortcut = typeof button.shortcut === "string" ? button.shortcut.trim() : "";
           if (shortcut !== "") entry.shortcut = shortcut;
+          /* 星胚直执行键（add-cosmos-embryo-dismiss-button 5.3）：仅 proto 行写出（键序
+             最末）；直执行行提示词按 schema 豁免恒落空串（控件已即时清空，双保险）。 */
+          if (isProto && button.embryoDismiss === true) entry.embryoDismiss = true;
           return entry;
         });
         await scope.set(section, entries);

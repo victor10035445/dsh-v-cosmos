@@ -5,9 +5,9 @@
  *  - GET  /api/dsh-v-cosmos/scene  星空骨架 JSON（星座/恒星/连线/星云/关联边；
  *                                 **会话不在其列**——会话事实走浏览器半区官方镜像）
  *  - GET  /api/dsh-v-cosmos/events SSE 轻帧广播：`proposals-changed` /
- *                                 `associations-changed` / `queue-changed`（帧体不带载荷，
- *                                 客户端收到后自行重拉 scene / queue——hive 同款；心跳注释
- *                                 防代理断连）。
+ *                                 `associations-changed` / `queue-changed` / `works-changed`
+ *                                 （帧体不带载荷，客户端收到后自行重拉 scene / queue / works
+ *                                 ——hive 同款；心跳注释防代理断连）。
  *  - 提案动作自动执行队列（add-cosmos-action-queue 4.1 / design D6）：
  *                                 `GET /queue` 全量快照（每星座 `{paused, pausedAt, counts,
  *                                 entries}`；条目投影不含 prompt 正文，executing 子态
@@ -91,6 +91,28 @@
  *    （bash/pwsh 的 `command`）isError 且命令串内出现令牌 → block 纠正反馈（已配置给
  *    解析路径 / 未配置给设置指引，解析根可解析时均附「cosmos-spec 技能目录扫描根」行，
  *    原错误文本内嵌）；其余恒 next() 透传（纯逻辑见 skill-provider.mjs，design D3–D6）。
+ *  - 星座作品（p1-add-cosmos-works-service 2.1–2.8 / spec cosmos-works）：作品（脚本工具 /
+ *    文档）的星座快捷入口服务端半区，存储 = 插件自有第四件
+ *    `$DSH_HOME/storages/dsh-v-cosmos.works.json`（`{version, works: {<wsId>: {entries}}}`
+ *    最小形；原子写、坏档回空）。
+ *    · `GET  /works?wsId=` 全量/单星座快照（逐条 `exists` 核验；未知/空星座 → 空 entries）；
+ *    · `GET  /works/browse?wsId=&dir=` 根内目录浏览（`cwd/parent/entries/truncated`，
+ *      目录在前、500 截断；越界 `out-of-root`、符号链接 `symlink` 拒绝进入）；
+ *    · `POST /works/add` `{wsId, relPaths[]}` 批量**整批原子**登记（任一非法整批拒绝：
+ *      `duplicate/limit/out-of-root/not-a-file/symlink`）；
+ *    · `POST /works/pick` `{wsId}` 宿主系统文件选择器多选 → 根内相对路径 → 整批登记
+ *      （取消 `cancelled`、`picker-busy` 单飞；`options.pickFiles` 为测试注入点）；
+ *    · `POST /works/update` `{wsId, workId, name?, note?}` 改名/备注（缺席/空白 = 清除回落）；
+ *    · `POST /works/remove` `{wsId, workId}` 仅删条目不删文件（清空即回收容器键）；
+ *    · `POST /works/open` `{wsId, workId}` 启动（**只收 id，不收裸路径**）：固定校验链
+ *      在册 → resolve 包含性（含分隔符边界）→ 符号链接拒绝 → 文件判定 → `kind` 分派；
+ *      `exec`（exe/bat/cmd）后台运行（bat/cmd 经 `cmd /c`、cwd = 条目目录），其余一切走
+ *      系统默认程序打开（含 ps1，design D4）；成功记 `lastLaunchedAt` + 一帧；
+ *      失败 reason：`entry-unknown/out-of-root/not-a-file/missing-on-disk/symlink/
+ *      platform-unsupported`（非 Windows 结构化降级）；
+ *    · `POST /works/reveal` `{wsId, workId}` 资源管理器 `/select` 定位（同源校验链、
+ *      即发即忘、目标不被运行、零帧广播）。
+ *    全部写盘路径经单点 `broadcastWorks()` 广播 `works-changed` 轻帧（帧体零载荷）。
  *  - 关联存储：$DSH_HOME/storages/dsh-v-cosmos.json（storage-json 同款语义：内存态即
  *    全量、temp 写 + rename 原子替换）。**MUST NOT 落盘到 openspec 工件**——
  *    工作区目录恒只读（零侵入纪律，任务 3.6 冒烟断言）；唯一例外 = `/dismiss-embryo`
@@ -125,9 +147,10 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, openSync, readFileSync, readdirSync, closeSync, writeSync, fdatasyncSync, renameSync, unlinkSync, watch, statSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { existsSync, mkdirSync, openSync, readFileSync, readdirSync, closeSync, writeSync, fdatasyncSync, renameSync, unlinkSync, watch, statSync, lstatSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildSkeleton, scanProposal, assignmentProposalSlugs } from "./scan.mjs";
 import { actionButtonVisible } from "./buttons.mjs";
@@ -137,6 +160,14 @@ import {
   publicEntryOf,
   publicSnapshotOf
 } from "./queue-store.mjs";
+/* 星座作品存储（p1-add-cosmos-works-service 1.1–1.3）：纯逻辑 + 原子写在独立模块，
+   本文件只做端点接线与文件系统裁决（包含性/符号链接/文件类型）。 */
+import {
+  createWorksStore,
+  extensionOf,
+  normalizeRelPath,
+  publicWorkOf
+} from "./works-store.mjs";
 import { createQueueScheduler } from "./queue-scheduler.mjs";
 import { createQueueDeliverer, createSessionReader } from "./session-executor.mjs";
 import { normalizeView, createConfigStore, resolveConfigStorePath } from "./configstore.mjs";
@@ -957,6 +988,362 @@ export function apply(ctx, config, options = {}) {
     revisedAt: queueStore.revisedAt
   });
 
+  /* ── 星座作品（p1-add-cosmos-works-service 2.1–2.8）：作品快捷入口的服务端半区 ──
+     存储 = 插件自有第四件 `$DSH_HOME/storages/dsh-v-cosmos.works.json`（与关联/队列/谱系
+     互不覆盖）。启动面按 design D3 三层收窄：①端点签名只收 `(wsId, workId)`（裸路径结构上
+     不可达）②`relPath` resolve 后严格包含于注册根（含分隔符边界）③`statSync` 必须文件 +
+     符号链接显式拒绝；④`kind` 分派（`exec` 后台运行，其余一切走系统默认程序打开，design D4）。 */
+
+  /** 作品存储（原子写；坏档回空、首写即建）。 */
+  const worksStore = createWorksStore({ logger: ctx.logger ?? null });
+
+  /** 作品变更轻帧（帧体不带载荷；单点广播——所有写盘路径共用，spec「works-changed」）。 */
+  const broadcastWorks = () => broadcast({ type: "works-changed" });
+
+  /** 平台/进程启动注入面（冒烟桩测：跨平台分支与零真实进程；缺省 = 宿主机行为）。 */
+  const platformOf = () => (typeof options?.platform === "string" && options.platform ? options.platform : process.platform);
+  const isWindows = () => platformOf() === "win32";
+
+  /**
+   * cmd.exe 参数引号：经 cmd 解析的命令行里，路径必须**整体加引号**——否则文件名中的
+   * `&`/`|`/`>`/`^` 会被 cmd 当作命令分隔符（白名单只约束「启动哪个条目」，引号负责
+   * 约束「条目名里的元字符」）。内嵌引号按 cmd 习惯双写。
+   * @param {string} value
+   * @returns {string}
+   */
+  const cmdQuote = (value) => '"' + String(value).replace(/"/g, '""') + '"';
+
+  /**
+   * 即发即忘启动（detached + `stdio: 'ignore'` + unref）：Cosmos 是启动器不是终端——
+   * 不等待退出、不捕获输出、不展示子进程生命周期（design D5）。异步 `error` 事件必须
+   * 挂监听，否则 ENOENT 一类失败会升级为未捕获异常（spec「SHALL NOT 抛出未捕获异常」）。
+   * @param {string} command
+   * @param {string[]} args
+   * @param {object} spawnOptions
+   */
+  const launchDetached = (command, args, spawnOptions) => {
+    const spawner = typeof options?.spawn === "function" ? options.spawn : spawn;
+    const child = spawner(command, args, spawnOptions);
+    try {
+      child?.on?.("error", (error) => {
+        ctx.logger?.warn?.("[dsh-v-cosmos] 作品启动子进程失败: %s", String(error?.message || error));
+      });
+      child?.unref?.();
+    } catch {
+      /* 桩对象可能无事件面/句柄方法（不影响请求结果） */
+    }
+    return child;
+  };
+
+  /**
+   * 严格包含性判定（含分隔符边界：`C:\proj-evil` 不是 `C:\proj` 的子路径——design D3）。
+   * @param {string} root 已 `resolve` 的工作区根
+   * @param {string} target 已 `resolve` 的目标绝对路径
+   * @returns {boolean}
+   */
+  const pathInside = (root, target) => {
+    const rel = relative(root, target);
+    if (rel === "") return true;
+    return rel !== ".." && !rel.startsWith(".." + sep) && !isAbsolute(rel);
+  };
+
+  /**
+   * 真实路径包含性（父级符号链接逃逸防守；design「不追随逃逸根的符号链接」）：
+   * 返回 `null` = 不可解析（缺失/无权限）→ 调用方一律 fail-closed。
+   * @param {string} root
+   * @param {string} target
+   * @returns {boolean|null}
+   */
+  const realPathInside = (root, target) => {
+    try {
+      return pathInside(realpathSync(root), realpathSync(target));
+    } catch {
+      return null;
+    }
+  };
+
+  /** 工作区根绝对路径（未在册 / 路径空 → null；端点映射 workspace/unknown）。 */
+  const worksRootOf = (wsId) => {
+    const root = workspacePathOf(wsId);
+    return root ? resolve(root) : null;
+  };
+
+  /**
+   * 作品条目的磁盘裁决链（登记 / 启动 / 定位三处**同源**，spec「与 open 同源校验链」）：
+   * `resolve` 包含性 → `lstat`（符号链接拒绝）→ 真实路径包含性 → 必须普通文件。
+   * @param {string} root 工作区根（已 resolve）
+   * @param {string} relPath 存储中的工作区相对路径（已归一并净房）
+   * @returns {{ok: true, abs: string} | {ok: false, reason: string}}
+   *          reason：out-of-root / missing-on-disk / symlink / not-a-file
+   */
+  const resolveWorkFile = (root, relPath) => {
+    const abs = resolve(root, relPath);
+    if (!pathInside(root, abs)) return { ok: false, reason: "out-of-root" };
+    let stats;
+    try {
+      stats = lstatSync(abs);
+    } catch {
+      return { ok: false, reason: "missing-on-disk" };
+    }
+    if (stats.isSymbolicLink()) return { ok: false, reason: "symlink" };
+    /* fail-closed：真实路径不可解析同样按越界处理（不因解析失败而放行）。 */
+    if (realPathInside(root, abs) !== true) return { ok: false, reason: "out-of-root" };
+    if (!stats.isFile()) return { ok: false, reason: "not-a-file" };
+    return { ok: true, abs };
+  };
+
+  /** 快照的逐条存在性核验（`fs.statSync` 同源链；文件已被外部删除 → false）。 */
+  const workExistsOf = (wsId, entry) => {
+    const root = worksRootOf(wsId);
+    if (!root) return false;
+    return resolveWorkFile(root, entry.relPath).ok === true;
+  };
+
+  /* ── 系统文件选择器（作品拾取；用户修订：取消自建浏览模态）─────────────────
+     宿主侧原生文件对话框（与官方目录选择器同思路）：Windows PowerShell OpenFileDialog /
+     macOS osascript `choose file` / Linux zenity|kdialog；多选、初值 = 工作区根。
+     `options.pickFiles(root)` 为测试/嵌入注入点：返回绝对路径数组，`null` = 取消。 */
+  const PICKER_TIMEOUT_MS = 180000;
+  let pickerBusy = false;
+
+  /** 运行一次原生对话框命令并收集 stdout（超时/启动错误都结构化返回）。 */
+  const runPickerCommand = (command, args) => new Promise((resolveRun) => {
+    const spawner = typeof options?.spawn === "function" ? options.spawn : spawn;
+    let child;
+    try {
+      child = spawner(command, args, { windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+    } catch (error) {
+      resolveRun({ ok: false, error: String(error?.message || error) });
+      return;
+    }
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolveRun(value);
+    };
+    const timer = setTimeout(() => {
+      try { child.kill?.(); } catch { /* ignore */ }
+      finish({ ok: false, error: "picker-timeout" });
+    }, PICKER_TIMEOUT_MS);
+    timer.unref?.();
+    child.stdout?.on?.("data", (chunk) => { stdout += String(chunk); });
+    child.stderr?.on?.("data", (chunk) => { stderr += String(chunk); });
+    child.on?.("error", (error) => finish({ ok: false, error: String(error?.message || error) }));
+    child.on?.("close", (code) => finish({ ok: true, code: Number(code), stdout, stderr }));
+  });
+
+  const pickerLines = (text) => String(text || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  /** 平台原生文件对话框（多选）。返回 `{ok, files: string[]|null}` 或 `{ok:false, reason}`。 */
+  const pickFilesNative = async (root) => {
+    const platform = platformOf();
+    if (platform === "win32") {
+      const quote = (value) => "'" + String(value).replace(/'/g, "''") + "'";
+      const script = [
+        "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)",
+        "Add-Type -AssemblyName System.Windows.Forms",
+        "Add-Type -AssemblyName System.Drawing",
+        "$d = New-Object System.Windows.Forms.OpenFileDialog",
+        "$d.Title = " + quote("选择要凝聚的作品文件"),
+        "$d.InitialDirectory = " + quote(root),
+        "$d.Multiselect = $true",
+        "$d.CheckFileExists = $true",
+        "$d.Filter = " + quote("所有文件 (*.*)|*.*"),
+        "$d.RestoreDirectory = $true",
+        "$owner = New-Object System.Windows.Forms.Form",
+        "$owner.TopMost = $true",
+        "$owner.ShowInTaskbar = $false",
+        "$owner.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::None",
+        "$owner.StartPosition = 'Manual'",
+        "$owner.Location = [System.Drawing.Point]::new(-2000, -2000)",
+        "$owner.Size = [System.Drawing.Size]::new(1, 1)",
+        "$owner.Opacity = 0",
+        "$owner.Show()",
+        "$result = $d.ShowDialog($owner)",
+        "$owner.Close()",
+        "if ($result -eq [System.Windows.Forms.DialogResult]::OK) { $d.FileNames | ForEach-Object { Write-Output $_ } }"
+      ].join("; ");
+      const run = await runPickerCommand("powershell.exe", ["-NoLogo", "-NoProfile", "-STA", "-Command", script]);
+      if (run.ok !== true) return { ok: false, reason: "picker-failed", message: run.error };
+      if (run.code !== 0) return { ok: false, reason: "picker-failed", message: run.stderr };
+      return { ok: true, files: pickerLines(run.stdout) };
+    }
+    if (platform === "darwin") {
+      const escaped = String(root).replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+      const script = [
+        "try",
+        'set theFiles to choose file with prompt "选择要凝聚的作品文件" default location (POSIX file "' + escaped + '") with multiple selections allowed',
+        'set out to ""',
+        "repeat with f in theFiles",
+        "set out to out & (POSIX path of f) & linefeed",
+        "end repeat",
+        "return out",
+        "on error number -128",
+        'return ""',
+        "end try"
+      ].join("\n");
+      const run = await runPickerCommand("osascript", ["-e", script]);
+      if (run.ok !== true) return { ok: false, reason: "picker-failed", message: run.error };
+      /* 用户取消：AppleScript error -128 已被脚本吞掉（返回空串）；其他非零一律按取消处理。 */
+      if (run.code !== 0) return { ok: true, files: null };
+      return { ok: true, files: pickerLines(run.stdout) };
+    }
+    /* Linux：zenity 优先、kdialog 兜底；两者都不可用 → picker-unavailable。 */
+    const title = "选择要凝聚的作品文件";
+    const zenity = await runPickerCommand("zenity", [
+      "--file-selection", "--multiple", "--separator=\n", "--title=" + title, "--filename=" + root + sep
+    ]);
+    if (zenity.ok === true) {
+      if (zenity.code !== 0) return { ok: true, files: null };
+      return { ok: true, files: pickerLines(zenity.stdout) };
+    }
+    const kdialog = await runPickerCommand("kdialog", [
+      "--getopenfilename", root, "--multiple", "--separator", "\n", "--title", title
+    ]);
+    if (kdialog.ok === true) {
+      if (kdialog.code !== 0) return { ok: true, files: null };
+      return { ok: true, files: pickerLines(kdialog.stdout) };
+    }
+    return { ok: false, reason: "picker-unavailable" };
+  };
+
+  const pickFilesFor = async (root) => {
+    if (typeof options?.pickFiles === "function") {
+      try {
+        const files = await options.pickFiles(root);
+        return { ok: true, files: Array.isArray(files) ? files : null };
+      } catch (error) {
+        return { ok: false, reason: "picker-failed", message: String(error?.message || error) };
+      }
+    }
+    return pickFilesNative(root);
+  };
+
+  /** 绝对路径 → 工作区根内相对路径（根外/跨盘 → null；统一 `/` 分隔）。 */
+  const relPathWithin = (root, file) => {
+    const abs = resolve(String(file));
+    const rel = relative(root, abs);
+    if (!rel || rel.startsWith("..") || isAbsolute(rel)) return null;
+    return rel.split(sep).join("/");
+  };
+
+  /** 单次浏览条目上限（spec「单次返回条目数上限 500」）。 */
+  const BROWSE_LIMIT = 500;
+
+  /** 相对路径的父目录（`""` = 根；存储路径恒为 `/` 分隔）。 */
+  const dirOfRelPath = (relPath) => {
+    const index = relPath.lastIndexOf("/");
+    return index < 0 ? "" : relPath.slice(0, index);
+  };
+
+  /**
+   * 工作区根内目录浏览（spec「目录浏览端点」）：`dir` 为空 = 根；越界/符号链接/非目录
+   * 各自结构化拒绝；目录在前、文件在后（各按名称大小写不敏感排序）；超 500 条截断标注。
+   * @param {string} root 工作区根（已 resolve）
+   * @param {unknown} rawDir 请求 `dir` 查询参数
+   * @returns {{ok: true, cwd: string, parent: string, entries: Array<object>, truncated: boolean} |
+   *           {ok: false, reason: string}}
+   */
+  const browseWorksDir = (root, rawDir) => {
+    const raw = typeof rawDir === "string" ? rawDir.trim() : "";
+    let relPath = "";
+    if (raw) {
+      const parsed = normalizeRelPath(raw);
+      if (parsed.ok !== true) return { ok: false, reason: parsed.reason };
+      relPath = parsed.relPath;
+    }
+    const abs = relPath ? resolve(root, relPath) : root;
+    if (!pathInside(root, abs)) return { ok: false, reason: "out-of-root" };
+    let stats;
+    try {
+      stats = lstatSync(abs);
+    } catch {
+      return { ok: false, reason: "missing-on-disk" };
+    }
+    /* 符号链接条目不可作为浏览目标进入（spec「符号链接不追随」）。 */
+    if (stats.isSymbolicLink()) return { ok: false, reason: "symlink" };
+    if (!stats.isDirectory()) return { ok: false, reason: "not-a-directory" };
+    if (realPathInside(root, abs) !== true) return { ok: false, reason: "out-of-root" };
+    let dirents;
+    try {
+      dirents = readdirSync(abs, { withFileTypes: true });
+    } catch {
+      return { ok: false, reason: "missing-on-disk" };
+    }
+    const rows = [];
+    for (const dirent of dirents) {
+      const type = dirent.isSymbolicLink() ? "symlink" : dirent.isDirectory() ? "dir" : "file";
+      rows.push({ name: dirent.name, type });
+    }
+    rows.sort((left, right) => {
+      const rankLeft = left.type === "dir" ? 0 : 1;
+      const rankRight = right.type === "dir" ? 0 : 1;
+      if (rankLeft !== rankRight) return rankLeft - rankRight;
+      const nameLeft = left.name.toLowerCase();
+      const nameRight = right.name.toLowerCase();
+      if (nameLeft < nameRight) return -1;
+      if (nameLeft > nameRight) return 1;
+      return 0;
+    });
+    const truncated = rows.length > BROWSE_LIMIT;
+    const kept = truncated ? rows.slice(0, BROWSE_LIMIT) : rows;
+    /* size 只对**保留页**的文件补（大目录先截断再 stat，避免为丢弃项付系统调用）；
+       单个条目 stat 失败不阻断整页（size 为可选字段）。 */
+    for (const row of kept) {
+      if (row.type !== "file") continue;
+      try {
+        const fileStats = statSync(join(abs, row.name));
+        if (fileStats.isFile()) row.size = fileStats.size;
+      } catch {
+        /* ignore */
+      }
+    }
+    return { ok: true, cwd: relPath, parent: relPath ? dirOfRelPath(relPath) : "", entries: kept, truncated };
+  };
+
+  /** 工作区在册 + 条目在册 + 磁盘裁决（`/works/open` 与 `/works/reveal` 的共同前置）。 */
+  const verifiedWorkOf = (wsId, workId) => {
+    const root = worksRootOf(wsId);
+    if (!root) return { ok: false, reason: "workspace/unknown" };
+    const entry = worksStore.find(wsId, workId);
+    if (!entry) return { ok: false, reason: "entry-unknown" };
+    const checked = resolveWorkFile(root, entry.relPath);
+    if (checked.ok !== true) return { ok: false, reason: checked.reason };
+    return { ok: true, entry, abs: checked.abs };
+  };
+
+  /** 作品端点的 reason → HTTP 状态（同一 reason 码在 `error`/`reason` 两字段同出）。 */
+  const WORKS_STATUS = Object.freeze({
+    invalid: 400,
+    "workspace/unknown": 404,
+    "entry-unknown": 404,
+    "out-of-root": 400,
+    "not-a-file": 400,
+    "not-a-directory": 400,
+    symlink: 400,
+    duplicate: 400,
+    limit: 400,
+    "missing-on-disk": 404,
+    "platform-unsupported": 400,
+    "launch-failed": 500,
+    "picker-busy": 409,
+    "picker-unavailable": 501,
+    "picker-failed": 500
+  });
+  const worksStatusOf = (reason) => WORKS_STATUS[reason] ?? 400;
+
+  /** 作品端点结构化错误体（`error` 与 `reason` 同码，两种消费口径都可用）。 */
+  const worksError = (res, reason, extra = {}) => {
+    json(res, worksStatusOf(reason), { ok: false, error: reason, reason, ...extra });
+  };
+
   /**
    * 宿主 agent 事件面 → 调度器：
    *  - `agent/status`：running/idle 迁移（`payload.agent.id` = 会话 id）；
@@ -1350,6 +1737,12 @@ export function apply(ctx, config, options = {}) {
        装载先于挂载（对账必须看到持久化条目）；`scheduler.start()` 冷读在途条目
        （launching/executing）后逐队列推进。失败只告警（路由与投影不受影响）。 */
     queueStore.load();
+    /* 作品存储装载（坏档 → 空作品表；首写即建）。装载失败只告警：路由与投影照常。 */
+    try {
+      worksStore.load();
+    } catch (error) {
+      ctx.logger?.warn?.("[dsh-v-cosmos] 作品存储装载失败（按空作品表）: %s", String(error?.message || error));
+    }
     const disposeQueueListeners = installQueueListeners();
     void scheduler.start().catch((error) => {
       ctx.logger?.warn?.("[dsh-v-cosmos] 队列启动对账失败: %s", String(error?.message || error));
@@ -1733,6 +2126,297 @@ export function apply(ctx, config, options = {}) {
               return;
             }
             json(res, 400, { error: "invalid", reason: "未知队列操作" });
+            return;
+          }
+
+          /* ── 星座作品（p1-add-cosmos-works-service 2.1–2.7 / spec cosmos-works） ──
+             读面：`GET /works` 全量/单星座快照（逐条 `exists` 核验，只读零写路径）、
+             `GET /works/browse` 根内目录浏览（越界/符号链接拒绝、500 截断）；
+             写面：`POST /works/add|pick|update|remove`（成功即原子写盘 + `works-changed` 轻帧；
+             `pick` = 宿主原生文件选择器，客户端不再自建模态）；
+             动作面：`POST /works/open|reveal`（**只收 `(wsId, workId)`**——请求体里的任何
+             裸路径字段不参与裁决：未登记路径无启动通道，spec「裸路径不可注入」）。
+             错误一律结构化 `{ok:false, error, reason}`（reason 同码，见 WORKS_STATUS）。 */
+          if (route === "/works" && req.method === "GET") {
+            /* wsId 缺席 = 全量；未知/空星座/不在册 → 空 entries（SHALL NOT 报错，
+               spec「空星座快照」；不在册星座的残留条目不投影内容）。 */
+            const wsId = (url.searchParams.get("wsId") ?? "").trim();
+            json(res, 200, {
+              ok: true,
+              ...worksStore.snapshot({
+                wsId,
+                existsOf: workExistsOf,
+                knownOf: (id) => worksRootOf(id) !== null
+              })
+            });
+            return;
+          }
+
+          if (route === "/works/browse" && req.method === "GET") {
+            const wsId = (url.searchParams.get("wsId") ?? "").trim();
+            if (!wsId) {
+              worksError(res, "invalid");
+              return;
+            }
+            const root = worksRootOf(wsId);
+            if (!root) {
+              worksError(res, "workspace/unknown");
+              return;
+            }
+            const listed = browseWorksDir(root, url.searchParams.get("dir"));
+            if (listed.ok !== true) {
+              worksError(res, listed.reason);
+              return;
+            }
+            json(res, 200, {
+              ok: true,
+              cwd: listed.cwd,
+              parent: listed.parent,
+              entries: listed.entries,
+              truncated: listed.truncated
+            });
+            return;
+          }
+
+          /* 系统文件选择器登记（用户修订：MUST NOT 自建浏览模态）：原生对话框多选 →
+             绝对路径收敛进工作区根 → 同 `/works/add` 校验链整批原子登记 → 一帧广播。
+             取消（null/空选）→ `{ok:true, cancelled:true, entries:[]}`（静默）。
+             `picker-busy` 防并发（同一时刻只允许一个系统对话框）。 */
+          if (route === "/works/pick" && req.method === "POST") {
+            const body = await readJsonBody(req);
+            const wsId = typeof body?.wsId === "string" ? body.wsId.trim() : "";
+            if (!wsId) {
+              worksError(res, "invalid", { message: "缺少 wsId" });
+              return;
+            }
+            const root = worksRootOf(wsId);
+            if (!root) {
+              worksError(res, "workspace/unknown");
+              return;
+            }
+            if (pickerBusy) {
+              worksError(res, "picker-busy");
+              return;
+            }
+            pickerBusy = true;
+            let picked;
+            try {
+              picked = await pickFilesFor(root);
+            } finally {
+              pickerBusy = false;
+            }
+            if (picked.ok !== true) {
+              worksError(res, picked.reason, picked.message ? { message: picked.message } : {});
+              return;
+            }
+            if (!Array.isArray(picked.files) || picked.files.length === 0) {
+              json(res, 200, { ok: true, cancelled: true, entries: [] });
+              return;
+            }
+            const relPaths = [];
+            for (const file of picked.files) {
+              const relPath = relPathWithin(root, file);
+              if (!relPath) {
+                const name = String(file).split(/[\\/]/).filter(Boolean).pop() || String(file);
+                worksError(res, "out-of-root", { message: "所选文件不在当前工作区内：" + name });
+                return;
+              }
+              relPaths.push(relPath);
+            }
+            const added = worksStore.add({
+              wsId,
+              relPaths,
+              checkFile: (relPath) => {
+                const checked = resolveWorkFile(root, relPath);
+                if (checked.ok === true) return { ok: true };
+                const reason = checked.reason === "missing-on-disk" ? "not-a-file" : checked.reason;
+                return { ok: false, reason };
+              }
+            });
+            if (added.ok !== true) {
+              worksError(res, added.reason, added.relPath ? { relPath: added.relPath } : {});
+              return;
+            }
+            broadcastWorks();
+            json(res, 200, {
+              ok: true,
+              picked: relPaths.length,
+              entries: added.entries.map((entry) => publicWorkOf(entry, true))
+            });
+            return;
+          }
+
+          if (route === "/works/add" && req.method === "POST") {
+            const body = await readJsonBody(req);
+            const wsId = typeof body?.wsId === "string" ? body.wsId.trim() : "";
+            if (!wsId) {
+              worksError(res, "invalid", { message: "缺少 wsId" });
+              return;
+            }
+            const root = worksRootOf(wsId);
+            if (!root) {
+              worksError(res, "workspace/unknown");
+              return;
+            }
+            /* 请求净房：只认 `relPaths`（批量）与 `relPath`（单条别名）；其余字段（含 `path`）
+               一律不进裁决。形态净房在 store 内完成，磁盘裁决经 `checkFile` 注入。 */
+            const relPaths = Array.isArray(body?.relPaths)
+              ? body.relPaths
+              : typeof body?.relPath === "string"
+                ? [body.relPath]
+                : [];
+            const added = worksStore.add({
+              wsId,
+              relPaths,
+              checkFile: (relPath) => {
+                const checked = resolveWorkFile(root, relPath);
+                if (checked.ok === true) return { ok: true };
+                /* 登记语汇只区分 not-a-file（目录/不存在/非普通文件统一口径，task 2.3）。 */
+                const reason = checked.reason === "missing-on-disk" ? "not-a-file" : checked.reason;
+                return { ok: false, reason };
+              }
+            });
+            if (added.ok !== true) {
+              worksError(res, added.reason, added.relPath ? { relPath: added.relPath } : {});
+              return;
+            }
+            broadcastWorks();
+            json(res, 200, { ok: true, entries: added.entries.map((entry) => publicWorkOf(entry, true)) });
+            return;
+          }
+
+          if (route === "/works/update" && req.method === "POST") {
+            const body = await readJsonBody(req);
+            const wsId = typeof body?.wsId === "string" ? body.wsId.trim() : "";
+            const workId = typeof body?.workId === "string" ? body.workId.trim() : "";
+            if (!wsId || !workId) {
+              worksError(res, "invalid", { message: "缺少 wsId/workId" });
+              return;
+            }
+            /* `name`/`note` 全额覆盖：缺席/空白 = 清除回落（spec 端点语义）。 */
+            const updated = worksStore.update({ wsId, workId, name: body?.name, note: body?.note });
+            if (updated.ok !== true) {
+              worksError(res, updated.reason);
+              return;
+            }
+            broadcastWorks();
+            json(res, 200, { ok: true, entry: publicWorkOf(updated.entry, workExistsOf(wsId, updated.entry)) });
+            return;
+          }
+
+          if (route === "/works/remove" && req.method === "POST") {
+            const body = await readJsonBody(req);
+            const wsId = typeof body?.wsId === "string" ? body.wsId.trim() : "";
+            const workId = typeof body?.workId === "string" ? body.workId.trim() : "";
+            if (!wsId || !workId) {
+              worksError(res, "invalid", { message: "缺少 wsId/workId" });
+              return;
+            }
+            /* 只删条目、MUST NOT 触碰文件系统上的文件本身；清空星座即回收容器键。 */
+            const removed = worksStore.remove({ wsId, workId });
+            if (removed.ok !== true) {
+              worksError(res, removed.reason);
+              return;
+            }
+            broadcastWorks();
+            json(res, 200, { ok: true, removed: { id: removed.removed.id, relPath: removed.removed.relPath } });
+            return;
+          }
+
+          if (route === "/works/open" && req.method === "POST") {
+            const body = await readJsonBody(req);
+            const wsId = typeof body?.wsId === "string" ? body.wsId.trim() : "";
+            const workId = typeof body?.workId === "string" ? body.workId.trim() : "";
+            if (!wsId || !workId) {
+              worksError(res, "invalid", { message: "缺少 wsId/workId" });
+              return;
+            }
+            const verified = verifiedWorkOf(wsId, workId);
+            if (verified.ok !== true) {
+              worksError(res, verified.reason);
+              return;
+            }
+            if (!isWindows()) {
+              worksError(res, "platform-unsupported");
+              return;
+            }
+            const { entry, abs } = verified;
+            try {
+              if (entry.kind === "exec") {
+                /* 执行白名单（design D4）：exe 直接 spawn；bat/cmd 经 `cmd /c` 且
+                   cwd = 条目所在目录（与资源管理器双击同语义，design D5）。 */
+                const workDir = dirname(abs);
+                if (extensionOf(entry.relPath) === "exe") {
+                  /* 直接 spawn（不进取 cmd 解析）：路径里的 `&` 一类元字符不构成命令拼接。 */
+                  launchDetached(abs, [], { cwd: workDir, detached: true, stdio: "ignore", windowsHide: true });
+                } else {
+                  /* 经 cmd 解析的形态必须显式加引号：否则文件名里的 `&`/`|`/`>` 会被 cmd
+                     当作命令分隔符（白名单只约束「启动哪个条目」，引号负责约束「条目名里的
+                     元字符」）。`windowsVerbatimArguments` 关掉 Node 的二次引号处理。 */
+                  launchDetached("cmd.exe", ["/c", cmdQuote(abs)], {
+                    cwd: workDir,
+                    detached: true,
+                    stdio: "ignore",
+                    windowsHide: true,
+                    windowsVerbatimArguments: true
+                  });
+                }
+              } else {
+                /* 其余一切类型（md/pdf/html/other/ps1）走系统默认程序打开，
+                   SHALL NOT 以可执行方式运行（`start` 即 ShellExecute 语义）。 */
+                launchDetached("cmd.exe", ["/c", "start", '""', cmdQuote(abs)], {
+                  cwd: dirname(abs),
+                  detached: true,
+                  stdio: "ignore",
+                  windowsHide: true,
+                  windowsVerbatimArguments: true
+                });
+              }
+            } catch (error) {
+              /* 启动调用本身失败（如进程创建配额）→ 结构化错误，不抛未捕获异常。 */
+              ctx.logger?.warn?.("[dsh-v-cosmos] 作品启动失败: %s", String(error?.message || error));
+              worksError(res, "launch-failed", { message: String(error?.message || error) });
+              return;
+            }
+            /* 成功才记账（lastLaunchedAt）+ 单帧广播；启动本身即发即忘（design D5）。 */
+            const touched = worksStore.touch({ wsId, workId });
+            if (touched.ok === true) broadcastWorks();
+            const view = touched.ok === true ? touched.entry : entry;
+            json(res, 200, { ok: true, entry: publicWorkOf(view, true) });
+            return;
+          }
+
+          if (route === "/works/reveal" && req.method === "POST") {
+            const body = await readJsonBody(req);
+            const wsId = typeof body?.wsId === "string" ? body.wsId.trim() : "";
+            const workId = typeof body?.workId === "string" ? body.workId.trim() : "";
+            if (!wsId || !workId) {
+              worksError(res, "invalid", { message: "缺少 wsId/workId" });
+              return;
+            }
+            const verified = verifiedWorkOf(wsId, workId);
+            if (verified.ok !== true) {
+              worksError(res, verified.reason);
+              return;
+            }
+            if (!isWindows()) {
+              worksError(res, "platform-unsupported");
+              return;
+            }
+            try {
+              /* `explorer /select,<abs>` 是**单个**参数（含逗号）；目标不被运行。
+                 零 `works-changed` 帧：无文档变更（spec「定位端点」）。 */
+              launchDetached("explorer.exe", ["/select," + verified.abs], {
+                detached: true,
+                stdio: "ignore",
+                windowsHide: true
+              });
+            } catch (error) {
+              ctx.logger?.warn?.("[dsh-v-cosmos] 定位失败: %s", String(error?.message || error));
+              worksError(res, "launch-failed", { message: String(error?.message || error) });
+              return;
+            }
+            json(res, 200, { ok: true, entry: publicWorkOf(verified.entry, true) });
             return;
           }
 

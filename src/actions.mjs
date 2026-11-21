@@ -30,8 +30,14 @@
  * `createEmbryoActionExecutor` 承接——消息无 @提案引用（`assembleEmbryoMessage`）、
  * 目标 = 星胚组锚点探索会话（`explorationTargetOf` 做在册/归档解析）、独立标记通道、
  * 恒不新建会话；守卫一律 toast 不回落新建。
+ *
+ * 星胚直执行（add-cosmos-embryo-dismiss-button 2.x）：`preState: "proto"` ∧
+ * `embryoDismiss: true` 的按钮由 `createEmbryoDismissExecutor` 承接——选中星胚合并卡的
+ * 整组 `slugs[]` **顺序**调用既有 dismiss 单条请求（不短路），聚合 outcome 经 `notify`
+ * 呈现；零会话依赖（不解析 sessionId、不导航、不登记标记/草稿、不关整页），与提案/星胚
+ * 执行体共享同一冷却门（整组期间门保持占用）。
  */
-import { actionButtonVisible } from "./buttons.mjs";
+import { actionButtonVisible, isEmbryoDismissButton } from "./buttons.mjs";
 import { proposalDirOf } from "./panel.mjs";
 
 /** 一次性标记的过期窗口（design D5：约 10s）。 */
@@ -598,6 +604,155 @@ export function createEmbryoActionExecutor(options = {}) {
         const detail = String(error?.message || error);
         notify(failedLabel + detail, true);
         return { ok: false, reason: "send-failed", error: detail };
+      } finally {
+        gate.exit();
+      }
+    }
+  };
+}
+
+/** 计为成功的 outcome（幂等重删 `already-missing` 按中性成功计）。 */
+const DISMISS_SUCCESS_OUTCOMES = new Set(["deleted", "already-missing"]);
+
+/** 组级聚合文案键（`getDismissLabels` 读取面；缺键回落内置中文基线）。 */
+const DISMISS_GROUP_LABEL_KEYS = Object.freeze(["all", "partial", "none"]);
+
+/**
+ * 组级聚合文案基线（中文；客户端经 `getDismissLabels` 注入 locale 同源词典。
+ * 占位：`{count}` 全部成功计数、`{removed}`/`{total}` 部分成功分数、`{reason}` 首条失败文案）。
+ */
+const DEFAULT_DISMISS_GROUP_LABELS = Object.freeze({
+  all: "已移除 {count} 个星胚",
+  partial: "已移除 {removed}/{total}（首条失败：{reason}）",
+  none: "未移除（{reason}）"
+});
+
+/**
+ * 星胚直执行链路（add-cosmos-embryo-dismiss-button 2.1–2.5 / spec cosmos-actions
+ * 「星胚直执行执行链路」、spec cosmos-embryo-dismiss「动作条直执行移除入口」）：
+ *
+ * `preState === "proto"` 且 `embryoDismiss === true` 的按钮点击即**整组顺序删**——
+ *  ① 目标解析：选中面板卡须 `isEmbryo === true`；目标 = `card.wsId` 与整组 `card.slugs[]`
+ *     （数组防御：非字符串/空白 slug 过滤，过滤后为空 → `no-target` 静默早退；缺卡/非星胚
+ *     卡同样静默早退，不 toast）；
+ *  ② 点击复验：与渲染门控同一谓词（`actionButtonVisible`：proto ∧ 沉睡），不过 → `gate`
+ *     早退（不消耗冷却窗、零请求）；
+ *  ③ 逐条 `await dismissOne({workspaceId, slug})`：**单条失败不短路**（后续 slug 照常
+ *     发出）；客户端 `dismissEmbryo` 单条执行体恒返回 `{outcome, tone, text}`，抛错按
+ *     `failed` 计；
+ *  ④ 聚合：`deleted` / `already-missing` 计成功（幂等重删按中性计）；单 slug 组沿用单条
+ *     outcome 文案；多 slug 组三态——全部成功 / 部分成功（携带首条失败理由）/ 全部失败，
+ *     经 `notify` 呈现（与提案/星胚执行体同源通道）；
+ *  ⑤ 防重入：与提案/星胚动作**共享同一冷却门**（`options.gate` 注入），`gate.enter()`
+ *     覆盖整组、`finally` 释放——组内请求期间重复点击被忽略；
+ *  ⑥ 零副作用：MUST NOT 解析 sessionId、不导航、不登记标记/落草稿、不关整页、不写任何
+ *     openspec 工件（删除仅经服务端端点）；呈现收敛交给既有 fs.watch → 骨架差分管道。
+ *
+ * @param {object} options
+ * @param {(input: {workspaceId: string, slug: string}) => Promise<{outcome?: string, tone?: string, text?: string}>}
+ *        [options.dismissOne] 单条移除请求（客户端 `actions.dismissEmbryo`；toast 已拆出）
+ * @param {(text: string) => void} [options.notify] 呈现通道（与提案/星胚执行体同源 toast）
+ * @param {() => ({all?: string, partial?: string, none?: string})} [options.getDismissLabels]
+ *        组级聚合文案源（词典读取面；缺键/抛错回落内置中文基线）。占位：
+ *        `{count}` / `{removed}` / `{total}` / `{reason}`
+ * @param {object} [options.gate] 与提案/星胚动作共享的防重入门
+ * @param {() => number} [options.now] 私有门的时钟（未注入 gate 时生效）
+ * @param {number} [options.cooldownMs] 私有门的冷却窗（未注入 gate 时生效）
+ * @returns {{run: (input: {button: object, card: object}) => Promise<object>}}
+ */
+export function createEmbryoDismissExecutor(options = {}) {
+  const dismissOne = typeof options.dismissOne === "function" ? options.dismissOne : null;
+  const notify = typeof options.notify === "function" ? options.notify : () => {};
+  const getDismissLabels = typeof options.getDismissLabels === "function" ? options.getDismissLabels : null;
+  const gate = options.gate ?? createActionGate({ now: options.now, cooldownMs: options.cooldownMs });
+  const labelsOf = () => {
+    const labels = { ...DEFAULT_DISMISS_GROUP_LABELS };
+    if (getDismissLabels === null) return labels;
+    try {
+      const injected = getDismissLabels();
+      if (injected !== null && typeof injected === "object") {
+        for (const key of DISMISS_GROUP_LABEL_KEYS) {
+          if (typeof injected[key] === "string" && injected[key]) labels[key] = injected[key];
+        }
+      }
+    } catch {
+      /* 词典不可达 → 内置中文基线（MUST NOT 阻断移除） */
+    }
+    return labels;
+  };
+
+  return {
+    async run({ button, card } = {}) {
+      if (!gate.canEnter()) return { ok: false, reason: "busy" };
+      /* 调度守卫：非直执行按钮 MUST NOT 走本链路（客户端按同一谓词分流）。 */
+      if (!isEmbryoDismissButton(button)) return { ok: false, reason: "not-direct" };
+      /* 目标解析（2.2）：缺卡 / 非星胚卡 / 无可用 slug → 静默早退（不 toast、零请求）。 */
+      const workspaceId = typeof card?.wsId === "string" ? card.wsId : "";
+      const slugs = card?.isEmbryo === true && Array.isArray(card.slugs)
+        ? card.slugs
+          .filter((slug) => typeof slug === "string" && slug.trim().length > 0)
+          .map((slug) => slug.trim())
+        : [];
+      if (!workspaceId || slugs.length === 0) return { ok: false, reason: "no-target" };
+      /* 点击复验：与渲染门控同一谓词（探索会话活跃 → 入口本就不呈现，点击亦不执行）。 */
+      if (!actionButtonVisible(button, card)) return { ok: false, reason: "gate" };
+      if (dismissOne === null) return { ok: false, reason: "unavailable" };
+      if (!gate.enter()) return { ok: false, reason: "busy" };
+      try {
+        const items = [];
+        /* 整组顺序删（2.3）：逐条 await、单条失败不短路。 */
+        for (const slug of slugs) {
+          let notice = null;
+          try {
+            notice = await dismissOne({ workspaceId, slug });
+          } catch (error) {
+            notice = { outcome: "failed", tone: "error", text: String(error?.message || error) };
+          }
+          items.push({
+            slug,
+            outcome: typeof notice?.outcome === "string" ? notice.outcome : "",
+            tone: typeof notice?.tone === "string" ? notice.tone : "",
+            text: typeof notice?.text === "string" ? notice.text : ""
+          });
+        }
+        const total = items.length;
+        const failures = items.filter((item) => !DISMISS_SUCCESS_OUTCOMES.has(item.outcome));
+        const removed = total - failures.length;
+        const firstFailure = failures[0] ?? null;
+        let tone = "";
+        let text = "";
+        if (total === 1) {
+          /* 单 slug 组：沿用单条 outcome 文案（行为与旧单星粒度一致）。 */
+          tone = items[0].tone;
+          text = items[0].text;
+        } else if (removed === total) {
+          tone = "ok";
+          text = labelsOf().all.replace("{count}", String(total));
+        } else if (removed === 0) {
+          tone = "error";
+          text = labelsOf().none.replace("{reason}", firstFailure.text);
+        } else {
+          tone = "warn";
+          text = labelsOf().partial
+            .replace("{removed}", String(removed))
+            .replace("{total}", String(total))
+            .replace("{reason}", firstFailure.text);
+        }
+        if (text) notify(text);
+        /* 执行摘要（2.5，冒烟直测观测面）：`ok` = 组内全部成功。 */
+        const summary = {
+          ok: removed === total,
+          removed,
+          total,
+          tone,
+          text,
+          outcome: total === 1 ? items[0].outcome : removed === total ? "deleted" : "partial",
+          items
+        };
+        if (firstFailure !== null) {
+          summary.firstFailure = { slug: firstFailure.slug, outcome: firstFailure.outcome, text: firstFailure.text };
+        }
+        return summary;
       } finally {
         gate.exit();
       }

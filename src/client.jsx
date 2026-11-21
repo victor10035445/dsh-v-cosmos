@@ -56,7 +56,7 @@
  */
 import { Component, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
-import { fetchScene, subscribeCosmosEvents, bindSession, fetchQueue, queueAction } from "./api.mjs";
+import { fetchScene, subscribeCosmosEvents, bindSession, fetchQueue, queueAction, fetchWorks, pickWorks, updateWork, removeWork, openWork, revealWork } from "./api.mjs";
 /* 入口分流纯逻辑（add-cosmos-rightbar-dock）：设置枚举 / 入口计划 / 关页裁决全部收敛在
    dock.mjs（可冒烟直测）；本文件只做宿主席位与 DOM 编排。 */
 import {
@@ -75,12 +75,15 @@ import { loadTemplateOverrides, randomTemplateIdOf, saveTemplateOverrides, templ
 import { createSkinD, SKIN_D_PALETTE } from "./cosmos/skin-d.mjs";
 import { COSMOS_DEFAULT_SKIN, COSMOS_SKIN_IDS, COSMOS_SKINS, applySkinTokens, createSkin, skinCardOf } from "./cosmos/skin-registry.mjs";
 import { createCosmosEngine, ENGINE_CSS, FX_PRIORITY, isEditableTarget, isUiChromeTarget, resolveBlastCoreOf, zoomMeterTrackOf, zoomRulerMotionOf, ZOOM_RULER_TICK, ZOOM_RULER_DIST_MIN, ZOOM_RULER_DIST_MAX, ZOOM_RULER_EASE_MS } from "./cosmos/engine.mjs";
+/* 星场焦点视图模型（p2-add-cosmos-works-face 1.1）：works 快照 → 焦点（显示名回落/
+   exists 失谐/kind 净房）的唯一投影纯函数，与引擎渲染核共用同一口径。 */
+import { worksFocusListOf } from "./cosmos/works-face.mjs";
 import { cosmosStore } from "./store.mjs";
 import { COSMOS_SETTINGS_BOUNDS, COSMOS_SETTINGS_DEFAULTS, cosmosLayoutTokensOf, loadCosmosSettings, saveCosmosSettings, settingsFromStorageEvent } from "./settings.mjs";
-import { actionButtonVisible, buttonsSectionOf } from "./buttons.mjs";
+import { actionButtonVisible, buttonsSectionOf, isEmbryoDismissButton } from "./buttons.mjs";
 import { constButtonsSectionOf, normalizeConstButtons } from "./const-buttons.mjs";
 import { findCard, isSelectionSurface, projectPanel, projectQueuePanel, projectSessionPanel, proposalKeyOf, queueEnqueuedKeyOf, queuePendingKeysOf, queueScopeOf, sessionKeyOf, cardIsLinkedOf, crossHoverTargets, hoverSourceAlive, rowIsLinkedOf } from "./panel.mjs";
-import { assembleEmbryoMessage, assembleMessage, consumePendingAction, createActionExecutor, createActionGate, createEmbryoActionExecutor, createPendingActionStore, draftMatches, explorationTargetOf, isBlankDraft, pendingReadinessOf } from "./actions.mjs";
+import { assembleEmbryoMessage, assembleMessage, consumePendingAction, createActionExecutor, createActionGate, createEmbryoActionExecutor, createEmbryoDismissExecutor, createPendingActionStore, draftMatches, explorationTargetOf, isBlankDraft, pendingReadinessOf } from "./actions.mjs";
 import { activitySummaryOf, archiveNoticeOf, archiveRequestFailureNotice, isSessionArchiveOutcome } from "./session-archive.mjs";
 import { FLOAT_ATTACH_WATCH_MS, FLOAT_IMAGE_ACCEPT, FLOAT_IMAGE_TYPES, FLOAT_TEXTAREA_MAX_HEIGHT, FLOAT_TEXTAREA_MIN_HEIGHT, clipboardFilesOf, constellationMessageOf, createAttachFace, createConstellationExecutor, createFloatMarkerStore, floatAttachmentsPendingOf, floatPresentationOf, floatSendPlanOf, floatTextareaHeightOf, floatWatchOutcomeOf, intakeFloatImages, promptFailureTextOf, removeFloatAttachment } from "./constellation-actions.mjs";
 /* 宿主当前会话跟随（add-cosmos-host-session-follow）：单点出口 / 变化沿 / 开页定位的
@@ -195,6 +198,16 @@ const cosmosTemplateNamesStore = createSnapshotStore({ templateNames: loadCosmos
  * `storage` 事件桥同步他窗写入。
  */
 const cosmosPatLineDimStore = createSnapshotStore({ patLineDim: loadCosmosSettings().patLineDim });
+/**
+ * 星场呈现开关（p2-add-cosmos-works-face 1.2）：模块级受控镜像——「通用」页签星场组
+ * face 的受控读面（与 `cosmosTemplateNamesStore` 同构）。唯一写者 = `saveWorksFace`
+ * （整页存活时：净房持久化 + 引擎 `setTuning` 热更 + 本 store）与 `worksFace.set` 的
+ * 整页缺席回落（仅持久化 + 本 store，下次开页构造读持久值）；`storage` 事件桥同步他窗。
+ */
+const cosmosWorksFaceStore = createSnapshotStore({
+  worksContours: loadCosmosSettings().worksContours,
+  worksAscii: loadCosmosSettings().worksAscii
+});
 
 /**
  * 启动方式写入（唯一写者链路）：「配置-Cosmos·通用」face.set → 净房持久化 → 受控镜像。
@@ -449,6 +462,13 @@ function useDrill() {
     () => drillStore.getSnapshot()
   );
 }
+
+/* 星场面镜像（p2-add-cosmos-works-face 3.3；用户修订：面切换不改周边 UI）：
+   引擎在**转场完成**时经 `onFaceChange` 推送 `{face, wsId}`（幂等，键变才回调）。
+   本 store 仅作观测面（引擎仍是面状态的唯一权威；周边面板/动作条两面保持原样，
+   不再消费本镜像做让位）。面状态不持久化——整页重挂载即回 `matter`（本 store 随
+   detach 同步归零）。 */
+const cosmosFaceStore = createSnapshotStore({ face: "matter", wsId: null });
 
 /* 引擎选中镜像（add-cosmos-selection-linkage 3.1/D6）：引擎在选中态**真正变化**时经
    `onSelectChange` 推送 `{kind, wsId, id, lifecycle?}` 或 null（幂等通道，键变才回调）。
@@ -794,6 +814,24 @@ function createCosmosController(ctx, notifyToast, channels) {
   });
 
   /**
+   * 星胚直执行链路（add-cosmos-embryo-dismiss-button 3.4 / design D3）：选中星胚合并卡的
+   * 整组 `slugs[]` **顺序删**——目标解析/复验/聚合/零副作用全在执行体内；与提案/星胚执行体
+   * **共享同一冷却门**（`actionGate`，整组请求期间门保持占用）、toast 与两者同源
+   * （`notifyToast`）；组级聚合文案经 `cosmos.dismiss.*` 词典面注入（缺键回落中文基线）。
+   * 单条请求 = `actions.dismissEmbryo`（无 toast 形态，只返回 `{outcome, tone, text}`）。
+   */
+  const embryoDismissExecutor = createEmbryoDismissExecutor({
+    dismissOne: (input) => actions.dismissEmbryo(input),
+    notify: (text) => notifyToast?.(text),
+    gate: actionGate,
+    getDismissLabels: () => ({
+      all: tr("cosmos.dismiss.groupAll", "已移除 {count} 个星胚"),
+      partial: tr("cosmos.dismiss.groupPartial", "已移除 {removed}/{total}（首条失败：{reason}）"),
+      none: tr("cosmos.dismiss.groupNone", "未移除（{reason}）")
+    })
+  });
+
+  /**
    * 星座动作按钮执行链路（fix-cosmos-action-draft-block 3.x / add-cosmos-native-composer 3.1 /
    * rework：浮动原生窗口设计经宿主槽位核查为结构性死锁后拆除，native 呈现归位关页跳转）：
    * 消息 = 纯 prompt；目标 = 当前钻取星座工作区；**恒新建 + openSession**；
@@ -979,23 +1017,24 @@ function createCosmosController(ctx, notifyToast, channels) {
       return notice;
     },
     /**
-     * 星胚移除执行链路（add-cosmos-embryo-dismiss 4.1 / design D5/D9）：
+     * 星胚移除单条请求（add-cosmos-embryo-dismiss 4.1 / design D5/D9；
+     * add-cosmos-embryo-dismiss-button 3.1 改为**逐 slug 无 toast 形态**）：
      *  - 请求体 `{workspaceId, slug}`：画布实体 `ws.id` 与 proto 星 `data.id`（= 锚点 slug）；
-     *  - POST 自有 dismiss 端点 → **恒 200** + `{outcome}` → 文案映射 → 引擎 toast；
+     *  - POST 自有 dismiss 端点 → **恒 200** + `{outcome}` → `{outcome, tone, text}` 观测面；
+     *  - **MUST NOT 自行 toast**：呈现职责移交动作条直执行执行体（组级聚合语义见
+     *    `createEmbryoDismissExecutor`）——单条执行体只发一个请求并映射文案；
      *  - 呈现零新增：锚点删除经宿主 fs.watch → `proposals-changed` → 骨架差分，星胚以既有
      *    低强度消散变体退场（本方法 MUST NOT 主动收卡 / 关整页）；
-     *  - 防重入的权威门在引擎点击处理器（两击确认 + per-`ws:slug` 在途，D7）；本方法恒发
-     *    一个请求；失败可再次点击重试（两击确认每轮重来）。
+     *  - 防重入的权威门在执行体（共享冷却门覆盖整组）；本方法恒发一个请求，失败可由用户
+     *    再次点击重试（端点幂等）。
      * @param {{workspaceId?: string, slug?: string}} input 星实体钩子（`ws.id` / `data.id`）
-     * @returns {Promise<{outcome: string, tone: string, text: string}>} 呈现产物（冒烟观测面）
+     * @returns {Promise<{outcome: string, tone: string, text: string}>} 呈现产物（执行体聚合/冒烟观测面）
      */
     async dismissEmbryo(input) {
       const workspaceId = typeof input?.workspaceId === "string" ? input.workspaceId : "";
       const slug = typeof input?.slug === "string" ? input.slug : "";
       if (!workspaceId || !slug) {
-        const notice = dismissNotice("failed", "error", tr("cosmos.dismiss.noTarget", "缺少星胚定位信息，未移除"));
-        engine?.toast(notice.text);
-        return notice;
+        return dismissNotice("failed", "error", tr("cosmos.dismiss.noTarget", "缺少星胚定位信息，未移除"));
       }
       let response;
       try {
@@ -1005,47 +1044,42 @@ function createCosmosController(ctx, notifyToast, channels) {
           body: JSON.stringify({ workspaceId, slug })
         });
       } catch (error) {
-        const notice = dismissNotice(
+        return dismissNotice(
           "failed",
           "error",
           tr("cosmos.dismiss.requestFailed", "移除请求失败：") + String(error?.message || error || "")
         );
-        engine?.toast(notice.text); // 端点不可达：可再次点击重试
-        return notice;
       }
       /* 端点恒 200（结果由 outcome 枚举承载）；非 2xx = 请求面失败（代理错误 / 路由不匹配）。 */
       const body = await response.json().catch(() => ({}));
       if (!response.ok) {
-        const notice = dismissNotice(
+        return dismissNotice(
           "failed",
           "error",
           tr("cosmos.dismiss.requestFailed", "移除请求失败：") +
             String(body?.reason || body?.error || response.status + " " + response.statusText)
         );
-        engine?.toast(notice.text);
-        return notice;
       }
       const outcome = typeof body?.outcome === "string" ? body.outcome : "";
       const reason = typeof body?.reason === "string" ? body.reason : "";
-      let notice;
       if (outcome === "deleted") {
-        notice = dismissNotice(outcome, "ok", tr("cosmos.dismiss.deleted", "星胚已移除"));
-      } else if (outcome === "already-missing") {
-        notice = dismissNotice(outcome, "neutral", tr("cosmos.dismiss.alreadyMissing", "该星胚已不存在"));
-      } else if (outcome === "guard-dir-exists") {
-        notice = dismissNotice(outcome, "warn", tr("cosmos.dismiss.guardDirExists", "同名提案已创建，未移除"));
-      } else if (outcome === "missing-workspace") {
-        notice = dismissNotice(outcome, "error", tr("cosmos.dismiss.missingWorkspace", "工作区不在册，未移除"));
-      } else {
-        /* failed（或未知枚举）→ 携带端点 reason 供用户判断；未知枚举原样透传便于诊断。 */
-        notice = dismissNotice(
-          outcome || "failed",
-          "error",
-          tr("cosmos.dismiss.failed", "移除失败：") + (reason || tr("cosmos.dismiss.failedUnknown", "未知错误"))
-        );
+        return dismissNotice(outcome, "ok", tr("cosmos.dismiss.deleted", "星胚已移除"));
       }
-      engine?.toast(notice.text);
-      return notice;
+      if (outcome === "already-missing") {
+        return dismissNotice(outcome, "neutral", tr("cosmos.dismiss.alreadyMissing", "该星胚已不存在"));
+      }
+      if (outcome === "guard-dir-exists") {
+        return dismissNotice(outcome, "warn", tr("cosmos.dismiss.guardDirExists", "同名提案已创建，未移除"));
+      }
+      if (outcome === "missing-workspace") {
+        return dismissNotice(outcome, "error", tr("cosmos.dismiss.missingWorkspace", "工作区不在册，未移除"));
+      }
+      /* failed（或未知枚举）→ 携带端点 reason 供用户判断；未知枚举原样透传便于诊断。 */
+      return dismissNotice(
+        outcome || "failed",
+        "error",
+        tr("cosmos.dismiss.failed", "移除失败：") + (reason || tr("cosmos.dismiss.failedUnknown", "未知错误"))
+      );
     },
     /**
      * 新增工作区（add-cosmos-add-workspace D1/D2/D7 / 4.1）：官方服务组合
@@ -1152,6 +1186,25 @@ function createCosmosController(ctx, notifyToast, channels) {
       return merged;
     },
     /**
+     * 星场呈现开关写入（p2-add-cosmos-works-face 1.2；「通用」页签星场组 face 的落点）：
+     * 轻量即时偏好——净房持久化 → 已打开整页 `engine.setTuning` 热更（下一帧生效，
+     * 无需重开整页）→ 受控镜像同步。带部分写语义：只写给出的键（其余读回现值）。
+     * @param {{worksContours?: boolean, worksAscii?: boolean}} patch
+     * @returns {object} 净房后的完整设置
+     */
+    saveWorksFace(patch) {
+      const merged = saveCosmosSettings({
+        ...(patch && typeof patch.worksContours === "boolean" ? { worksContours: patch.worksContours } : {}),
+        ...(patch && typeof patch.worksAscii === "boolean" ? { worksAscii: patch.worksAscii } : {})
+      });
+      engine?.setTuning(tuningPatchOf(merged));
+      cosmosWorksFaceStore.set({
+        worksContours: merged.worksContours,
+        worksAscii: merged.worksAscii
+      });
+      return merged;
+    },
+    /**
      * 全局快捷键写入（add-cosmos-shortcuts 5.3 / spec「设置页『快捷键』页签」）：
      * 轻量偏好即时保存——净房写盘 → 已打开整页 `engine.setShortcuts` 热更（引擎键位表
      * 翻转/飞回立即跟随）→ 模块 store 同步（关闭链/按钮键分发/浮窗提示经 ref/store 读取）。
@@ -1193,7 +1246,7 @@ function createCosmosController(ctx, notifyToast, channels) {
      */
     selectSkin(id) {
       const applied = applySkinSelection(id);
-      engine?.setSkin?.(createSkin(applied));
+      engine?.setSkin?.(createSkin(applied), skinModeOf(applied));
       return applied;
     },
     /** 当前皮肤 id（设置页选中态镜像；与整页 token 下发同源）。 */
@@ -1449,6 +1502,9 @@ function createCosmosController(ctx, notifyToast, channels) {
   }
 
   const disposers = [];
+  /* 星场数据面随钻取作用域刷新（p2-add-cosmos-works-face 1.1）：进入/切换/退出星座时
+     把作品快照重投引擎（缓存先发布 + 在途对账；回银河清空）。订阅器入 disposers 回收。 */
+  disposers.push(drillStore.subscribe(() => syncWorksScope()));
   disposers.push(ctx.sessions?.list?.subscribe?.(() => scheduleRebuild()));
   disposers.push(ctx.workspaces?.list?.subscribe?.(() => scheduleRebuild()));
   /* 统一会话状态订阅（5.1）：completionUnread / pendingInteraction 随用户打开会话
@@ -1467,12 +1523,53 @@ function createCosmosController(ctx, notifyToast, channels) {
      - `proposals-changed` / `associations-changed` → 重拉 scene（既有行为逐字不变；
        SSE 重订自愈，dock 正文重挂载亦经 attach 的单次 fetch + 本条长连接）。 */
   disposers.push(subscribeCosmosEvents((frame) => {
+    /* `works-changed`（p2 tasks 5.1）：帧体零载荷 → 只重拉当前钻取星座作品快照并
+       属性级补丁到星场（MUST NOT 触发 scene 重拉——作品增删改不改变骨架天体）。 */
+    if (frame?.type === "works-changed") {
+      const drill = drillStore.getSnapshot();
+      if (drill && drill.wsId) loadWorksScope(drill.wsId);
+      return;
+    }
     if (frame?.type === "queue-changed") {
       refreshQueue();
       return;
     }
     refreshSkeleton();
   }));
+
+  /* ── 星场作品数据面接线（p2-add-cosmos-works-face 1.1 / 5.1）────────────────
+     读：`fetchWorks(wsId)` → per-星座缓存 + 在途防重（模块层 refreshWorks）；
+     写：`engine.setWorks(wsId, 焦点视图模型)`（属性级补丁在渲染核内完成）；
+     动作：`worksActions` 六桥直接透传 api.mjs（wsId 首参由引擎传入，引擎零 URL 构造）。 */
+  function pushWorksToEngine(wsId) {
+    if (!engine || !wsId) return;
+    const snap = cosmosWorksStore.getSnapshot();
+    const entries = snap.wsId === wsId ? snap.entries : (worksCacheByWs.get(wsId) || []);
+    engine.setWorks?.(wsId, worksFocusListOf(entries));
+  }
+
+  function loadWorksScope(wsId) {
+    const id = typeof wsId === "string" && wsId ? wsId : null;
+    if (!id) {
+      publishWorksSnapshot({ status: "idle", wsId: null, entries: [] });
+      engine?.setWorks?.(null, []);
+      return Promise.resolve();
+    }
+    const cached = worksCacheByWs.get(id);
+    publishWorksSnapshot({ status: cached ? "ready" : "loading", wsId: id, entries: cached || [] });
+    pushWorksToEngine(id);
+    return refreshWorks(id)
+      .then(() => {
+        const drill = drillStore.getSnapshot();
+        if (drill && drill.wsId === id) pushWorksToEngine(id);
+      })
+      .catch(() => { /* refreshWorks 自带容错形；此处兜住极端同步异常（MUST NOT 抛穿 UI） */ });
+  }
+
+  function syncWorksScope() {
+    const drill = drillStore.getSnapshot();
+    loadWorksScope(drill ? drill.wsId : null);
+  }
 
   /* 宿主当前会话跟随（add-cosmos-host-session-follow / design D5）：单点出口 + 变化沿
      订阅在**控制器作用域**（页开合无关）——主源 subscribe 与降级镜像跨整页开合存活，
@@ -1492,6 +1589,9 @@ function createCosmosController(ctx, notifyToast, channels) {
        子面保留同名方法（既有调用面零变化）。 */
     saveTuning: actions.saveTuning,
     saveNav: actions.saveNav,
+    /* 星场两开关（p2 1.2）：设置页 face 的整页存活落点——必须顶层暴露，否则 face 回落
+       直接持久化分支（整页开着时热更不生效；templateNames 既有先例的同一调用面）。 */
+    saveWorksFace: actions.saveWorksFace,
     savePreflight: actions.savePreflight,
     getTuning: actions.getTuning,
     selectSkin: actions.selectSkin,
@@ -1504,6 +1604,9 @@ function createCosmosController(ctx, notifyToast, channels) {
        * @param {{button: object, card: object}} input
        */
       runButton(input) {
+        /* 星胚直执行分流（add-cosmos-embryo-dismiss-button 3.2）：最高优先级——`proto` ∧
+           `embryoDismiss: true` 走整组顺序删（零会话依赖），MUST NOT 组装消息/开会话。 */
+        if (isEmbryoDismissButton(input?.button)) return embryoDismissExecutor.run(input);
         /* 星胚动作分流（add-cosmos-action-prestate-gate 3.1）：`preState: "proto"` 固定
            走探索会话链路（恒不新建会话）；其余按钮维持提案动作链路逐字不变。 */
         if (input?.button?.preState === "proto") return embryoExecutor.run(input);
@@ -1607,15 +1710,18 @@ function createCosmosController(ctx, notifyToast, channels) {
       engine = createCosmosEngine({
         container,
         style: skin,
+        /* 皮肤明暗（p2 星场）：light 皮肤画布禁加色（glow 走 source-over）。 */
+        skinMode: skinModeOf(settings.skin),
         settings, // 平移调参（settings.mjs 持久化面；后续设置 UI 经 saveCosmosSettings + setTuning 热更）
         onOpenSession: (sessionId) => actions.openSession(sessionId),
         /* 归档动作（add-cosmos-session-archive-action D4/3.3）：与 onOpenSession 同模式注入，
            整页保持打开；引擎以返回的 Promise 作为按钮在途窗口（D6）。 */
         onArchiveSession: (sessionId) => actions.archiveSession(sessionId),
-        /* 星胚移除（add-cosmos-embryo-dismiss 4.1 / D5）：两击确认后的服务端动词出口，
-           载荷 = 该星实体 `ws.id` 与 proto 星 `data.id`（锚点 slug）；整页保持打开（消散由
-           既有骨架差分 + 星胚低强度消散变体承接）。 */
-        onDismissEmbryo: (input) => actions.dismissEmbryo(input),
+        /* 星胚移除**不再注入引擎**（add-cosmos-embryo-dismiss-button 3.4 / 4.3）：画布 tips
+           卡退出承载移除入口（无按钮行、无两击确认、无引擎侧移除回调面），服务端
+           动词出口改由动作条星胚直执行执行体（`embryoDismissExecutor`）经
+           `actions.dismissEmbryo` 调用，整页保持打开（消散由既有骨架差分 + 星胚低强度消散
+           变体承接）。 */
         /* 决策入口（cosmos-session-decide D6 / 5.3）：与 actions.openSession **同一条官方
            导航链路**——先关 Cosmos 整页 → `ctx.uiWorkspace.openSession`（旧宿主回落
            `ctx.sessions.open`）；决策选项与输入区由 DSH 原生 composer takeover 呈现，
@@ -1634,13 +1740,9 @@ function createCosmosController(ctx, notifyToast, channels) {
             label: tr("cosmos.card.vitality", "活力"),
             active: tr("cosmos.card.vitality.active", "活跃"),
             sleep: tr("cosmos.card.vitality.sleep", "沉睡")
-          },
-          /* 星胚卡「移除星胚」按钮 + 内联确认态文案（add-cosmos-embryo-dismiss D9）：
-             仅按钮文案进引擎；outcome toast 映射全在客户端执行体内（actions.dismissEmbryo）。 */
-          dismiss: {
-            remove: tr("cosmos.card.dismiss.remove", "移除星胚"),
-            confirm: tr("cosmos.card.dismiss.confirm", "确认移除？")
           }
+          /* `dismiss` 文案面随 tips 入口退役（add-cosmos-embryo-dismiss-button 4.3）：
+             引擎 labels 契约收缩为 decide / vitality / card 三项。 */
         },
         /* 钻取态 → React 面板（过滤/让位）；引擎是唯一权威，镜像只读。 */
         onDrillChange: (info) => drillStore.set(info),
@@ -1661,7 +1763,38 @@ function createCosmosController(ctx, notifyToast, channels) {
         },
         /* 浮窗打开态探针（add-cosmos-shortcuts 4.2/D13）：浮窗 armed 即 true——
            引擎 goHome/togglePan 分支据此模态让位（语音键与关闭键不在引擎侧，不受影响）。 */
-        isFloatOpen: () => floatOpenOf()
+        isFloatOpen: () => floatOpenOf(),
+        /* 星场面状态镜像（p2 tasks 3.3/4.1）：引擎在转场**完成**时推送，幂等键变才回调；
+           React 据此让位天体面面板/动作条（引擎仍是唯一权威）。 */
+        onFaceChange: (info) => {
+          cosmosFaceStore.set(info && typeof info === "object"
+            ? { face: info.face === "field" ? "field" : "matter", wsId: typeof info.wsId === "string" ? info.wsId : null }
+            : { face: "matter", wsId: null });
+        },
+        /* 星场动作桥（p2 tasks 4.2/4.3）：六端点直通 api.mjs（容错形同 fetchScene）；
+           引擎只传 (wsId, ...) 参数、不拼 URL——启动/定位的「只收 id」白名单语义由服务端保证。 */
+        worksActions: {
+          /* 系统文件选择器登记（用户修订：不自建浏览模态）：宿主原生对话框选中后，
+             服务端收敛根内相对路径并整批原子登记；成功后立即重拉快照（凝聚动画由
+             渲染核属性级补丁消费，不等 SSE）。取消由呈现层静默。 */
+          pick: (wsId) => pickWorks(wsId).then((result) => {
+            if (result && result.ok === true && result.cancelled !== true) loadWorksScope(wsId);
+            return result;
+          }),
+          update: (wsId, workId, patch) => updateWork(wsId, workId, patch).then((result) => {
+            if (result && result.ok === true) loadWorksScope(wsId);
+            return result;
+          }),
+          remove: (wsId, workId) => removeWork(wsId, workId).then((result) => {
+            if (result && result.ok === true) loadWorksScope(wsId);
+            return result;
+          }),
+          open: (wsId, workId) => openWork(wsId, workId).then((result) => {
+            if (result && result.ok === true) loadWorksScope(wsId);
+            return result;
+          }),
+          reveal: (wsId, workId) => revealWork(wsId, workId)
+        }
       });
       if (mergedScene) engine.setScene(mergedScene, "rebuild");
       if (filterQuery.trim()) syncFilter(); // 重挂载保持当前查询（引擎落位 + 坡道续接）
@@ -1669,6 +1802,8 @@ function createCosmosController(ctx, notifyToast, channels) {
       /* 队列快照与骨架同批拉取（spec「持久化与多窗口广播」：GET /queue 供页面加载对账）；
          之后由 `queue-changed` 轻帧驱动增量对账，MUST NOT 轮询。 */
       refreshQueue();
+      /* 星场作品快照随挂载投递（p2 1.1）：已钻取星座立即应用缓存/在途对账；未钻取清空。 */
+      syncWorksScope();
       if (open && visible) engine.start();
       /* 开页定位（add-cosmos-host-session-follow 3.1 / design D7）：每次开页执行——
          当前会话在册 → 同链路 focusBody；场景尚未就绪（mergedScene null）时保留，
@@ -1683,6 +1818,9 @@ function createCosmosController(ctx, notifyToast, channels) {
       drillStore.set(null); // 引擎实例销毁 → 钻取镜像归零（面板恢复全量分组）
       engineSelectStore.set(null); // 引擎实例销毁 → 选中镜像归零（避免陈旧聚焦目标）
       engineHoverStore.set(null); // 引擎实例销毁 → 悬停镜像归零（避免陈旧关联标记）
+      /* 星场面镜像归零（p2）：面状态不持久化，整页重开恒回天体面；作品快照随钻取清空。 */
+      cosmosFaceStore.set({ face: "matter", wsId: null });
+      publishWorksSnapshot({ status: "idle", wsId: null, entries: [] });
     },
     setOpen(nextOpen) {
       open = nextOpen;
@@ -4016,6 +4154,13 @@ function currentSkinId() {
   return cosmosSkinStore.getSnapshot().skin;
 }
 
+/** 皮肤明暗（p2 星场：light 皮肤 SHALL NOT 使用加色混合）——注册表 `mode` 单源；
+    未知/非法 id → `dark`（与缺省皮肤同域，SHALL NOT 抛错）。 */
+function skinModeOf(id) {
+  const entry = COSMOS_SKINS.find((item) => item && item.id === id);
+  return entry && entry.mode === "light" ? "light" : "dark";
+}
+
 /**
  * 缩放导航 + 界面尺寸偏好投影（add-cosmos-zoom-focus-nav 3.2；add-cosmos-layout-tuning
  * 2.1 扩尺寸 13 键）：模块级 store——设置页「界面」页签的受控镜像；写入唯一链路 =
@@ -4242,6 +4387,92 @@ async function refreshQueue() {
 }
 
 /* ------------------------------------------------------------------ *
+ * 星场作品数据面（p2-add-cosmos-works-face 1.1 / 5.1）
+ *
+ * 唯一读通道 = `GET /works?wsId`（`fetchWorks`）；唯一触发面：
+ *  - 钻取变化（进入星座/切换星座）→ 有缓存先发布、再在途重拉对账；
+ *  - SSE `works-changed` 轻帧（帧体零载荷）→ 重拉当前钻取星座快照；
+ *  - 登记/改名/移除动作成功后（动作桥回调内）→ 立即重拉（不等帧）。
+ * 纪律：
+ *  - **per 钻取星座缓存**（`worksCacheByWs`）：再次进入同一星座零等待先用缓存；
+ *  - **在途防重**（`worksInFlightKey`）：同星座已有请求在途 → 复用、不叠加请求；
+ *  - 快照等价短路（`sameWorksEntries`）：内容不变不 set，订阅者零重渲染；
+ *  - 失败保留旧投影（不闪空），错误进快照 `error`（呈现层由 toast 承担）。
+ * ------------------------------------------------------------------ */
+
+/** 作品快照（当前钻取星座；`entries` 为服务端条目原形，投影交给 worksFocusListOf）。 */
+const cosmosWorksStore = createSnapshotStore({ status: "idle", wsId: null, entries: [] });
+
+/** 在途快照拉取序号（乱序响应丢弃：只认最后一次 refreshWorks 的结果）。 */
+let worksFetchSeq = 0;
+/** 在途请求星座 id（同星座请求复用；换星座即开始新序号）。 */
+let worksInFlightKey = null;
+/** per-星座快照缓存（钻取会话内存，MUST NOT 持久化）。 */
+const worksCacheByWs = new Map();
+
+/** 快照等价判定（稳定引用防线：条目内容等价 → 不 set）。 */
+function sameWorksEntries(a, b) {
+  if (a === b) return true;
+  try {
+    return JSON.stringify(a ?? []) === JSON.stringify(b ?? []);
+  } catch {
+    return false;
+  }
+}
+
+/** 发布作品快照（等价短路；返回发布后的当前快照引用）。 */
+function publishWorksSnapshot(next) {
+  const current = cosmosWorksStore.getSnapshot();
+  if (
+    current.status === next.status &&
+    current.wsId === next.wsId &&
+    (current.error ?? null) === (next.error ?? null) &&
+    sameWorksEntries(current.entries, next.entries)
+  ) {
+    return current;
+  }
+  cosmosWorksStore.set(next);
+  return next;
+}
+
+/**
+ * 作品快照刷新（唯一写者；幂等、容错、不抛）。
+ * @param {string|null} wsId 钻取星座 id；null = 清空（回银河）
+ * @returns {Promise<object>} 发布后的快照
+ */
+async function refreshWorks(wsId) {
+  const id = typeof wsId === "string" && wsId.trim() ? wsId.trim() : null;
+  if (!id) {
+    worksInFlightKey = null;
+    return publishWorksSnapshot({ status: "idle", wsId: null, entries: [] });
+  }
+  if (worksInFlightKey === id) return cosmosWorksStore.getSnapshot(); // 在途防重
+  worksInFlightKey = id;
+  const seq = ++worksFetchSeq;
+  let result;
+  try {
+    result = await fetchWorks(id);
+  } catch (error) {
+    result = { ok: false, error: String(error?.message || error) };
+  }
+  if (seq === worksFetchSeq) worksInFlightKey = null; // 只由最新序号清门
+  if (seq !== worksFetchSeq) return cosmosWorksStore.getSnapshot(); // 乱序响应：丢弃
+  if (result?.ok === true) {
+    const container = result.works && typeof result.works === "object" ? result.works[id] : null;
+    const entries = Array.isArray(container?.entries) ? container.entries : [];
+    worksCacheByWs.set(id, entries);
+    return publishWorksSnapshot({ status: "ready", wsId: id, entries });
+  }
+  const current = cosmosWorksStore.getSnapshot();
+  return publishWorksSnapshot({
+    status: current.wsId === id && current.status === "ready" ? "ready" : "error",
+    wsId: id,
+    entries: current.wsId === id ? current.entries : (worksCacheByWs.get(id) || []),
+    error: String(result?.error || "works fetch failed")
+  });
+}
+
+/* ------------------------------------------------------------------ *
  * 选择失败可观测面（fix-cosmos-skin-select-feedback D1–D3）
  *
  * 「皮肤 / 导航」设置页签的写入链唯一存活依赖 = 整页控制器（controllerRef.current）。
@@ -4438,6 +4669,8 @@ function CosmosSurface(props) {
      projectPanel（钻取态过滤 + 搜索过滤联动）。 */
   const sceneVersion = useSceneVersion();
   const drill = useDrill();
+  /* 用户修订：星场只替换画布主视图——提案面板/队列/会话面板/动作条/模板工具/新增入口
+     两面完全一致，MUST NOT 随面隐藏（无 face 消费点）。 */
   /* 引擎选中镜像（add-cosmos-selection-linkage 3.1/3.2）：视图 → 面板的反向通道。 */
   const engineSel = useEngineSelection();
   /* 跨面板悬停（p2-add-cosmos-cross-hover-markers 1.2）：引擎画布悬停只读镜像 +
@@ -4968,9 +5201,12 @@ function CosmosSurface(props) {
   };
 
   /* 星胚旧锚点（无 sessionId）→ 按钮禁用 + title 提示（spec「旧锚点禁用提示」：
-     不组装、不导航；锚点由后续 explore 重写即自愈）。 */
+     不组装、不导航；锚点由后续 explore 重写即自愈）。
+     **直执行豁免**（add-cosmos-embryo-dismiss-button 3.3）：`embryoDismiss: true` 的 proto 行
+     不解析探索会话（整组顺序删只需 wsId + slugs），MUST NOT 套用该禁用——旧锚点照常可移除。 */
   const actionButtonStateOf = (button) => {
     if (button?.preState !== "proto") return null;
+    if (isEmbryoDismissButton(button)) return null;
     if (!selectedCard || selectedCard.lifecycle !== "proto") return null;
     if (typeof selectedCard.sessionId === "string" && selectedCard.sessionId) return null;
     return { disabled: true, title: tr("cosmos.actions.embryoNoSession", "缺少探索会话关联") };
@@ -6856,9 +7092,12 @@ export function apply(ctx) {
       if (next === null) return;
       const prevTemplateNames = cosmosTemplateNamesStore.getSnapshot()?.templateNames === true;
       const prevPatLineDim = cosmosPatLineDimStore.getSnapshot()?.patLineDim;
+      const prevWorksContours = cosmosWorksFaceStore.getSnapshot()?.worksContours !== false;
+      const prevWorksAscii = cosmosWorksFaceStore.getSnapshot()?.worksAscii !== false;
       cosmosLaunchStore.set({ launchMode: next.launchMode });
       cosmosTemplateNamesStore.set({ templateNames: next.templateNames });
       cosmosPatLineDimStore.set({ patLineDim: next.patLineDim });
+      cosmosWorksFaceStore.set({ worksContours: next.worksContours, worksAscii: next.worksAscii });
       /* 已打开的整页热更（add-cosmos-template-name-toggle 1.2/D4）：仅本键真实翻转时才触达
          引擎——MUST NOT 借同源桥顺带热更其它调参键（那属本提案范围外的行为变更）。 */
       if (prevTemplateNames !== (next.templateNames === true)) {
@@ -6876,6 +7115,18 @@ export function apply(ctx) {
           controllerRef.current?.getEngine?.()?.setTuning?.({ patLineDim: next.patLineDim / 100 });
         } catch (error) {
           console.warn("[dsh-v-cosmos] pattern line brightness hot update failed:", error);
+        }
+      }
+      /* 星场两开关跨窗热更（p2-add-cosmos-works-face 1.2）：仅本键真实值变时触达引擎；
+         失败不阻断镜像同步（下次开页构造读持久值兜底）。 */
+      if (prevWorksContours !== (next.worksContours !== false) || prevWorksAscii !== (next.worksAscii !== false)) {
+        try {
+          controllerRef.current?.getEngine?.()?.setTuning?.({
+            worksContours: next.worksContours !== false,
+            worksAscii: next.worksAscii !== false
+          });
+        } catch (error) {
+          console.warn("[dsh-v-cosmos] works face hot update failed:", error);
         }
       }
     };
@@ -7352,6 +7603,27 @@ export function apply(ctx) {
       return merged;
     }
   };
+  /* 「通用」页签·星场呈现两开关 face（p2-add-cosmos-works-face 1.2/D7）：受控镜像 =
+     模块级 `cosmosWorksFaceStore`；整页存活 → 控制器 `saveWorksFace`（净房持久化 +
+     引擎 setTuning 热更 + 镜像同步）；整页未打开 → 仍即时持久化并同步镜像（下次开页
+     构造读持久值）。与 templateNamesFace 同款「即时保存、无暂存钮」纪律。 */
+  const worksFaceSettings = {
+    getSnapshot: () => cosmosWorksFaceStore.getSnapshot(),
+    subscribe: (listener) => cosmosWorksFaceStore.subscribe(listener),
+    set: (patch) => {
+      const controller = controllerRef.current;
+      if (controller != null && typeof controller.saveWorksFace === "function") {
+        const merged = controller.saveWorksFace(patch);
+        return merged != null ? merged : cosmosWorksFaceStore.getSnapshot();
+      }
+      const merged = saveCosmosSettings({
+        ...(patch && typeof patch.worksContours === "boolean" ? { worksContours: patch.worksContours } : {}),
+        ...(patch && typeof patch.worksAscii === "boolean" ? { worksAscii: patch.worksAscii } : {})
+      });
+      cosmosWorksFaceStore.set({ worksContours: merged.worksContours, worksAscii: merged.worksAscii });
+      return merged;
+    }
+  };
   ctx.slots.inject(SETTINGS_TAB_SLOT, () =>
     ctx.slots.register(
       {
@@ -7360,7 +7632,7 @@ export function apply(ctx) {
         order: -1,
         label: () => sectionT("cosmos.settings.tabGeneral"),
         locale: NS,
-        inject: () => ({ launch: launchFace, paths: pathsSettings, templateNames: templateNamesFace, patLineDim: patLineDimFace })
+        inject: () => ({ launch: launchFace, paths: pathsSettings, templateNames: templateNamesFace, patLineDim: patLineDimFace, worksFace: worksFaceSettings })
       },
       CosmosGeneralPanel
     )
@@ -7656,9 +7928,8 @@ const DICT = {
     "cosmos.card.decide.question": "待回答",
     "cosmos.card.decide.other": "待决策",
     /* 信息卡「打开会话」导航（dock 态 tab 保持；embedded 关整页）——无禁用态文案。 */
-    /* 星胚卡「移除星胚」按钮 / 内联确认态 / outcome toast（add-cosmos-embryo-dismiss D9）。 */
-    "cosmos.card.dismiss.remove": "移除星胚",
-    "cosmos.card.dismiss.confirm": "确认移除？",
+    /* 星胚移除 outcome 文案（add-cosmos-embryo-dismiss D9；add-cosmos-embryo-dismiss-button
+       起入口迁至动作条直执行按钮——tips 卡按钮/确认态文案随入口退役，新增组级聚合三态）。 */
     "cosmos.dismiss.deleted": "星胚已移除",
     "cosmos.dismiss.alreadyMissing": "该星胚已不存在",
     "cosmos.dismiss.guardDirExists": "同名提案已创建，未移除",
@@ -7667,6 +7938,9 @@ const DICT = {
     "cosmos.dismiss.failedUnknown": "未知错误",
     "cosmos.dismiss.requestFailed": "移除请求失败：",
     "cosmos.dismiss.noTarget": "缺少星胚定位信息，未移除",
+    "cosmos.dismiss.groupAll": "已移除 {count} 个星胚",
+    "cosmos.dismiss.groupPartial": "已移除 {removed}/{total}（首条失败：{reason}）",
+    "cosmos.dismiss.groupNone": "未移除（{reason}）",
     "cosmos.actions.aria": "提案动作",
     "cosmos.actions.switchFailed": "模型切换失败：",
     "cosmos.actions.switchUnavailable": "模型切换不可用：当前连接不支持",
@@ -7784,6 +8058,15 @@ const DICT = {
     "cosmos.settings.patLineDimLabel": "图样连线亮度",
     "cosmos.settings.patLineDimHint": "调低会弱化星座图样的辨识度（连线更淡、空槽装饰点同比变暗）；纯装饰层，不影响恒星、行星与拾取。",
     "cosmos.settings.patLineDimAria": "图样连线亮度百分比",
+    /* 星场呈现（p2-add-cosmos-works-face 1.2）：组图例 / 两行 label + hint + aria + 即时说明。 */
+    "cosmos.settings.worksFaceLegend": "星场",
+    "cosmos.settings.worksContoursLabel": "等势线",
+    "cosmos.settings.worksContoursHint": "在星场叠加合成势场的等势线（多焦点邻近处呈鞍部融合）；关闭后立即停绘，不影响焦点与拾取。",
+    "cosmos.settings.worksContoursAria": "星场等势线开关",
+    "cosmos.settings.worksAsciiLabel": "ASCII 底纹",
+    "cosmos.settings.worksAsciiHint": "星场背景的 ASCII 字符底纹（势阱处字符渐密 + 慢掷数据脉冲）；仅隐约标注感，关闭零残留。",
+    "cosmos.settings.worksAsciiAria": "星场 ASCII 底纹开关",
+    "cosmos.settings.worksFaceInstant": "改动立即生效并保存（星场下一帧即跟随）",
     "cosmos.settings.pathsLabel": "路径",
     "cosmos.settings.pathsHint": "openspec 路径令牌 OPENSPEC_PATH 的解析值与 cosmos-spec 技能目录：保存后写入本机共享配置并即时生效（无需重启插件或会话）。未配置留空。",
     "cosmos.settings.pathsLoading": "正在加载路径设置…",
@@ -7830,6 +8113,16 @@ const DICT = {
     "cosmos.settings.preStateUnavailable": "不可用",
     "cosmos.settings.prependTitleProto": "星胚消息不含 @ 提案引用、先后无语义（不可勾选）",
     "cosmos.settings.buttonPreStateInvalid": "前置状态非法（可选 不限 / 待创建（星胚）/ 已创建 / 已审核 / 已执行）",
+    /* 星胚直执行复选框（add-cosmos-embryo-dismiss-button 5.1–5.3）。 */
+    "cosmos.settings.embryoDismissLabel": "直达移除（免提示词）",
+    "cosmos.settings.embryoDismissTitle": "勾选：点击该按钮即删除选中星胚的全部锚点（免提示词、无确认弹层、不导航）；仅「待创建（星胚）」行可用",
+    "cosmos.settings.embryoDismissProtoOnly": "直达移除仅限前置状态为待创建（星胚）的按钮",
+    "cosmos.settings.embryoDismissDriftTitle": "直达移除仅限前置状态为待创建（星胚）的按钮：本行配置不可用，保存会被拒绝",
+    "cosmos.settings.embryoDismissActiveTitle": "直达移除点击即执行移除：不组装消息、不导航、不涉及会话与模型",
+    "cosmos.settings.embryoDismissModelTitle": "直达移除点击即执行移除：不组装消息、不涉及会话与模型",
+    "cosmos.settings.buttonPromptPhDirect": "直执行按钮不需要提示词（点击即移除选中星胚）",
+    "cosmos.settings.buttonEmbryoDismissInvalid": "「直达移除」取值非法（仅接受勾选/未勾选）",
+    "cosmos.settings.buttonEmbryoDismissProtoOnly": "直达移除仅限前置状态为待创建（星胚）的按钮",
     "cosmos.settings.buttonModelLabel": "模型",
     "cosmos.settings.buttonEffortLabel": "级别",
     "cosmos.settings.buttonModelFollow": "跟随会话（默认）",
@@ -8014,8 +8307,6 @@ const DICT = {
     "cosmos.card.decide.planReview": "Review plan",
     "cosmos.card.decide.question": "Answer",
     "cosmos.card.decide.other": "Decide",
-    "cosmos.card.dismiss.remove": "Remove embryo",
-    "cosmos.card.dismiss.confirm": "Confirm removal?",
     "cosmos.dismiss.deleted": "Embryo removed",
     "cosmos.dismiss.alreadyMissing": "That embryo is already gone",
     "cosmos.dismiss.guardDirExists": "A proposal with this name exists; not removed",
@@ -8024,6 +8315,9 @@ const DICT = {
     "cosmos.dismiss.failedUnknown": "unknown error",
     "cosmos.dismiss.requestFailed": "Removal request failed: ",
     "cosmos.dismiss.noTarget": "Missing embryo target; not removed",
+    "cosmos.dismiss.groupAll": "Removed {count} embryos",
+    "cosmos.dismiss.groupPartial": "Removed {removed}/{total} (first failure: {reason})",
+    "cosmos.dismiss.groupNone": "Not removed ({reason})",
     "cosmos.actions.aria": "Proposal actions",
     "cosmos.actions.switchFailed": "Model switch failed: ",
     "cosmos.actions.switchUnavailable": "Model switching unavailable on this connection",
@@ -8132,6 +8426,15 @@ const DICT = {
     "cosmos.settings.patLineDimLabel": "Figure line brightness",
     "cosmos.settings.patLineDimHint": "Lowering it weakens the constellation figure's legibility (fainter lines and proportionally dimmer empty-slot dots); decorative only, with no effect on stars, planets, or picking.",
     "cosmos.settings.patLineDimAria": "Figure line brightness percentage",
+    /* Star field (p2-add-cosmos-works-face 1.2): legend + two toggle rows + aria + instant note. */
+    "cosmos.settings.worksFaceLegend": "Star field",
+    "cosmos.settings.worksContoursLabel": "Equipotential lines",
+    "cosmos.settings.worksContoursHint": "Overlay equipotential lines sampled from the composite potential (adjacent foci merge into a saddle); turning it off stops drawing immediately with no effect on foci or picking.",
+    "cosmos.settings.worksContoursAria": "Toggle star-field equipotential lines",
+    "cosmos.settings.worksAsciiLabel": "ASCII underlay",
+    "cosmos.settings.worksAsciiHint": "A faint ASCII character underlay whose density follows the potential wells, with slow data pulses; decorative only, and no residue remains when turned off.",
+    "cosmos.settings.worksAsciiAria": "Toggle star-field ASCII underlay",
+    "cosmos.settings.worksFaceInstant": "Changes apply and save immediately (the star field follows on the next frame)",
     "cosmos.settings.pathsLabel": "Paths",
     "cosmos.settings.pathsHint": "Resolution value of the openspec path token OPENSPEC_PATH and the cosmos-spec skill directory: saved into this machine's shared config and applied immediately (no plugin or session restart). Leave blank for unset.",
     "cosmos.settings.pathsLoading": "Loading path settings…",
@@ -8178,6 +8481,15 @@ const DICT = {
     "cosmos.settings.preStateUnavailable": "Unavailable",
     "cosmos.settings.prependTitleProto": "Embryo messages carry no @ proposal reference, so ordering is meaningless (not selectable)",
     "cosmos.settings.buttonPreStateInvalid": "Invalid pre-state (choose Any / Pending creation (embryo) / Created / Reviewed / Executed)",
+    "cosmos.settings.embryoDismissLabel": "Direct removal (no prompt)",
+    "cosmos.settings.embryoDismissTitle": "Checked: clicking this button removes every anchor of the selected embryo (no prompt, no confirmation dialog, no navigation); available only for Pending creation (embryo) rows",
+    "cosmos.settings.embryoDismissProtoOnly": "Direct removal is limited to buttons whose pre-state is Pending creation (embryo)",
+    "cosmos.settings.embryoDismissDriftTitle": "Direct removal is limited to Pending creation (embryo) rows: this row is unavailable and saving it will be rejected",
+    "cosmos.settings.embryoDismissActiveTitle": "Direct removal removes on click: no message is assembled, no navigation, no session or model involvement",
+    "cosmos.settings.embryoDismissModelTitle": "Direct removal removes on click: no message is assembled, no session or model involvement",
+    "cosmos.settings.buttonPromptPhDirect": "Direct-removal buttons need no prompt (clicking removes the selected embryo)",
+    "cosmos.settings.buttonEmbryoDismissInvalid": "\"Direct removal\" value is invalid (only checked/unchecked are accepted)",
+    "cosmos.settings.buttonEmbryoDismissProtoOnly": "Direct removal is limited to buttons whose pre-state is Pending creation (embryo)",
     "cosmos.settings.buttonModelLabel": "Model",
     "cosmos.settings.buttonEffortLabel": "Effort",
     "cosmos.settings.buttonModelFollow": "Follow session (default)",

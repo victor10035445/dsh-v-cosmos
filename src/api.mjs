@@ -1,8 +1,11 @@
 /**
- * dsh-v-cosmos 浏览器半区 API 桥（add-cosmos-entry 2.4–2.6 消费面）。
+ * dsh-v-cosmos 浏览器半区 API 桥（add-cosmos-entry 2.4–2.6 消费面 + 作品桥）。
  * - fetchScene：GET /api/dsh-v-cosmos/scene（星空骨架 JSON）；
  * - subscribeEvents：/api/dsh-v-cosmos/events SSE **轻帧**（帧体不带载荷，
- *   客户端收到后自行重拉 scene——hive 同款）。EventSource 自带重连。
+ *   客户端收到后自行重拉 scene / queue / works——hive 同款）。EventSource 自带重连。
+ * - 作品桥（p1-add-cosmos-works-service 3.1）：`fetchWorks / browseWorks / addWorks / pickWorks /
+ *   updateWork / removeWork / openWork / revealWork`——容错形与 fetchScene 同款，
+ *   消费方 = p2 星场面（呈现半区）。
  */
 const API = "/api/dsh-v-cosmos";
 
@@ -102,8 +105,153 @@ export async function queueAction(action, body = {}) {
 }
 
 /**
+ * 星座作品桥（p1-add-cosmos-works-service 3.1）：作品快捷入口的读面/写面/动作面。
+ * 消费方 = p2 星场面（呈现半区）；容错形与 `fetchScene` / `queueAction` **同款**
+ * （网络/非 2xx/坏体 → `{ok:false, error[, reason]}`，成功 → `{ok:true, …}` 载荷透传，
+ * 无二次包装）。调用方保证**非阻断**消费：失败由呈现层 toast/降级，MUST NOT 抛出中断页面。
+ *
+ * 动作面（`openWork` / `revealWork`）**只传 `(wsId, workId)`**——服务端不接受任何裸路径，
+ * 未登记的任意路径没有启动通道（spec「裸路径不可注入」）。
+ */
+
+/** @returns {Promise<{ok:true, error?:never}|{ok:false, error:string, reason?:string}>} */
+function worksFailure(payload, res) {
+  return {
+    ok: false,
+    error: payload?.error || res.status + " " + res.statusText,
+    ...(typeof payload?.reason === "string" ? { reason: payload.reason } : {})
+  };
+}
+
+/** 作品端点 POST 公共实现（容错形同 `queueAction`）。 */
+async function postWorks(path, body) {
+  try {
+    const res = await fetch(API + "/works/" + path, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body ?? {})
+    });
+    const payload = await res.json().catch(() => ({}));
+    if (!res.ok || payload?.ok !== true) return worksFailure(payload, res);
+    return payload;
+  } catch (error) {
+    return { ok: false, error: String(error?.message || error) };
+  }
+}
+
+/**
+ * 作品快照（`GET /works?wsId=`）：页面加载与收到 `works-changed` 轻帧后拉取对账。
+ * 条目附服务端 `exists` 与 `displayName`（`name` 缺席 → `relPath` 文件名回落）。
+ * @param {string} [wsId] 缺省 = 全量（全部在册星座）
+ * @returns {Promise<{ok: true, version: number, works: object} | {ok: false, error: string, reason?: string}>}
+ */
+export async function fetchWorks(wsId) {
+  try {
+    const query = typeof wsId === "string" && wsId.trim() ? "?wsId=" + encodeURIComponent(wsId.trim()) : "";
+    const res = await fetch(API + "/works" + query);
+    const payload = await res.json().catch(() => ({}));
+    if (!res.ok || payload?.ok !== true || !payload.works) return worksFailure(payload, res);
+    return payload;
+  } catch (error) {
+    return { ok: false, error: String(error?.message || error) };
+  }
+}
+
+/**
+ * 根内目录浏览（`GET /works/browse?wsId=&dir=`）：作品拾取模态的面包屑数据源。
+ * @param {string} wsId
+ * @param {string} [dir] 工作区根内相对路径（缺省/空 = 根）
+ * @returns {Promise<{ok: true, cwd: string, parent: string,
+ *          entries: Array<{name: string, type: string, size?: number}>, truncated: boolean} |
+ *          {ok: false, error: string, reason?: string}>}
+ */
+export async function browseWorks(wsId, dir) {
+  try {
+    const params = new URLSearchParams();
+    params.set("wsId", typeof wsId === "string" ? wsId : "");
+    if (typeof dir === "string" && dir.trim()) params.set("dir", dir.trim());
+    const res = await fetch(API + "/works/browse?" + params.toString());
+    const payload = await res.json().catch(() => ({}));
+    if (!res.ok || payload?.ok !== true) return worksFailure(payload, res);
+    return payload;
+  } catch (error) {
+    return { ok: false, error: String(error?.message || error) };
+  }
+}
+
+/**
+ * 系统文件选择器登记（`POST /works/pick`；用户修订：作品拾取改为宿主原生文件对话框，
+ * MUST NOT 自建浏览模态）：服务端弹出平台原生多选对话框（初值 = 工作区根）、收敛根内
+ * 相对路径后走与 `/works/add` 同源的整批原子登记。
+ * - 取消/空选 → `{ok:true, cancelled:true, entries:[]}`（调用方静默）；
+ * - 系统选择器不可用/失败 → `{ok:false, reason:"picker-unavailable"|"picker-failed"}`；
+ * - 根外文件 → `out-of-root`；其余 `duplicate/limit/not-a-file/symlink` 同登记语汇.
+ * @param {string} wsId
+ * @returns {Promise<{ok: true, cancelled?: boolean, picked?: number, entries: Array<object>} |
+ *          {ok: false, error: string, reason?: string, message?: string}>}
+ */
+export async function pickWorks(wsId) {
+  return postWorks("pick", { wsId });
+}
+
+/**
+ * 批量登记（`POST /works/add`，**整批原子**：任一非法即整批拒绝，`reason` 区分
+ * `duplicate/limit/out-of-root/not-a-file/symlink`）。
+ * @param {string} wsId
+ * @param {string[]} relPaths 工作区相对路径（正/反斜杠均可，服务端归一）
+ * @returns {Promise<{ok: true, entries: Array<object>} | {ok: false, error: string, reason?: string, relPath?: string}>}
+ */
+export async function addWorks(wsId, relPaths) {
+  return postWorks("add", { wsId, relPaths: Array.isArray(relPaths) ? relPaths : [] });
+}
+
+/**
+ * 改名/备注（`POST /works/update`）：`name`/`note` 全额覆盖——缺席或空白串 = 清除回落
+ * （显示名回落 `relPath` 文件名，备注消失）。
+ * @param {string} wsId
+ * @param {string} workId
+ * @param {{name?: string, note?: string}} [patch]
+ * @returns {Promise<{ok: true, entry: object} | {ok: false, error: string, reason?: string}>}
+ */
+export async function updateWork(wsId, workId, patch = {}) {
+  return postWorks("update", { wsId, workId, name: patch?.name, note: patch?.note });
+}
+
+/**
+ * 移除条目（`POST /works/remove`）：只删条目，磁盘文件原样保留。
+ * @param {string} wsId
+ * @param {string} workId
+ * @returns {Promise<{ok: true, removed: {id: string, relPath: string}} | {ok: false, error: string, reason?: string}>}
+ */
+export async function removeWork(wsId, workId) {
+  return postWorks("remove", { wsId, workId });
+}
+
+/**
+ * 启动/打开（`POST /works/open`）：`exec` 后台运行，其余类型走系统默认程序打开。
+ * 即发即忘——返回成功只表示启动调用已发出，不含子进程生命周期。
+ * @param {string} wsId
+ * @param {string} workId
+ * @returns {Promise<{ok: true, entry: object} | {ok: false, error: string, reason?: string}>}
+ */
+export async function openWork(wsId, workId) {
+  return postWorks("open", { wsId, workId });
+}
+
+/**
+ * 系统文件管理器中定位（`POST /works/reveal`）：不运行目标、无 `works-changed` 帧。
+ * @param {string} wsId
+ * @param {string} workId
+ * @returns {Promise<{ok: true, entry: object} | {ok: false, error: string, reason?: string}>}
+ */
+export async function revealWork(wsId, workId) {
+  return postWorks("reveal", { wsId, workId });
+}
+
+/**
  * @param {(frame: object) => void} onFrame 轻帧回调（{type:"proposals-changed"} |
- *        {type:"associations-changed"} | {type:"queue-changed"}；坏帧忽略）
+ *        {type:"associations-changed"} | {type:"queue-changed"} | {type:"works-changed"}；
+ *        坏帧忽略）
  * @returns {() => void} 卸载函数
  */
 export function subscribeCosmosEvents(onFrame) {
@@ -115,7 +263,8 @@ export function subscribeCosmosEvents(onFrame) {
       if (
         frame?.type === "proposals-changed" ||
         frame?.type === "associations-changed" ||
-        frame?.type === "queue-changed"
+        frame?.type === "queue-changed" ||
+        frame?.type === "works-changed"
       ) {
         onFrame(frame);
       }

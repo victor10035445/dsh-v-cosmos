@@ -6,7 +6,7 @@
  * 运行：node test/buttons-schema-smoke.mjs
  */
 import assert from "node:assert/strict";
-import { MAX_BUTTONS, MAX_PROMPT_CHARS, PRE_STATES, actionButtonVisible, buttonsSchema, buttonsSectionOf, normalizeButtonModel, normalizeButtons } from "../src/buttons.mjs";
+import { MAX_BUTTONS, MAX_PROMPT_CHARS, PRE_STATES, actionButtonVisible, buttonsSchema, buttonsSectionOf, isEmbryoDismissButton, normalizeButtonModel, normalizeButtons } from "../src/buttons.mjs";
 
 const throwsWith = (fn, pattern, label) => {
   let error = null;
@@ -314,6 +314,113 @@ const throwsWith = (fn, pattern, label) => {
   assert.equal(projected[0].shortcut, "Digit3", "读面保留合法快捷键");
   assert.equal(projected[1].shortcut, "KeyQ", "读面容错保留漂移原值（设置页「不可用」）");
   assert.equal("shortcut" in projected[2], false, "无键条目不落键");
+}
+
+/* ── 12. 星胚直执行键（add-cosmos-embryo-dismiss-button 1.1–1.4 / spec cosmos-actions
+      「按钮配置模型」）：proto 绑定 / 尾部键序 / 空 prompt 豁免 / 缺省不落键 /
+      无键序列化逐字节不变 / 漂移读面容错 ── */
+{
+  /* 合法直执行保存（spec 场景「直执行按钮免提示词保存」）：空 prompt 豁免 + 键序最末。 */
+  const [direct] = normalizeButtons([{
+    name: "移除", prompt: "", autoSend: false, preState: "proto", embryoDismiss: true
+  }]);
+  assert.deepEqual(direct, {
+    name: "移除",
+    prompt: "",
+    autoSend: false,
+    newSession: false,
+    preState: "proto",
+    embryoDismiss: true
+  }, "直执行保存：prompt 恒 \"\"、proto 行 newSession false、embryoDismiss true");
+  assert.deepEqual(
+    Object.keys(direct),
+    ["name", "prompt", "autoSend", "newSession", "preState", "embryoDismiss"],
+    "键序：embryoDismiss 位于 preState 之后（尾部）"
+  );
+  /* 与 shortcut 共存：embryoDismiss 恒在最末。 */
+  const [full] = normalizeButtons([{
+    name: "全键",
+    prompt: "   ",
+    autoSend: true,
+    jumpNewSession: false,
+    prepend: true,
+    model: { provider: "x", model: "y" },
+    preState: "proto",
+    shortcut: "F4",
+    embryoDismiss: true
+  }]);
+  assert.deepEqual(
+    Object.keys(full),
+    ["name", "prompt", "autoSend", "newSession", "jumpNewSession", "prepend", "model", "preState", "shortcut", "embryoDismiss"],
+    "键序固定：embryoDismiss 恒在 shortcut 之后（最末）"
+  );
+  assert.equal(full.prompt, "", "trim 后空串仍恒输出空串（键序不变）");
+
+  /* 非 proto / 缺省 preState + true → 保存拒绝（可读错误）。 */
+  for (const preState of ["created", "reviewed", "executed", undefined, null]) {
+    throwsWith(
+      () => normalizeButtons([{ name: "a", prompt: "p", preState, embryoDismiss: true }]),
+      /直达移除仅限前置状态为待创建（星胚）的按钮/,
+      "非 proto 直执行拒绝：" + String(preState)
+    );
+  }
+  /* 非布尔值拒绝（false/null/缺省按未提供处理，不落键不拒绝）。 */
+  for (const bad of [1, 0, "true", "yes", {}]) {
+    throwsWith(
+      () => normalizeButtons([{ name: "a", prompt: "p", preState: "proto", embryoDismiss: bad }]),
+      /embryoDismiss must be a boolean/,
+      "非布尔 embryoDismiss 拒绝：" + JSON.stringify(bad)
+    );
+  }
+  for (const absent of [false, null, undefined]) {
+    const [entry] = normalizeButtons([{ name: "a", prompt: "p", preState: "proto", embryoDismiss: absent }]);
+    assert.ok(!("embryoDismiss" in entry), "embryoDismiss=" + String(absent) + " → 不落键（最小形）");
+  }
+  /* 豁免仅限直执行行：非直执行空 prompt 仍拒绝（逐字不变）。 */
+  throwsWith(() => normalizeButtons([{ name: "a", prompt: "" }]), /prompt must not be empty/, "普通行空 prompt 仍拒绝");
+  throwsWith(
+    () => normalizeButtons([{ name: "a", prompt: "", preState: "proto" }]),
+    /prompt must not be empty/,
+    "proto 行未勾直执行 → 空 prompt 仍拒绝"
+  );
+
+  /* 无该键条目重新落盘逐字节不变（spec 场景「直执行键缺省序列化逐字节不变」）。 */
+  const legacyNoShortcut = { name: "旧", prompt: "p", autoSend: true, newSession: true, model: { provider: "x", model: "y" } };
+  assert.equal(
+    JSON.stringify(normalizeButtons([legacyNoShortcut])[0]),
+    JSON.stringify({ name: "旧", prompt: "p", autoSend: true, newSession: true, model: { provider: "x", model: "y" } }),
+    "既有条目（无 embryoDismiss）序列化逐字节不变"
+  );
+  const legacyWithShortcut = { name: "旧2", prompt: "p", autoSend: false, newSession: true, preState: "reviewed", shortcut: "F8" };
+  assert.equal(
+    JSON.stringify(normalizeButtons([legacyWithShortcut])[0]),
+    JSON.stringify({ name: "旧2", prompt: "p", autoSend: false, newSession: true, preState: "reviewed", shortcut: "F8" }),
+    "含 shortcut 的既有条目序列化逐字节不变（新键追加尾部且缺省不落键）"
+  );
+
+  /* 漂移读面容错（spec 场景「直执行键漂移读面容错」）：非 proto 行 + true 原样保留。 */
+  const driftItem = { name: "旧行", prompt: "p", preState: "reviewed", embryoDismiss: true };
+  const [drift] = normalizeButtons([driftItem], { tolerateUnknownEmbryoDismiss: true });
+  assert.equal(drift.embryoDismiss, true, "容错读保留漂移值（不静默改写/丢弃）");
+  const projected = buttonsSectionOf({ buttons: [driftItem] });
+  assert.equal(projected.length, 1, "读面容错投影不丢漂移条目");
+  assert.equal(projected[0].embryoDismiss, true, "漂移值原样保留（设置页标「不可用」并拒绝保存）");
+  /* 免提示词条目在动作条读面投影中不被丢弃（空 prompt 豁免同口径）。 */
+  const projectedDirect = buttonsSectionOf({
+    buttons: [
+      { name: "移除", prompt: "", preState: "proto", embryoDismiss: true, autoSend: false },
+      { name: "空行", prompt: "" }
+    ]
+  });
+  assert.equal(projectedDirect.length, 1, "免提示词直执行条目保留；普通空 prompt 条目仍跳过");
+  assert.equal(projectedDirect[0].embryoDismiss, true, "直执行键随投影保留");
+  assert.equal(projectedDirect[0].prompt, "", "空 prompt 原样回显");
+
+  /* 单一谓词（客户端分流 / 行级禁用豁免 / 设置控件共用）。 */
+  assert.equal(isEmbryoDismissButton({ preState: "proto", embryoDismiss: true }), true, "proto + true → 直执行");
+  assert.equal(isEmbryoDismissButton({ preState: "proto" }), false, "proto 无键 → 消息链路");
+  assert.equal(isEmbryoDismissButton({ preState: "reviewed", embryoDismiss: true }), false, "漂移值不算直执行");
+  assert.equal(isEmbryoDismissButton(null), false, "空值 → false");
 }
 
 console.log("buttons-schema-smoke: all assertions passed");

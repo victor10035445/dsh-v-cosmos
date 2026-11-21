@@ -336,7 +336,7 @@ const clientSource = readFileSync(new URL("../src/client.jsx", import.meta.url),
 {
   /* 12a. api 桥与投影 store */
   assert.ok(
-    clientSource.includes('import { fetchScene, subscribeCosmosEvents, bindSession, fetchQueue, queueAction } from "./api.mjs";'),
+    clientSource.includes('import { fetchScene, subscribeCosmosEvents, bindSession, fetchQueue, queueAction, fetchWorks, pickWorks, updateWork, removeWork, openWork, revealWork } from "./api.mjs";'),
     "api 桥导入 fetchQueue / queueAction"
   );
   assert.ok(

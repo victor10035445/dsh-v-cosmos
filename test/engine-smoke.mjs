@@ -5,7 +5,7 @@
  */
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { createCosmosEngine, ENGINE_CSS, panBasis, panCameraTarget, panCameraTargetByDrag, PAN_SPEED, PAN_SHIFT_BOOST, PAN_DRAG_FACTOR, SESSION_OPEN_KEY, makeNova, stepNovae, buildScenePure, FX_PRIORITY, FX_NOVA_DUR, FX_NOVA_PROTO_DUR, BOOT_DUR, isEditableTarget, boundingSphereOf, fitCameraOf, FILTER_RAMP_DUR, FILTER_SHIFT_DUR, FILTER_FIT_DUR, FILTER_FIT_MARGIN, WS_SHIFT_DUR, WS_BIRTH_HL_DUR, WS_SWITCH_FADE, GESTURE_SUPPRESS_MS, zoomSwitchVerdict, zoomFocusTargetOf, canvasPointOf, constellationBoundROf, constellationVitalityOf, wsSwitcherItemsOf, DIVE_REF, SWITCH_COOLDOWN_MS, CENTER_GATE_RATIO, DIVE_SAFE_MARGIN, FLYOUT_DIST_FLOOR_MULT, FLYOUT_DIST_FLOOR, ZOOM_RULER_TICK, ZOOM_RULER_DIST_MIN, ZOOM_RULER_DIST_MAX, ZOOM_METER_EPSILON, ZOOM_RULER_EASE_RATIO, ZOOM_RULER_EASE_MS, zoomMeterTrackOf, zoomRulerMotionOf, DIST_MIN, DIST_MAX, HOME_DIST, COMET_WANDER_R, STAR_FOCUS_DIST, STAR_FOCUS_DUR, SHOCK_SPEED, SHOCK_HOLD_MIN, SHOCK_HOLD_MAX, SHOCK_KICK_DUR, SHOCK_GLIDE_DUR, SHOCK_TOTAL_MAX, shockHitOf, shockEjectionAt, shockTotalDurOf, adoptTrailAcrossKinds, resolveBlastCoreOf, CAPTURE_DUR, COMET_WANDER_AMP, COMET_WANDER_FREQ, cometHeadingAt, orbitPointAt, orbitTangentAt, captureRingPointAt, capturePoseAt, TIP_GAP, TIP_LINE, tipLeaderOf, tipLineColorOf, UI_AVOID, normalizeUiRects, rectsIntersect, boxInRects, pointInRects, boundsBoxOf, tipBoxOf, tipAvoidanceOf, DISMISS_CONFIRM_MS, NEBULA_ALPHA_BASE, NEBULA_ALPHA_SWING, patSnapshotOf, patEmptySlotsOf } from "../src/cosmos/engine.mjs";
+import { createCosmosEngine, ENGINE_CSS, panBasis, panCameraTarget, panCameraTargetByDrag, PAN_SPEED, PAN_SHIFT_BOOST, PAN_DRAG_FACTOR, SESSION_OPEN_KEY, makeNova, stepNovae, buildScenePure, FX_PRIORITY, FX_NOVA_DUR, FX_NOVA_PROTO_DUR, BOOT_DUR, isEditableTarget, boundingSphereOf, fitCameraOf, FILTER_RAMP_DUR, FILTER_SHIFT_DUR, FILTER_FIT_DUR, FILTER_FIT_MARGIN, WS_SHIFT_DUR, WS_BIRTH_HL_DUR, WS_SWITCH_FADE, GESTURE_SUPPRESS_MS, zoomSwitchVerdict, zoomFocusTargetOf, canvasPointOf, constellationBoundROf, constellationVitalityOf, wsSwitcherItemsOf, DIVE_REF, SWITCH_COOLDOWN_MS, CENTER_GATE_RATIO, DIVE_SAFE_MARGIN, FLYOUT_DIST_FLOOR_MULT, FLYOUT_DIST_FLOOR, ZOOM_RULER_TICK, ZOOM_RULER_DIST_MIN, ZOOM_RULER_DIST_MAX, ZOOM_METER_EPSILON, ZOOM_RULER_EASE_RATIO, ZOOM_RULER_EASE_MS, zoomMeterTrackOf, zoomRulerMotionOf, DIST_MIN, DIST_MAX, HOME_DIST, COMET_WANDER_R, STAR_FOCUS_DIST, STAR_FOCUS_DUR, SHOCK_SPEED, SHOCK_HOLD_MIN, SHOCK_HOLD_MAX, SHOCK_KICK_DUR, SHOCK_GLIDE_DUR, SHOCK_TOTAL_MAX, shockHitOf, shockEjectionAt, shockTotalDurOf, adoptTrailAcrossKinds, resolveBlastCoreOf, CAPTURE_DUR, COMET_WANDER_AMP, COMET_WANDER_FREQ, cometHeadingAt, orbitPointAt, orbitTangentAt, captureRingPointAt, capturePoseAt, TIP_GAP, TIP_LINE, tipLeaderOf, tipLineColorOf, UI_AVOID, normalizeUiRects, rectsIntersect, boxInRects, pointInRects, boundsBoxOf, tipBoxOf, tipAvoidanceOf, NEBULA_ALPHA_BASE, NEBULA_ALPHA_SWING, patSnapshotOf, patEmptySlotsOf } from "../src/cosmos/engine.mjs";
 import { createSkinD, createSkinDeepspace, SKIN_D_PALETTE } from "../src/cosmos/skin-d.mjs";
 import { COSMOS_SKINS, COSMOS_SKIN_IDS, createSkin } from "../src/cosmos/skin-registry.mjs";
 import { COSMOS_SETTINGS_DEFAULTS, COSMOS_SETTINGS_BOUNDS, COSMOS_SETTINGS_VERSION, sanitizeCosmosSettings, loadCosmosSettings, saveCosmosSettings, cosmosLayoutTokensOf } from "../src/settings.mjs";
@@ -110,11 +110,14 @@ const near = (v, w, eps = 1e-9) => Math.abs(v - w) < eps;
       /* 图样连线亮度（add-cosmos-figure-line-alpha）：缺省 50% = 引擎因子 0.5。 */
       patLineDim: 50,
       /* 顶部模板工具高度（add-cosmos-template-reassign 返工）：缺省 32px。 */
-      wsToolSize: 32
+      wsToolSize: 32,
+      /* 星场呈现（p2-add-cosmos-works-face）：等势线 / ASCII 底纹缺省均开。 */
+      worksContours: true,
+      worksAscii: true
     },
-    "出厂默认（含默认皮肤、指针聚焦、会话面板展开态、发送前编辑分支 float、拖拽平移关闭、界面尺寸 13 键 = 现值、快捷键四键、入口打开方式 embedded、星座模板名关闭、图样连线亮度 50、顶部工具按钮高 32；缩放阈值两键已退场）"
+    "出厂默认（含默认皮肤、指针聚焦、会话面板展开态、发送前编辑分支 float、拖拽平移关闭、界面尺寸 13 键 = 现值、快捷键四键、入口打开方式 embedded、星座模板名关闭、图样连线亮度 50、顶部工具按钮高 32、星场两开关开；缩放阈值两键已退场）"
   );
-  assert.equal(COSMOS_SETTINGS_VERSION, 14, "设置面 v14（v13 → v14 新增 wsToolSize；v12 → v13 新增 patLineDim；v10 = launchMode/dock 迁移，v11 = templateNames，v12 = 删缩放阈值两键）");
+  assert.equal(COSMOS_SETTINGS_VERSION, 15, "设置面 v15（v14 → v15 新增 worksContours/worksAscii；v13 → v14 新增 wsToolSize；v12 → v13 新增 patLineDim；v10 = launchMode/dock 迁移，v11 = templateNames，v12 = 删缩放阈值两键）");
   assert.equal("zoomDiveRatio" in COSMOS_SETTINGS_DEFAULTS, false, "进入阈值设置键已退场（阈值 = 引擎常量）");
   assert.equal("zoomFlyOutRatio" in COSMOS_SETTINGS_DEFAULTS, false, "返回阈值设置键已退场（距离单判常量）");
   assert.deepEqual(sanitizeCosmosSettings({}), COSMOS_SETTINGS_DEFAULTS, "空配置 → 默认");
@@ -135,7 +138,9 @@ const near = (v, w, eps = 1e-9) => Math.abs(v - w) < eps;
       launchMode: "embedded",
       templateNames: false,
       patLineDim: 50,
-      wsToolSize: 32
+      wsToolSize: 32,
+      worksContours: true,
+      worksAscii: true
     },
     "越界落端点 + 未知键剥离"
   );
@@ -2980,6 +2985,310 @@ const EXPECTED_FIT_DIST = FILTER_FIT_MARGIN / Math.tan(Math.PI / 6) * 1.1;
   eng.dispose();
 }
 
+/* ── 双指手势质心平移分量（add-cosmos-two-finger-pan 2.1–2.4 / 2.9）：逐帧分解为
+   「质心平移 ⊕ 指距缩放」两正交分量、单源平移数学（同一纯函数同一系数）、复合输入
+   两分量独立结算、反向张合近似零平移、值域端点平移照常、拖拽平移开关无关性 ── */
+{
+  /* 夹具：指针事件助手 + 期望 target 快照（同一纯函数、当帧 dist） */
+  const mk = (homeDist, extraSettings) => {
+    const mark = createdEls.length;
+    const container = stubEl("div");
+    const eng = createCosmosEngine({
+      container, style: createSkinD(), homeDist,
+      settings: { zoomPointerFocus: false, ...(extraSettings ?? {}) }
+    });
+    eng.setScene(zoomScene(), "rebuild");
+    const rootEl = container.children[0];
+    const canvasEl = rootEl._by[".cos-canvas"];
+    const fire = (el, type, ev) => { for (const fn of el.listeners[type] ?? []) fn(ev); };
+    return {
+      eng, rootEl, canvasEl,
+      cam: () => eng.getCamera(),
+      input: () => eng.inspectInput(),
+      created: createdEls.slice(mark),
+      down: (id, x, y, target = canvasEl) => fire(rootEl, "pointerdown", { pointerId: id, button: 0, clientX: x, clientY: y, target, preventDefault() {} }),
+      move: (id, x, y) => fire(rootEl, "pointermove", { pointerId: id, clientX: x, clientY: y, buttons: 1, target: canvasEl }),
+      up: (id) => fire(rootEl, "pointerup", { pointerId: id, button: 0, target: canvasEl })
+    };
+  };
+  const pannedOf = (snap, dx, dy) => {
+    const c = { target: snap.target.slice(), yaw: snap.yaw, pitch: snap.pitch, dist: snap.dist };
+    panCameraTargetByDrag(c, dx, dy, snap.dist);
+    return c.target;
+  };
+
+  /* 2.1a 单源口径（精确）：指距不变的双指运动 → 缩放分量恒零，target 只按质心增量平移 */
+  const a = mk(400);
+  const a0 = a.cam();
+  a.down(11, 300, 300); a.down(12, 400, 300);
+  assert.equal(a.input().mode, "pinch", "第二指落下 → 双指手势（捏合缩放 ⊕ 质心平移）");
+  a.move(12, 300, 400); // 绕首指旋转 90°：指距恒 100，质心 (350,300) → (300,350)
+  assert.deepEqual(a.cam().target, pannedOf(a0, -50, 50), "质心增量 → 单源 panCameraTargetByDrag（同一系数口径）");
+  assert.equal(a.cam().dist, a0.dist, "指距不变 → 缩放分量为零（dist 逐位不变）");
+  assert.equal(a.cam().yaw, a0.yaw, "双指平移 MUST NOT 改 yaw");
+  assert.equal(a.cam().pitch, a0.pitch, "双指平移 MUST NOT 改 pitch");
+  a.up(12); a.up(11);
+
+  /* 2.1b 双指同向拖动（分两帧上报）：逐帧增量式重锚；终态指距回基准 → dist 回基准 */
+  a.down(21, 200, 300); a.down(22, 300, 300);
+  const bStart = a.cam();
+  a.move(22, 340, 300); // 质心 +20（平移）+ 指距 100→140（缩放瞬变）
+  assert.deepEqual(a.cam().target, pannedOf(bStart, 20, 0), "首帧：平移分量按质心增量结算（当帧 dist 换算）");
+  assert.ok(a.cam().dist < bStart.dist, "同一帧缩放分量同时生效（复合，不被平移吞没）");
+  const bMid = a.cam();
+  a.move(21, 240, 300); // 质心再 +20、指距回 100 → dist 回基准
+  assert.deepEqual(a.cam().target, pannedOf(bMid, 20, 0), "次帧：增量式重锚继续按质心增量平移（无累积漂移）");
+  assert.equal(a.cam().dist, bStart.dist, "指距回基准 → 绝对式缩放回到基准 dist");
+  assert.equal(a.cam().yaw, bStart.yaw, "同向拖动不改 yaw");
+  assert.equal(a.cam().pitch, bStart.pitch, "同向拖动不改 pitch");
+  assert.notDeepEqual(a.cam().target, bStart.target, "双指同向拖动 → target 反向平移（星空随手移动）");
+  a.up(22); a.up(21);
+
+  /* 2.1c 换算随镜头距离缩放（比例关系断言，单源口径）：同一屏幕位移在 dist 400/800 两态严格 1:2 */
+  const runPan = (homeDist) => {
+    const g = mk(homeDist);
+    const c0 = g.cam();
+    g.down(31, 200, 300); g.down(32, 300, 300);
+    g.move(32, 350, 300);
+    g.move(31, 250, 300);
+    g.up(32); g.up(31);
+    return { d: sub3(g.cam().target, c0.target), dist: c0.dist };
+  };
+  const nearRun = runPan(400);
+  const farRun = runPan(800);
+  assert.ok(near(farRun.dist / nearRun.dist, 2, 1e-12), "两态基准视距恰 2:1");
+  assert.ok(
+    near(farRun.d[0] / nearRun.d[0], 2, 1e-9) && near(farRun.d[2] / nearRun.d[2], 2, 1e-9),
+    "世界位移严格随 dist 比例：近距小幅、远距大幅（单源系数口径）"
+  );
+  assert.equal(nearRun.d[1], 0, "水平拖动不含竖直世界分量（dy=0）");
+
+  /* 2.2 双指反向张合（质心近似不动）：dist 严格按指距比例；target 漂移仅为
+     「逐帧质心增量 × dist 变化」的二阶小量（无独立平移路径、无死区参数） */
+  const z = mk(400);
+  const z0 = z.cam();
+  z.down(41, 300, 300); z.down(42, 500, 300); // d0 = 200
+  for (let i = 1; i <= 5; i++) {
+    z.move(42, 500 + i * 20, 300); // 右指外移 +20
+    z.move(41, 300 - i * 20, 300); // 左指对称外移 -20（每对事件后质心回中点）
+  }
+  const zDist = z0.dist * 200 / 400; // 终态指距 200 → 400
+  assert.ok(near(z.cam().dist, zDist, 1e-9), "反向张合：dist = dist0×d0/d（指距比例，与既往捏合同式）");
+  assert.equal(z.cam().yaw, z0.yaw, "反向张合不改 yaw");
+  assert.equal(z.cam().pitch, z0.pitch, "反向张合不改 pitch");
+  const zDrift = dist3(z.cam().target, z0.target);
+  assert.ok(
+    zDrift < zDist * 0.03,
+    `对称张合 target 仅二阶漂移（${zDrift.toFixed(3)} < ${(zDist * 0.03).toFixed(3)}，无显式平移路径）`
+  );
+  z.up(42); z.up(41);
+
+  /* 2.3 复合输入：指距与质心同时变化 → 平移与缩放同时生效（两分量独立结算） */
+  const c = mk(400);
+  const c0 = c.cam();
+  c.down(51, 300, 300); c.down(52, 400, 300);
+  c.move(52, 460, 330); // 质心 (+30,+15)，指距 100 → √(160²+30²)
+  const cPinchD = Math.hypot(160, 30);
+  assert.ok(near(c.cam().dist, c0.dist * 100 / cPinchD, 1e-9), "复合输入：缩放分量按指距比例独立结算");
+  assert.deepEqual(c.cam().target, pannedOf(c0, 30, 15), "复合输入：平移分量同时生效（当帧 dist 换算，先于缩放）");
+  c.up(52); c.up(51);
+
+  /* 2.4 值域端点：dist 冻结在 24 / 4200 时平移分量照常 */
+  const eLow = mk(400);
+  eLow.eng.zoomBy(-1e6);
+  assert.equal(eLow.cam().dist, DIST_MIN, "拉近到值域下限");
+  const low0 = eLow.cam();
+  eLow.down(61, 300, 300); eLow.down(62, 400, 300);
+  eLow.move(62, 300, 400); // 指距不变 → 缩放分量零（质心 (350,300) → (300,350)）
+  assert.deepEqual(eLow.cam().target, pannedOf(low0, -50, 50), "端点 24：平移分量照常（端点冻结不阻断平移）");
+  assert.equal(eLow.cam().dist, DIST_MIN, "端点 24：dist 冻结");
+  eLow.up(62); eLow.up(61);
+
+  const eHigh = mk(400);
+  eHigh.eng.zoomBy(1e6);
+  assert.equal(eHigh.cam().dist, DIST_MAX, "拉远到值域上限");
+  const high0 = eHigh.cam();
+  eHigh.down(71, 300, 300); eHigh.down(72, 400, 300);
+  eHigh.move(72, 300, 400);
+  assert.deepEqual(eHigh.cam().target, pannedOf(high0, -50, 50), "端点 4200：平移分量照常");
+  assert.equal(eHigh.cam().dist, DIST_MAX, "端点 4200：dist 冻结");
+  eHigh.up(72); eHigh.up(71);
+
+  /* 2.9 开关无关性：dragPan 开/关两态下双指平移分量逐位一致（常开常在） */
+  const runSwitch = (dragPan) => {
+    const g = mk(400, dragPan ? { dragPan: true } : undefined);
+    const btn = g.created.find((el) => el.className === "cos-dragpan-btn");
+    const c0 = g.cam();
+    g.down(81, 300, 300); g.down(82, 400, 300);
+    g.move(82, 350, 300);
+    g.move(81, 250, 300);
+    g.up(82); g.up(81);
+    const c1 = g.cam();
+    return {
+      delta: sub3(c1.target, c0.target),
+      dYaw: c1.yaw - c0.yaw,
+      dPitch: c1.pitch - c0.pitch,
+      pressed: btn ? btn.attrs["aria-pressed"] : null
+    };
+  };
+  const switchOff = runSwitch(false);
+  const switchOn = runSwitch(true);
+  assert.equal(switchOff.pressed, "false", "关闭态（缺省）确认");
+  assert.equal(switchOn.pressed, "true", "开启态确认（两态确实不同）");
+  assert.deepEqual(switchOn.delta, switchOff.delta, "开关两态双指平移分量逐位一致（MUST NOT 受开关影响）");
+  assert.equal(switchOn.dYaw, 0, "开关开启态双指平移不改 yaw");
+  assert.equal(switchOn.dPitch, 0, "开关开启态双指平移不改 pitch");
+  assert.equal(switchOff.dYaw, 0, "开关关闭态双指平移不改 yaw");
+  assert.equal(switchOff.dPitch, 0, "开关关闭态双指平移不改 pitch");
+}
+
+/* ── 双指平移收指矩阵（add-cosmos-two-finger-pan 2.6）：2→3 切三指平移 / 3→2 重锚
+   （含新质心基准）/ 2→1 回单指旋转，全程零跳变、不误拾取 ── */
+{
+  const container = stubEl("div");
+  const eng = createCosmosEngine({ container, style: createSkinD(), homeDist: 400, settings: { zoomPointerFocus: false } });
+  eng.setScene(zoomScene(), "rebuild");
+  const rootEl = container.children[0];
+  const canvasEl = rootEl._by[".cos-canvas"];
+  const fire = (el, type, ev) => { for (const fn of el.listeners[type] ?? []) fn(ev); };
+  const cam = () => eng.getCamera();
+  const input = () => eng.inspectInput();
+  const down = (id, x, y) => fire(rootEl, "pointerdown", { pointerId: id, button: 0, clientX: x, clientY: y, target: canvasEl, preventDefault() {} });
+  const move = (id, x, y) => fire(rootEl, "pointermove", { pointerId: id, clientX: x, clientY: y, buttons: 1, target: canvasEl });
+  const up = (id) => fire(rootEl, "pointerup", { pointerId: id, button: 0, target: canvasEl });
+  const pannedOf = (snap, dx, dy) => {
+    const c = { target: snap.target.slice(), yaw: snap.yaw, pitch: snap.pitch, dist: snap.dist };
+    panCameraTargetByDrag(c, dx, dy, snap.dist);
+    return c.target;
+  };
+
+  down(11, 300, 300); down(12, 400, 300);
+  move(12, 300, 400); // 指距恒 100：纯质心平移
+  const camPan2 = cam();
+
+  /* 2→3：落第三指 → 切三指平移，目标/视距零跳变（增量模型两边同源） */
+  down(13, 500, 300);
+  assert.equal(input().mode, "pan3", "双指平移中落第三指 → 切三指平移");
+  assert.deepEqual(cam().target, camPan2.target, "2→3 切换目标零跳变");
+  assert.equal(cam().dist, camPan2.dist, "2→3 切换视距不变（捏合基准作废，待 3→2 重锚）");
+  move(13, 530, 300); // 三指质心 +10
+  const camPan3 = cam();
+  assert.deepEqual(camPan3.target, pannedOf(camPan2, 10, 0), "三指平移延续同一纯函数同一系数（无断点）");
+
+  /* 3→2：抬第三指 → 以余下两指重锚（含新质心基准），首帧增量自新中点起算 */
+  up(13);
+  assert.equal(input().mode, "pinch", "3→2 重锚捏合");
+  assert.deepEqual(cam().target, camPan3.target, "3→2 切换目标零跳变");
+  const camRe = cam();
+  move(12, 330, 400); // 余下两指 (300,300)/(300,400)：中点 x 300 → 315
+  assert.deepEqual(cam().target, pannedOf(camRe, 15, 0), "3→2 重锚含新质心基准（增量自余下两指中点起算）");
+  const camAfterRe = cam();
+
+  /* 2→1：抬第二指 → 剩指回单指旋转起点（不误拾取、不改 target） */
+  up(12);
+  assert.equal(input().mode, "rotate", "2→1 → 单指旋转模式");
+  assert.deepEqual(cam().target, camAfterRe.target, "2→1 收指不改 target（剩指重置起点，无跳变）");
+  const yawBefore = cam().yaw;
+  move(11, 360, 330);
+  assert.notEqual(cam().yaw, yawBefore, "剩指拖拽回到旋转语义（触屏单指仍旋转）");
+  assert.deepEqual(cam().target, camAfterRe.target, "旋转通道不改 target（无平移残留）");
+  up(11);
+  assert.equal(input().gesture, false, "全部抬起清态");
+  assert.equal(input().dives, 0, "双指序列收尾不拾取（零 dive）");
+  assert.equal(input().suppressed, true, "收尾进入 GESTURE_SUPPRESS_MS 抑制窗");
+  fakeNow += GESTURE_SUPPRESS_MS + 1;
+  assert.equal(input().suppressed, false, "抑制窗过期");
+}
+
+/* ── 双指平移伴随下的收束阈值补判（add-cosmos-two-finger-pan 2.7）：钻取态捏合拉远
+   越过返回阈值且平移分量同时生效 → 收束仍以最终 dist 补判一次 flyOut（不静默丢失） ── */
+{
+  const container = stubEl("div");
+  const eng = createCosmosEngine({ container, style: createSkinD(), homeDist: 430, settings: { zoomPointerFocus: false } });
+  eng.setScene(zoomScene(), "rebuild");
+  rafQ.length = 0;
+  fakeNow = 400000;
+  let tNow = 400000;
+  const step = (n = 1) => { for (let i = 0; i < n; i++) { tNow += 50; stepFrame(tNow); } };
+  eng.start();
+  step(27);
+
+  const rootEl = container.children[0];
+  const canvasEl = rootEl._by[".cos-canvas"];
+  const fire = (el, type, ev) => { for (const fn of el.listeners[type] ?? []) fn(ev); };
+  const cam = () => eng.getCamera();
+  const input = () => eng.inspectInput();
+  const down = (id, x, y) => fire(rootEl, "pointerdown", { pointerId: id, button: 0, clientX: x, clientY: y, target: canvasEl, preventDefault() {} });
+  const move = (id, x, y) => fire(rootEl, "pointermove", { pointerId: id, clientX: x, clientY: y, buttons: 1, target: canvasEl });
+  const up = (id) => fire(rootEl, "pointerup", { pointerId: id, button: 0, target: canvasEl });
+
+  assert.equal(eng.diveToWs("z1"), true, "启动钻取补间");
+  fakeNow += 1400;
+  step(1);
+  assert.equal(eng.inspectFilter().focus.diving, true, "钻取态成立");
+  fakeNow += SWITCH_COOLDOWN_MS + 1; // 离开切换冷却窗（捏合收束补判只受冷却约束）
+  const dives0 = input().dives;
+  const camDrilled = cam();
+
+  down(41, 300, 300); down(42, 400, 300);
+  move(42, 350, 300); // 指距 100→50：dist 430 → 860（> FLYOUT_DIST_FLOOR）+ 质心 +25（平移分量）
+  assert.ok(cam().dist >= FLYOUT_DIST_FLOOR, "捏合拉远越过返回阈值");
+  assert.notDeepEqual(cam().target, camDrilled.target, "同一帧质心平移分量同时生效（复合输入）");
+  assert.equal(input().dives, dives0, "捏合进行中不判定（不抢补间）");
+  up(42); // 2→1 收束补判
+  assert.equal(eng.inspectFilter().tween?.mode, "out", "收束以最终 dist 补判一次 → flyOut（平移分量不吞判定）");
+  up(41);
+  assert.equal(input().dives, dives0, "flyOut 不新增 dive 计数（无重复触发）");
+
+  eng.stop();
+  eng.dispose();
+}
+
+/* ── 双指平移拾取抑制（add-cosmos-two-finger-pan 2.8）：双指平移起手在 chip 上 →
+   全部抬起零 dive；手势抑制窗照旧 ── */
+{
+  const before = createdEls.length;
+  const container = stubEl("div");
+  const eng = createCosmosEngine({ container, style: createSkinD(), homeDist: 430, settings: { zoomPointerFocus: false } });
+  eng.setScene(zoomScene(), "rebuild");
+  rafQ.length = 0;
+  fakeNow = 500000;
+  let tNow = 500000;
+  const step = (n = 1) => { for (let i = 0; i < n; i++) { tNow += 50; stepFrame(tNow); } };
+  eng.start();
+  step(27);
+
+  const mine = createdEls.slice(before);
+  const rootEl = mine.find((el) => el.className === "cos-root");
+  const canvasEl = rootEl._by[".cos-canvas"];
+  const chipEl = mine.find((el) => String(el.className).startsWith("cos-chip"));
+  assert.ok(chipEl, "chip 存在（拾取抑制用例）");
+  const fire = (el, type, ev) => { for (const fn of el.listeners[type] ?? []) fn(ev); };
+  const input = () => eng.inspectInput();
+  const downOn = (id, x, y, target) => fire(rootEl, "pointerdown", { pointerId: id, button: 0, clientX: x, clientY: y, target, preventDefault() {} });
+  const move = (id, x, y) => fire(rootEl, "pointermove", { pointerId: id, clientX: x, clientY: y, buttons: 1, target: canvasEl });
+  const up = (id) => fire(rootEl, "pointerup", { pointerId: id, button: 0, target: canvasEl });
+
+  const dives0 = input().dives;
+  downOn(91, 300, 300, chipEl); downOn(92, 400, 300, chipEl);
+  assert.equal(input().mode, "pinch", "双指在 chip 上起手 → 同样进入双指手势（无平移死区）");
+  move(92, 440, 300); move(91, 340, 300); // 同向拖动（质心 +40）
+  up(92); up(91);
+  assert.equal(input().gesture, false, "全部抬起 → 手势结束");
+  assert.equal(input().dives, dives0, "双指平移起手在 chip 上 → 抬起不拾取（零 dive）");
+  assert.equal(input().suppressed, true, "收尾进入手势抑制窗");
+  fire(chipEl, "click", {});
+  assert.equal(input().dives, dives0, "抑制窗内 chip click 不 dive（多指抑制通道照旧）");
+  fakeNow += GESTURE_SUPPRESS_MS + 1;
+  step(1);
+  assert.equal(input().suppressed, false, "抑制窗过期");
+  fire(chipEl, "click", {});
+  assert.equal(input().dives, dives0 + 1, "窗过后 chip click 恢复单次 dive（零残留）");
+
+  eng.stop();
+  eng.dispose();
+}
+
 /* ── 右下「拖拽平移」开关（add-cosmos-drag-pan-toggle 2.1–2.3 / 3.1–3.3）：
    按钮几何与 a11y / 默认关闭且旋转不变 / 开启后鼠标平移（yaw·pitch 不变）/
    touch 仍旋转 / 笔尖同鼠标 / 补间让位 / setTuning 镜像 / 点击回调参数 /
@@ -3408,12 +3717,15 @@ const EXPECTED_FIT_DIST = FILTER_FIT_MARGIN / Math.tan(Math.PI / 6) * 1.1;
   eng.dispose();
 }
 
-/* ── 捏合越阈切平移，收束仍补判阈值导航（spec「捏合越阈切平移收束仍补判」） ── */
+/* ── 捏合越阈切平移，收束仍补判阈值导航（spec「捏合越阈切平移收束仍补判」）。
+   add-cosmos-two-finger-pan 起双指含质心平移分量：本用例改为「先拉近阈带上沿 + 小幅
+   平移」轨迹——星座仍留在屏心闸门内（gate = min(W,H)×0.25 = 150px），断言平移分量
+   不吞掉收束补判 ── */
 {
   const before = createdEls.length;
   const eng = createCosmosEngine({ container: stubEl("div"), style: createSkinD(), homeDist: 430 });
   eng.setScene(zoomScene(), "rebuild");
-  eng.setTuning({ zoomPointerFocus: false }); // 聚焦关闭：target 不动，闸门保持屏心（判定链隔离）
+  eng.setTuning({ zoomPointerFocus: false }); // 聚焦关闭：target 只随双指平移分量动（判定链隔离）
   rafQ.length = 0;
   eng.start();
   let tNow = 80000;
@@ -3430,17 +3742,22 @@ const EXPECTED_FIT_DIST = FILTER_FIT_MARGIN / Math.tan(Math.PI / 6) * 1.1;
   const up = (id) => fire(rootEl, "pointerup", { pointerId: id, button: 0, target: canvasEl });
 
   assert.equal(input().dives, 0, "初始未钻取");
+  eng.zoomBy(-446); // 430 → ≈199.9：先拉近阈带上沿（公共面 zoomBy 不判定，无自动 dive）
+  assert.ok(eng.getCamera().dist < 210 && eng.getCamera().dist > 190, "捏合前镜头距离已接近阈值");
+  const camBeforePinch = eng.getCamera();
   down(41, 100, 300); down(42, 200, 300);
-  move(42, 800, 300); // 指距 100 → 700：dist 430 → 61.4 < DIVE_REF 155（越阈）
+  move(42, 250, 300); // 质心 +25（平移分量）+ 指距 100 → 150：dist ≈199.9 → ≈133 < DIVE_REF 155（越阈）
   assert.ok(eng.getCamera().dist < DIVE_REF, "捏合越过钻取阈值");
+  assert.notDeepEqual(eng.getCamera().target, camBeforePinch.target, "同一帧质心平移分量同时生效（复合输入）");
   assert.equal(input().dives, 0, "捏合进行中不判定（不抢补间）");
-  step(1); // 更新场景投影（target 未动 → 星座仍在屏心闸门内）
+  step(1); // 更新场景投影（小幅平移后星座仍在屏心闸门内）
 
   down(43, 450, 300); // 第三指切平移
   assert.equal(input().mode, "pan3", "捏合中落第三指 → 切平移");
   assert.equal(input().pan3.pinchCarry, true, "平移记住本序列曾捏合");
-  move(43, 500, 300); // 平移一点（dist 不变）
+  move(43, 460, 300); // 平移一点（dist 不变）
   assert.equal(input().dives, 0, "平移进行中仍不判定");
+  step(1); // 更新投影（pan3 小幅平移仍在闸门内）
   up(43); // 3→2 重锚捏合
   assert.equal(input().mode, "pinch", "3→2 重锚捏合");
   up(42); // 2→1 收束补判
@@ -3794,7 +4111,9 @@ const EXPECTED_FIT_DIST = FILTER_FIT_MARGIN / Math.tan(Math.PI / 6) * 1.1;
 }
 
 {
-  /* 捏合中点聚焦（2.3）：同一收敛式 + canvas 相对坐标（rect 转换） */
+  /* 捏合中点聚焦（2.3）：同一收敛式 + canvas 相对坐标（rect 转换）。
+     add-cosmos-two-finger-pan D2/D3：单指下移使质心 +20 → 先结算质心平移分量
+     （单源纯函数、以当帧 dist 换算），再以双指中点做指针聚焦。 */
   const container = stubEl("div");
   const eng = createCosmosEngine({ container, style: createSkinD(), settings: { zoomPointerFocus: true } });
   eng.setScene(zoomScene(), "rebuild");
@@ -3814,10 +4133,14 @@ const EXPECTED_FIT_DIST = FILTER_FIT_MARGIN / Math.tan(Math.PI / 6) * 1.1;
   const pinchNext = cam0.dist * 200 / pinchD;
   assert.ok(near(cam1.dist, pinchNext, 1e-9), "捏合距离 = dist0×d0/d");
   assert.notDeepEqual(cam1.target, cam0.target, "捏合以双指中点为焦点移动 target");
+  /* 期望值 = 复现同一结算顺序：① 质心增量 (0,+20) 单源平移（当帧 dist = cam0.dist）→
+     ② 以平移后相机 + 当前中点 (200,120) 做指针聚焦 */
+  const panned = { target: cam0.target.slice(), yaw: cam0.yaw, pitch: cam0.pitch, dist: cam0.dist };
+  assert.equal(panCameraTargetByDrag(panned, 0, 20, cam0.dist), true, "质心平移分量先结算（有位移）");
   assert.deepEqual(
     cam1.target,
-    zoomFocusTargetOf(cam0, 200, 120, 800, 600, pinchNext),
-    "捏合聚焦 = 同一收敛式（中点 canvas 相对坐标）"
+    zoomFocusTargetOf(panned, 200, 120, 800, 600, pinchNext),
+    "复合结算：质心平移分量在前、中点聚焦在后（同一纯函数同一收敛式）"
   );
   fire("pointerup", { pointerId: 12, button: 0 });
   fire("pointerup", { pointerId: 11, button: 0 });
@@ -5696,14 +6019,13 @@ function goldLiteralsOutsideVarFallback(source) {
   globalThis.window.removeEventListener = prevRemove;
 }
 
-/* ── 星胚移除（add-cosmos-embryo-dismiss 5.2 / spec cosmos-embryo-dismiss
-      「移除入口与确认交互」）──
-   覆盖：proto 星卡唯一按钮行 + ws/slug 钩子、正式提案星卡无按钮、两击确认（首击零派发 /
-   二击派发）、确认态经直接 DOM（内容签名不变 → 不整卡重渲染）、约 3s 无操作回弹、
-   per-目标在途门、响应与同步抛错解锁、回调未注入静默、独立窗口照常可用、
-   proto→created 同 id 翻转即移除按钮。 */
+/* ── 星胚移除入口迁出 tips（add-cosmos-embryo-dismiss-button 4.x / spec cosmos-embryo-dismiss
+      「画布卡不再承载移除入口」「动作条直执行移除入口」）──
+   覆盖：proto 星卡**无按钮行**（无 dismiss 钩子 / 无确认态文案 / 无禁用态）、正式提案星卡
+   同样无按钮行、卡内点击分流保持既有会话动作口径（旧 dismiss markup 静默忽略）、
+   proto→created 同 id 翻转仍重建卡片（状态行刷新、无 dismiss 残留）。
+   直执行链路行为面直测在 test/actions-smoke.mjs 4e。 */
 {
-  assert.equal(DISMISS_CONFIRM_MS, 3000, "确认态回弹窗口 = 约 3s（D3）");
 
   const dismissScene = (protoLifecycle = "proto") => ({
     workspaces: [{
@@ -5755,169 +6077,78 @@ function goldLiteralsOutsideVarFallback(source) {
     return { eng, rootEl, canvasEl, cardEl, step, hoverStar, click };
   };
 
-  /** 信息卡按钮桩：命中 dismiss 分流所需的 data-action / data-ws / data-slug 钩子。 */
-  const dismissTargetOf = (wsId = "emb", slug = "embryo-a") => ({
+  /** 信息卡按钮桩：`.cd-btn` 分流桩（旧 dismiss markup 已无渲染，本桩只作外部陈旧 DOM 回归）。 */
+  const buttonTargetOf = (action, sessionId) => ({
     disabled: false,
     textContent: "",
     classList: { contains: (cls) => cls === "cd-btn" },
     getAttribute: (key) => ({
-      "data-action": "dismiss-embryo",
-      "data-ws": wsId,
-      "data-slug": slug
+      "data-action": action,
+      "data-session": sessionId
     })[key] ?? null
   });
 
-  /* ① proto 星卡唯一按钮行 + 钩子；正式提案星卡无按钮 */
+  /* ① proto 星卡无按钮行；正式提案星卡同样无按钮（移除入口已迁动作条） */
   {
-    const calls = [];
-    const h = harness({ onDismissEmbryo: (input) => { calls.push(input); } });
+    const h = harness();
     h.hoverStar("embryo-a");
     const protoHtml = String(h.cardEl.innerHTML);
-    assert.ok(protoHtml.includes('data-action="dismiss-embryo"'), "星胚卡呈现「移除星胚」按钮");
-    assert.ok(protoHtml.includes('data-ws="emb"'), "按钮携带 data-ws（workspaceId 钩子）");
-    assert.ok(protoHtml.includes('data-slug="embryo-a"'), "按钮携带 data-slug（proto 星 id = 锚点 slug）");
-    assert.ok(protoHtml.includes(">移除星胚<"), "按钮初始文案「移除星胚」（E.labels 中文基线）");
-    assert.equal((protoHtml.match(/cd-actions/g) ?? []).length, 1, "星胚卡「唯一」按钮行");
-    assert.ok(!protoHtml.includes("disabled"), "按钮 markup 无 disabled（在途禁用只走直接 DOM）");
+    assert.ok(!protoHtml.includes("dismiss-embryo"), "星胚卡 MUST NOT 呈现移除按钮");
+    assert.ok(!protoHtml.includes("移除星胚"), "tips 按钮文案面已退役（无确认态残留）");
+    assert.ok(!protoHtml.includes("cd-actions"), "星胚卡「无」按钮行（回归纯信息呈现）");
     assert.ok(protoHtml.includes("待创建") && !protoHtml.includes("活力"), "星胚卡：生命周期待创建 + 豁免活力行（既有口径）");
 
     h.hoverStar("formal-b");
     const formalHtml = String(h.cardEl.innerHTML);
-    assert.ok(!formalHtml.includes("dismiss-embryo"), "正式提案恒星卡 MUST NOT 呈现移除按钮");
+    assert.ok(!formalHtml.includes("dismiss-embryo"), "正式提案恒星卡同样无移除按钮");
     assert.ok(!formalHtml.includes("cd-actions"), "正式提案恒星卡保持无按钮行");
-    assert.deepEqual(calls, [], "仅 hover 零派发");
     h.eng.dispose();
   }
 
-  /* ② 两击确认：首击就地切确认态（零派发、内容签名不变）→ 二击派发 + 在途门 + 解锁 */
+  /* ② 卡内点击分流：旧 dismiss markup（外部注入 / 陈旧 DOM）静默忽略；会话类动作零变化 */
   {
-    const calls = [];
-    const resolvers = [];
-    const h = harness({
-      onDismissEmbryo: (input) => {
-        calls.push(input);
-        return new Promise((resolve) => resolvers.push(resolve));
-      }
-    });
+    const opened = [];
+    const h = harness({ onOpenSession: (sessionId) => opened.push(sessionId) });
     h.hoverStar("embryo-a");
     const htmlBefore = String(h.cardEl.innerHTML);
     const sigBefore = String(h.cardEl.dataset.sig);
-    const target = dismissTargetOf();
-    h.click(target);
-    assert.equal(target.textContent, "确认移除？", "首击就地变确认态文案「确认移除？」");
-    assert.deepEqual(calls, [], "首击 MUST NOT 派发请求（两击确认）");
-    assert.equal(String(h.cardEl.innerHTML), htmlBefore, "确认态不经 cardHtml 重渲染（整卡 markup 不变）");
-    assert.equal(String(h.cardEl.dataset.sig), sigBefore, "确认态 MUST NOT 进入内容签名");
-    h.step(3);
-    assert.equal(String(h.cardEl.innerHTML), htmlBefore, "确认态在帧循环中不被重建（sig 不变零重写）");
-    assert.equal(target.disabled, false, "确认态按钮仍可点（第二击是执行击）");
-
-    const second = dismissTargetOf();
-    h.click(second);
-    assert.deepEqual(calls, [{ workspaceId: "emb", slug: "embryo-a" }], "第二击经回调派发（ws.id + slug）");
-    assert.equal(second.disabled, true, "在途禁用态经直接 DOM 切换");
-    h.click(dismissTargetOf());
-    h.click(dismissTargetOf());
-    assert.equal(calls.length, 1, "在途门：每目标至多一个在途请求（重复点击忽略）");
-    resolvers[0]();
-    await Promise.resolve();
-    await Promise.resolve();
-    assert.equal(second.disabled, false, "响应到达（无论 outcome）→ 解锁");
-    assert.equal(second.textContent, "移除星胚", "解锁同时文案回弹初始态");
-    h.click(dismissTargetOf()); // 解锁后可再次进入确认态（重试路径）
-    assert.equal(calls.length, 1, "重试第一击仍不派发（两击每轮重来）");
+    const stale = {
+      disabled: false,
+      textContent: "移除星胚",
+      classList: { contains: (cls) => cls === "cd-btn" },
+      getAttribute: (key) => ({
+        "data-action": "dismiss-embryo",
+        "data-ws": "emb",
+        "data-slug": "embryo-a"
+      })[key] ?? null
+    };
+    assert.doesNotThrow(() => {
+      h.click(stale);
+      h.click(stale);
+    }, "旧 dismiss 分支已拆除 → 点击静默（无回调面、不抛错）");
+    assert.equal(stale.textContent, "移除星胚", "无确认态切换（两击确认已退役）");
+    assert.equal(stale.disabled, false, "无在途禁用态（在途门随机制拆除）");
+    assert.equal(String(h.cardEl.innerHTML), htmlBefore, "卡片 markup 零变化");
+    assert.equal(String(h.cardEl.dataset.sig), sigBefore, "内容签名零变化");
+    /* 会话类动作分流口径零变化：带 data-session 的 open 按钮仍走 onOpenSession。 */
+    h.click(buttonTargetOf("open", "sess-x"));
+    assert.deepEqual(opened, ["sess-x"], "「打开会话」分流逐字不变");
     h.eng.dispose();
   }
 
-  /* ③ 首击后约 DISMISS_CONFIRM_MS 无操作 → 自动回弹初始态且零请求 */
-  {
-    const calls = [];
-    const h = harness({ onDismissEmbryo: (input) => { calls.push(input); } });
-    h.hoverStar("embryo-a");
-    const realSetTimeout = globalThis.setTimeout;
-    const realClearTimeout = globalThis.clearTimeout;
-    const scheduled = [];
-    globalThis.setTimeout = (fn, ms) => { scheduled.push({ fn, ms }); return { unref() {} }; };
-    globalThis.clearTimeout = () => {};
-    try {
-      const target = dismissTargetOf();
-      h.click(target);
-      assert.equal(target.textContent, "确认移除？", "首击进入确认态");
-      assert.equal(scheduled.length, 1, "确认态登记一个回弹定时器");
-      assert.equal(scheduled[0].ms, DISMISS_CONFIRM_MS, "回弹定时器窗口 = DISMISS_CONFIRM_MS");
-      scheduled[0].fn();
-      assert.equal(target.textContent, "移除星胚", "无操作 → 按钮回弹初始态");
-      assert.deepEqual(calls, [], "回弹路径零请求");
-      h.click(target);
-      assert.equal(target.textContent, "确认移除？", "回弹后再次首击重新进入确认态");
-      assert.equal(scheduled.length, 2, "回弹后重新登记定时器");
-    } finally {
-      globalThis.setTimeout = realSetTimeout;
-      globalThis.clearTimeout = realClearTimeout;
-    }
-    assert.deepEqual(calls, [], "自动回弹全程零派发");
-    h.eng.dispose();
-  }
-
-  /* ④ 回调未注入 → 两击确认后静默 no-op（不派发、不抛错、按钮回弹） */
+  /* ③ proto→created 同 id 翻转：lifecycle 仍在内容签名 → 重建（状态行刷新、无残留） */
   {
     const h = harness();
     h.hoverStar("embryo-a");
-    const target = dismissTargetOf();
-    assert.doesNotThrow(() => {
-      h.click(target);
-      h.click(target);
-    }, "未注入 onDismissEmbryo → 点击静默（不抛错）");
-    assert.equal(target.textContent, "移除星胚", "静默路径文案回弹初始态");
-    assert.equal(target.disabled, false, "静默路径不进入在途禁用");
-    h.eng.dispose();
-  }
-
-  /* ⑤ 回调同步抛错 → 解锁（不让一次失败永久卡死按钮） */
-  {
-    const originalWarn = console.warn;
-    console.warn = () => {};
-    try {
-      const h = harness({ onDismissEmbryo: () => { throw new Error("boom"); } });
-      h.hoverStar("embryo-a");
-      const target = dismissTargetOf();
-      h.click(target);
-      h.click(target);
-      assert.equal(target.disabled, false, "同步抛错 → 解锁");
-      assert.equal(target.textContent, "移除星胚", "同步抛错 → 文案回弹初始态");
-      h.eng.dispose();
-    } finally {
-      console.warn = originalWarn;
-    }
-  }
-
-  /* ⑥ 独立窗口态照常可用（服务端动词，不依赖主壳会话页；D8） */
-  {
-    const calls = [];
-    const h = harness({ sessionNavAvailable: false, onDismissEmbryo: (input) => { calls.push(input); } });
-    h.hoverStar("embryo-a");
-    const html = String(h.cardEl.innerHTML);
-    assert.ok(html.includes('data-action="dismiss-embryo"'), "独立窗口态星胚卡照常呈现移除按钮");
-    assert.ok(!html.includes("disabled"), "独立窗口态移除按钮非禁用（禁用例外只属「打开会话」）");
-    const target = dismissTargetOf();
-    h.click(target);
-    h.click(target);
-    assert.deepEqual(calls, [{ workspaceId: "emb", slug: "embryo-a" }], "独立窗口态点击照常派发");
-    h.eng.dispose();
-  }
-
-  /* ⑦ proto→created 同 id 翻转：lifecycle 进内容签名 → 卡片重建、移除按钮消失 */
-  {
-    const h = harness({ onDismissEmbryo: () => {} });
-    h.hoverStar("embryo-a");
-    assert.ok(String(h.cardEl.innerHTML).includes('data-action="dismiss-embryo"'), "翻转前：星胚卡有按钮");
+    assert.ok(String(h.cardEl.innerHTML).includes("待创建"), "翻转前：状态行「待创建」");
     h.eng.setScene(dismissScene("created"), "patch");
     h.step(2);
     const html = String(h.cardEl.innerHTML);
-    assert.ok(!html.includes("dismiss-embryo"), "锚点转正（proto→created）→ 移除按钮消失（lifecycle 在 sig 内）");
-    assert.ok(html.includes("已创建"), "卡片按新生命周期重建");
+    assert.ok(html.includes("已创建"), "卡片按新生命周期重建（life: 仍在 sig 内）");
+    assert.ok(!html.includes("dismiss-embryo") && !html.includes("移除星胚"), "翻转路径无 dismiss 残留引用");
     h.eng.dispose();
   }
+
 }
 
 /* ── 星云尘埃 α 弱化（polish-cosmos-nebula-faint 3.1/3.2/1.3）：

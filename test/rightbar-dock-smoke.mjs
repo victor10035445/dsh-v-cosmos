@@ -29,8 +29,8 @@ import {
   settingsFromStorageEvent
 } from "../src/settings.mjs";
 
-/* ── 1. 设置面 v14（spec「设置 v10 与历史值迁移」；v12 = 删缩放阈值两键，v13 = patLineDim，v14 = wsToolSize） ── */
-assert.equal(COSMOS_SETTINGS_VERSION, 14, "设置面 v14（v10 = dock 迁移，v11 = templateNames，v12 = 删缩放阈值两键，v13 = patLineDim，v14 = wsToolSize）");
+/* ── 1. 设置面 v15（spec「设置 v10 与历史值迁移」；v12 = 删缩放阈值两键，v13 = patLineDim，v14 = wsToolSize，v15 = worksContours/worksAscii） ── */
+assert.equal(COSMOS_SETTINGS_VERSION, 15, "设置面 v15（v10 = dock 迁移，v11 = templateNames，v12 = 删缩放阈值两键，v13 = patLineDim，v14 = wsToolSize，v15 = worksContours/worksAscii）");
 assert.deepEqual([...COSMOS_LAUNCH_MODES], ["embedded", "dock"], "打开方式两档 embedded | dock");
 assert.equal(COSMOS_DEFAULT_LAUNCH_MODE, "embedded", "缺省 = 内嵌整页");
 assert.equal(sanitizeCosmosSettings({}).launchMode, "embedded", "空载荷 → 缺省 embedded");

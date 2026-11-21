@@ -16,6 +16,7 @@ import {
   createActionExecutor,
   createActionGate,
   createEmbryoActionExecutor,
+  createEmbryoDismissExecutor,
   createPendingActionStore,
   draftMatches,
   explorationTargetOf
@@ -775,6 +776,254 @@ const button = { name: "审查", prompt: "请使用 /cosmos-review 审查本提�
     const run = await executor.run({ button, card: noIdCard });
     assert.equal(run.ok, true);
     assert.equal(bound, 0, "缺目标提案名不绑定（端点面禁止空清单）");
+  }
+}
+
+
+/* ── 4e. 星胚直执行执行链路（add-cosmos-embryo-dismiss-button 2.1–2.5 / spec
+      cosmos-actions「星胚直执行执行链路」、spec cosmos-embryo-dismiss「动作条直执行
+      移除入口」）：整组顺序 / 不短路 / 聚合三态 / 冷却门 / 旧锚点可达 / 目标早退 ── */
+{
+  const directButton = { name: "移除", prompt: "", autoSend: false, newSession: false, preState: "proto", embryoDismiss: true };
+  const embryoGroupCard = {
+    key: "proto\u0000sess-explore",
+    lifecycle: "proto",
+    act: 0,
+    isEmbryo: true,
+    sessionId: "sess-explore",
+    slugs: ["add-a", "add-b", "add-c"],
+    wsId: "ws1"
+  };
+  /** 执行体装配（每例独立门；`dismissOne` 缺省按 slug 顺序记调用序）。 */
+  const runDirect = (options = {}) => createEmbryoDismissExecutor({
+    dismissOne: options.dismissOne,
+    notify: options.notify ?? (() => {}),
+    getDismissLabels: options.getDismissLabels,
+    gate: options.gate,
+    now: options.now ?? (() => 10_000)
+  });
+
+  /* 整组顺序删（spec 场景「整组顺序执行与门占用」）：调用次序 = 组内顺序，聚合组级成功。 */
+  {
+    const order = [];
+    const toasts = [];
+    const result = await runDirect({
+      dismissOne: async ({ workspaceId, slug }) => {
+        order.push({ workspaceId, slug });
+        return { outcome: "deleted", tone: "ok", text: "星胚已移除" };
+      },
+      notify: (text) => toasts.push(text)
+    }).run({ button: directButton, card: embryoGroupCard });
+    assert.deepEqual(order.map((call) => call.slug), ["add-a", "add-b", "add-c"], "整组按 slugs 顺序逐条调用");
+    assert.deepEqual(order.map((call) => call.workspaceId), ["ws1", "ws1", "ws1"], "workspaceId = 合并卡 wsId");
+    assert.equal(result.ok, true);
+    assert.equal(result.removed, 3);
+    assert.equal(result.total, 3);
+    assert.deepEqual(toasts, ["已移除 3 个星胚"], "多 slug 全成功 → 组级文案 + 只 toast 一次");
+    assert.ok(!("firstFailure" in result), "全成功不携 firstFailure");
+  }
+
+  /* 部分失败不短路（spec 场景「部分失败不短路」）：第 2 条守卫拒绝，第 3 条照常发出。 */
+  {
+    const order = [];
+    const toasts = [];
+    const result = await runDirect({
+      dismissOne: async ({ slug }) => {
+        order.push(slug);
+        if (slug === "add-b") return { outcome: "guard-dir-exists", tone: "warn", text: "同名提案已创建，未移除" };
+        return { outcome: "deleted", tone: "ok", text: "星胚已移除" };
+      },
+      notify: (text) => toasts.push(text)
+    }).run({ button: directButton, card: embryoGroupCard });
+    assert.deepEqual(order, ["add-a", "add-b", "add-c"], "单条失败 MUST NOT 短路后续 slug");
+    assert.equal(result.ok, false, "部分成功 → ok=false");
+    assert.equal(result.removed, 2);
+    assert.equal(result.total, 3);
+    assert.equal(toasts.length, 1, "整组只呈现一次");
+    assert.match(toasts[0], /已移除 2\/3/, "部分成功携带分数");
+    assert.match(toasts[0], /同名提案已创建，未移除/, "部分成功携带首条失败理由");
+    assert.equal(result.firstFailure.slug, "add-b", "firstFailure = 首条失败 slug");
+    assert.equal(result.firstFailure.outcome, "guard-dir-exists");
+  }
+
+  /* 全部失败 → 组级失败文案；`already-missing` 计成功（幂等重删按中性计）。 */
+  {
+    const toasts = [];
+    const allFail = await runDirect({
+      dismissOne: async () => ({ outcome: "missing-workspace", tone: "error", text: "工作区不在册，未移除" }),
+      notify: (text) => toasts.push(text)
+    }).run({ button: directButton, card: embryoGroupCard });
+    assert.equal(allFail.ok, false);
+    assert.equal(allFail.removed, 0);
+    assert.equal(toasts.length, 1);
+    assert.match(toasts[0], /未移除（工作区不在册，未移除）/, "全部失败 → 「未移除（首条失败理由）」");
+
+    const toasts2 = [];
+    const idempotent = await runDirect({
+      dismissOne: async ({ slug }) => (slug === "add-b"
+        ? { outcome: "already-missing", tone: "neutral", text: "该星胚已不存在" }
+        : { outcome: "deleted", tone: "ok", text: "星胚已移除" }),
+      notify: (text) => toasts2.push(text)
+    }).run({ button: directButton, card: embryoGroupCard });
+    assert.equal(idempotent.ok, true, "already-missing 计入成功（组内全成功）");
+    assert.equal(idempotent.removed, 3);
+    assert.match(toasts2[0], /已移除 3 个星胚/);
+  }
+
+  /* 单 slug 组沿用单条 outcome 文案（与旧单星粒度一致）。 */
+  {
+    const toasts = [];
+    const single = await runDirect({
+      dismissOne: async () => ({ outcome: "already-missing", tone: "neutral", text: "该星胚已不存在" }),
+      notify: (text) => toasts.push(text)
+    }).run({ button: directButton, card: { ...embryoGroupCard, slugs: ["add-a"] } });
+    assert.equal(single.total, 1);
+    assert.equal(single.ok, true, "单 slug already-missing → 成功");
+    assert.deepEqual(toasts, ["该星胚已不存在"], "单 slug 组直接用单条文案（不套组级模板）");
+    assert.equal(single.text, "该星胚已不存在");
+  }
+
+  /* 组级文案词典注入（getDismissLabels）：占位替换 + 缺键回落基线。 */
+  {
+    const toasts = [];
+    const labels = { all: "Removed {count}", partial: "{removed}/{total} removed ({reason})", none: "Not removed ({reason})" };
+    await runDirect({
+      dismissOne: async () => ({ outcome: "deleted", tone: "ok", text: "x" }),
+      notify: (text) => toasts.push(text),
+      getDismissLabels: () => labels,
+      now: () => 20_000
+    }).run({ button: directButton, card: { ...embryoGroupCard, slugs: ["a", "b"] } });
+    assert.deepEqual(toasts, ["Removed 2"], "组级文案经词典注入");
+
+    const toasts2 = [];
+    await runDirect({
+      dismissOne: async () => ({ outcome: "failed", tone: "error", text: "boom" }),
+      notify: (text) => toasts2.push(text),
+      getDismissLabels: () => { throw new Error("dict down"); },
+      now: () => 30_000
+    }).run({ button: directButton, card: { ...embryoGroupCard, slugs: ["a", "b"] } });
+    assert.match(toasts2[0], /未移除（boom）/, "词典不可达 → 回落中文基线（不阻断移除）");
+  }
+
+  /* 冷却门（2.3/2.5）：整组期间门保持占用 → 重复点击 busy；组完成后可再次触发。 */
+  {
+    const gate = createActionGate({ now: () => 40_000, cooldownMs: 0 });
+    const releases = [];
+    const order = [];
+    /* 微任务冲刷（执行体内部逐条 await：每释放一条要若干 tick 才推进到下一 slug）。 */
+    const flush = async () => { for (let i = 0; i < 5; i++) await Promise.resolve(); };
+    const executor = runDirect({
+      gate,
+      now: () => 40_000,
+      dismissOne: ({ slug }) => {
+        order.push(slug);
+        return new Promise((resolve) => releases.push(() => resolve({ outcome: "deleted", tone: "ok", text: "星胚已移除" })));
+      }
+    });
+    const first = executor.run({ button: directButton, card: embryoGroupCard });
+    await flush();
+    assert.deepEqual(order, ["add-a"], "首条已发出（组内进行中）");
+    const blocked = await executor.run({ button: directButton, card: embryoGroupCard });
+    assert.equal(blocked.reason, "busy", "整组期间重复点击 → 冷却门忽略");
+    assert.equal(gate.peek().running, true, "组内门保持占用");
+    releases[0]();
+    await flush();
+    assert.deepEqual(order, ["add-a", "add-b"], "释放后继续下一条（顺序不并行）");
+    assert.equal(releases.length, 2, "第二条请求已就位");
+    releases[1]();
+    await flush();
+    assert.equal(releases.length, 3, "第三条请求已就位");
+    releases[2]();
+    const result = await first;
+    assert.equal(result.ok, true);
+    assert.equal(gate.peek().running, false, "组完成后门释放");
+    assert.deepEqual(order, ["add-a", "add-b", "add-c"], "三条顺序完成");
+    const again = await runDirect({
+      gate,
+      now: () => 40_000,
+      dismissOne: async () => ({ outcome: "already-missing", tone: "neutral", text: "该星胚已不存在" })
+    }).run({ button: directButton, card: { ...embryoGroupCard, slugs: ["add-a"] } });
+    assert.equal(again.ok, true, "组完成后可再次触发（重删走 already-missing 幂等）");
+  }
+
+  /* 旧锚点（无 sessionId）可达（spec 场景「旧锚点直执行可达」）：链路零会话依赖。 */
+  {
+    const order = [];
+    const result = await runDirect({
+      dismissOne: async ({ slug }) => {
+        order.push(slug);
+        return { outcome: "deleted", tone: "ok", text: "星胚已移除" };
+      },
+      now: () => 50_000
+    }).run({ button: directButton, card: { ...embryoGroupCard, sessionId: undefined } });
+    assert.equal(result.ok, true, "无 sessionId 照常执行（不解析探索会话）");
+    assert.deepEqual(order, ["add-a", "add-b", "add-c"]);
+  }
+
+  /* 守卫：非直执行按钮 / 非星胚卡 / 缺卡 / 空 slugs / 门控复验不过 / 通道缺席。 */
+  {
+    const silent = [];
+    const executor = (extra = {}) => runDirect({
+      dismissOne: async ({ slug }) => { silent.push(slug); return { outcome: "deleted", tone: "ok", text: "x" }; },
+      notify: (text) => silent.push(text),
+      ...extra
+    });
+    assert.equal((await executor({ now: () => 60_000 }).run({
+      button: { ...directButton, embryoDismiss: undefined }, card: embryoGroupCard
+    })).reason, "not-direct", "proto 无直执行键 → not-direct（走消息链路）");
+    assert.equal((await executor({ now: () => 61_000 }).run({
+      button: { ...directButton, preState: "reviewed" }, card: embryoGroupCard
+    })).reason, "not-direct", "非 proto 按钮不走本链路");
+    assert.equal((await executor({ now: () => 62_000 }).run({
+      button: directButton, card: { ...embryoGroupCard, isEmbryo: false }
+    })).reason, "no-target", "非星胚卡 → 静默早退");
+    assert.equal((await executor({ now: () => 63_000 }).run({
+      button: directButton, card: { ...embryoGroupCard, slugs: ["", "  ", 7, null] }
+    })).reason, "no-target", "畸形/空 slug 过滤后为空 → no-target");
+    assert.equal((await executor({ now: () => 64_000 }).run({
+      button: directButton, card: { ...embryoGroupCard, act: 1 }
+    })).reason, "gate", "点击复验：act≥1（探索会话活跃）→ 早退");
+    assert.equal((await executor({ now: () => 65_000 }).run({ button: directButton })).reason, "no-target", "缺卡 → 静默早退");
+    assert.equal((await executor({ dismissOne: undefined, now: () => 66_000 }).run({
+      button: directButton, card: embryoGroupCard
+    })).reason, "unavailable", "单条通道缺席 → unavailable");
+    assert.deepEqual(silent, [], "全部守卫路径零请求、零 toast（静默早退）");
+    /* 畸形 slug 组的防御过滤（保留合法 slug、顺序不变）。 */
+    const kept = [];
+    const filtered = await runDirect({
+      dismissOne: async ({ slug }) => { kept.push(slug); return { outcome: "deleted", tone: "ok", text: "x" }; },
+      now: () => 67_000
+    }).run({ button: directButton, card: { ...embryoGroupCard, slugs: [" add-a ", "", 7, "add-c"] } });
+    assert.deepEqual(kept, ["add-a", "add-c"], "slug trim + 非法项过滤，组内顺序保持");
+    assert.equal(filtered.total, 2);
+  }
+
+  /* 请求抛错按 failed 计（不中断整组）。 */
+  {
+    const toasts = [];
+    const result = await runDirect({
+      dismissOne: async ({ slug }) => {
+        if (slug === "add-b") throw new Error("network down");
+        return { outcome: "deleted", tone: "ok", text: "星胚已移除" };
+      },
+      notify: (text) => toasts.push(text),
+      now: () => 70_000
+    }).run({ button: directButton, card: embryoGroupCard });
+    assert.equal(result.removed, 2);
+    assert.equal(result.firstFailure.text, "network down", "抛错文案进首次失败理由");
+    assert.match(toasts[0], /已移除 2\/3（首条失败：network down）/);
+  }
+
+  /* 零副作用（2.5）：执行体不触碰任何会话/导航/标记面（构造期只驻留注入面）。 */
+  {
+    const probes = [];
+    const result = await runDirect({
+      dismissOne: async () => { probes.push("request"); return { outcome: "deleted", tone: "ok", text: "x" }; },
+      notify: () => probes.push("notify"),
+      now: () => 80_000
+    }).run({ button: directButton, card: embryoGroupCard });
+    assert.deepEqual(probes, ["request", "request", "request", "notify"], "仅请求 + 一次呈现（无导航/标记面入口）");
+    assert.deepEqual(Object.keys(result).sort(), ["items", "ok", "outcome", "removed", "text", "tone", "total"], "执行摘要形状");
   }
 }
 

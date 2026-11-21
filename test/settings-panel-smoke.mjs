@@ -296,6 +296,158 @@ const BUTTON = { name: "审查", prompt: "请使用 /cosmos-review 审查本提�
   constFace.dispose();
 }
 
+/* ── 3c. 星胚直执行（add-cosmos-embryo-dismiss-button 5.1–5.4 / spec cosmos-button-settings
+      「设置页『快捷动作』标签页」）：勾选保存回显 / 非星胚行禁用 / 切走自动清勾 /
+      直执行行控件禁用集 / 空提示词保存 ── */
+{
+  /* 草稿：键序最末（shortcut 之后）；漂移值（非 proto 行 + true）原样保留供回显。 */
+  assert.deepEqual(
+    Object.keys(buttonDraftOf({ name: "移除", prompt: "", preState: "proto", embryoDismiss: true })),
+    ["name", "prompt", "autoSend", "newSession", "preState", "embryoDismiss"],
+    "embryoDismiss 追加最末（proto 行无 shortcut 时紧随 preState）"
+  );
+  assert.deepEqual(
+    Object.keys(buttonDraftOf({ name: "a", prompt: "p", preState: "proto", shortcut: "F4", embryoDismiss: true })),
+    ["name", "prompt", "autoSend", "newSession", "preState", "shortcut", "embryoDismiss"],
+    "键序：embryoDismiss 位于 shortcut 之后（最末）"
+  );
+  assert.ok(!("embryoDismiss" in buttonDraftOf({ name: "a", prompt: "p", preState: "proto", embryoDismiss: false })), "false 不落键");
+  assert.equal(buttonDraftOf({ name: "旧行", prompt: "p", preState: "reviewed", embryoDismiss: true }).embryoDismiss, true, "漂移值原样回显");
+
+  /* 校验：直执行行空 prompt 合法；非直执行空 prompt 仍拒；非 proto + true 拒；非布尔拒。 */
+  assert.equal(buttonIssue([{ name: "移除", prompt: "", preState: "proto", newSession: false, embryoDismiss: true }]), "", "直执行行空提示词合法");
+  assert.equal(buttonIssue([{ name: "a", prompt: "" }]), "buttonPromptRequired", "普通行空提示词仍拒");
+  assert.equal(buttonIssue([{ name: "a", prompt: "", preState: "proto", newSession: false }]), "buttonPromptRequired", "proto 行未勾直执行仍拒空提示词");
+  assert.equal(
+    buttonIssue([{ name: "a", prompt: "p", preState: "reviewed", newSession: true, embryoDismiss: true }]),
+    "buttonEmbryoDismissProtoOnly",
+    "非 proto 行携带 true → 拒绝（归一化兜底）"
+  );
+  assert.equal(
+    buttonIssue([{ name: "a", prompt: "p", embryoDismiss: true }]),
+    "buttonEmbryoDismissProtoOnly",
+    "缺省 preState 行携带 true → 拒绝"
+  );
+  assert.equal(
+    buttonIssue([{ name: "a", prompt: "p", preState: "proto", newSession: false, embryoDismiss: "yes" }]),
+    "buttonEmbryoDismissInvalid",
+    "非布尔 embryoDismiss 拒绝"
+  );
+
+  /* 勾选保存回显（spec 场景「直达移除勾选保存回显」）：prompt 清空、键序最末、newSession false。 */
+  {
+    const scope = fakeScope({ buttons: [{ name: "移除", prompt: "旧提示词", preState: "proto", newSession: false }] });
+    const face = createButtonSettingsController(scope);
+    face.editButton(0, "embryoDismiss", true);
+    const draft = face.getSnapshot().buttonsDraft[0];
+    assert.equal(draft.embryoDismiss, true, "勾选进草稿");
+    assert.equal(draft.prompt, "", "勾选瞬间草稿提示词即时清空（不残留死文案）");
+    assert.equal(face.getSnapshot().buttonsInvalid, false, "空提示词在直执行行合法");
+    assert.equal(await face.save(), true, "保存成功");
+    const saved = scope.calls.find((call) => call.op === "set").value[0];
+    assert.deepEqual(saved, {
+      name: "移除",
+      prompt: "",
+      autoSend: false,
+      newSession: false,
+      preState: "proto",
+      embryoDismiss: true
+    }, "保存载荷：prompt 空串、embryoDismiss 键序最末、newSession false");
+    assert.deepEqual(Object.keys(saved), ["name", "prompt", "autoSend", "newSession", "preState", "embryoDismiss"], "键序稳定");
+    /* 重新打开设置：回显勾选态（读面投影同口径）。 */
+    assert.equal(face.getSnapshot().buttonsDraft[0].embryoDismiss, true, "回显勾选");
+    face.dispose();
+  }
+
+  /* 切走前置状态自动清勾（草稿态即时联动；保存不落键）。 */
+  {
+    const scope = fakeScope({ buttons: [{ name: "移除", prompt: "", preState: "proto", newSession: false, embryoDismiss: true }] });
+    const face = createButtonSettingsController(scope);
+    assert.equal(face.getSnapshot().buttonsDraft[0].embryoDismiss, true, "初始已勾选");
+    face.editButton(0, "preState", "reviewed");
+    assert.ok(!("embryoDismiss" in face.getSnapshot().buttonsDraft[0]), "切走 proto → 勾选自动清除");
+    assert.equal(face.getSnapshot().buttonsDraft[0].newSession, true, "非 proto 行 newSession 回到 true");
+    /* 保存：切走后空提示词不再豁免 → 先补提示词再保存，载荷无 embryoDismiss 键。 */
+    face.editButton(0, "prompt", "请审查本提案");
+    assert.equal(face.getSnapshot().buttonsInvalid, false);
+    assert.equal(await face.save(), true);
+    assert.ok(!("embryoDismiss" in scope.calls.find((call) => call.op === "set").value[0]), "切走后保存不写 embryoDismiss");
+    face.dispose();
+  }
+
+  /* 取消勾选恢复（提示词控件回到可编辑；文案不回填）。 */
+  {
+    const scope = fakeScope({ buttons: [{ name: "移除", prompt: "", preState: "proto", newSession: false, embryoDismiss: true }] });
+    const face = createButtonSettingsController(scope);
+    face.editButton(0, "embryoDismiss", false);
+    const draft = face.getSnapshot().buttonsDraft[0];
+    assert.ok(!("embryoDismiss" in draft), "取消勾选删除键");
+    assert.equal(draft.prompt, "", "提示词不回填（保持空串可编辑）");
+    assert.equal(face.getSnapshot().buttonsInvalid, true, "取消勾选后空提示词失去豁免 → 非法（需补文案）");
+    face.editButton(0, "prompt", "推进本提案");
+    assert.equal(face.getSnapshot().buttonsInvalid, false);
+    assert.equal(await face.save(), true);
+    assert.equal(scope.calls.at(-1).value[0].prompt, "推进本提案");
+    assert.ok(!("embryoDismiss" in scope.calls.at(-1).value[0]));
+    face.dispose();
+  }
+
+  /* 非星胚行禁用：控制器不产生该键（UI 禁用 + issue 双保险）；星座 profile 无该控件。 */
+  {
+    const scope = fakeScope({ buttons: [{ name: "审查", prompt: "p", preState: "reviewed", newSession: true }] });
+    const face = createButtonSettingsController(scope);
+    assert.equal(face.getSnapshot().buttonsDraft[0].embryoDismiss, undefined, "普通行草稿无该键");
+    face.dispose();
+
+    const constScope = fakeScope({
+      buttons: [],
+      constellationButtons: [{ name: "探索", prompt: "p", autoSend: false, newSession: true }]
+    });
+    const constFace = createButtonSettingsController(constScope, CONSTELLATION_PROFILE);
+    assert.equal(CONSTELLATION_PROFILE.supportsEmbryoDismiss, false, "星座 profile 不呈现直执行控件");
+    constFace.editButton(0, "embryoDismiss", true);
+    assert.ok(!("embryoDismiss" in constFace.getSnapshot().buttonsDraft[0]), "星座行 editButton 空操作");
+    constFace.dispose();
+  }
+
+  /* 漂移回显（spec 场景「直执行键漂移读面容错」）：非 proto 行 + true 原样回显并标记非法。 */
+  {
+    const driftScope = fakeScope({ buttons: [{ name: "旧行", prompt: "p", preState: "reviewed", newSession: true, embryoDismiss: true }] });
+    const driftFace = createButtonSettingsController(driftScope);
+    assert.equal(driftFace.getSnapshot().buttonsDraft[0].embryoDismiss, true, "漂移值原样回显（不静默改写）");
+    assert.equal(driftFace.getSnapshot().buttonsInvalid, true);
+    assert.equal(driftFace.getSnapshot().buttonsInvalidReason, "buttonEmbryoDismissProtoOnly");
+    assert.equal(await driftFace.save(), false, "漂移保存被拒");
+    assert.equal(driftScope.calls.filter((call) => call.op === "set").length, 0, "未写配置层");
+    assert.equal(driftFace.getSnapshot().buttonsDraft[0].embryoDismiss, true, "草稿保留（可取消勾选修正）");
+    driftFace.dispose();
+  }
+
+  /* 无该键条目重新落盘逐字节不变（新键缺省不落键）。 */
+  {
+    const legacy = { name: "旧", prompt: "p", autoSend: true, newSession: true, preState: "reviewed", shortcut: "F8" };
+    const scope = fakeScope({ buttons: [legacy] });
+    const face = createButtonSettingsController(scope);
+    face.editButton(0, "autoSend", false);
+    assert.equal(await face.save(), true);
+    assert.equal(
+      JSON.stringify(scope.calls.find((call) => call.op === "set").value[0]),
+      JSON.stringify({ name: "旧", prompt: "p", autoSend: false, newSession: true, preState: "reviewed", shortcut: "F8" }),
+      "无 embryoDismiss 的既有条目序列化逐字节不变"
+    );
+    face.dispose();
+  }
+
+  /* 只读降级：行内控件禁用语义沿用（face.writable=false → disabled 覆盖所有控件）。 */
+  {
+    const readOnly = fakeScope({ buttons: [BUTTON], writable: false });
+    const face = createButtonSettingsController(readOnly);
+    assert.equal(face.getSnapshot().writable, false);
+    assert.equal(await face.save(), false, "只读面保存不发生");
+    face.dispose();
+  }
+}
+
 /* ── 4. 排序与边界（spec「按钮排序交互与顺序语义」） ── */
 {
   const list = [1, 2, 3, 4].map((n) => ({ name: "b" + n, prompt: "p", newSession: true }));
@@ -579,7 +731,7 @@ const BUTTON = { name: "审查", prompt: "请使用 /cosmos-review 审查本提�
   const { COSMOS_DEFAULT_SKIN, COSMOS_SKINS, skinCardOf } = await import("../src/cosmos/skin-registry.mjs");
   const { COSMOS_SETTINGS_VERSION, loadCosmosSettings, sanitizeCosmosSettings, saveCosmosSettings } = await import("../src/settings.mjs");
 
-  assert.equal(COSMOS_SETTINGS_VERSION, 14, "设置面 v14（v13 → v14 新增 wsToolSize；v12 → v13 新增 patLineDim；v10 = launchMode/window→dock 迁移，v11 = templateNames，v12 = 删缩放阈值两键；版本号只进不退）");
+  assert.equal(COSMOS_SETTINGS_VERSION, 15, "设置面 v15（p2：v14 → v15 新增 worksContours/worksAscii；v13 → v14 新增 wsToolSize；v12 → v13 新增 patLineDim；v10 = launchMode/window→dock 迁移，v11 = templateNames，v12 = 删缩放阈值两键；版本号只进不退）");
   const cards = COSMOS_SKINS.map(skinCardOf);
   assert.equal(cards.length, 12, "12 张卡片");
   assert.deepEqual(cards.map((c) => c.id), COSMOS_SKINS.map((s) => s.id), "卡片顺序 = 注册表顺序");
@@ -623,7 +775,7 @@ const BUTTON = { name: "审查", prompt: "请使用 /cosmos-review 审查本提�
     saveCosmosSettings
   } = await import("../src/settings.mjs");
 
-  assert.equal(COSMOS_SETTINGS_VERSION, 14, "设置面 v14（v13 → v14 新增 wsToolSize；v12 → v13 新增 patLineDim；v10 = dock 迁移，v11 = templateNames，v12 = 删缩放阈值两键）");
+  assert.equal(COSMOS_SETTINGS_VERSION, 15, "设置面 v15（v14 → v15 新增 worksContours/worksAscii；v13 → v14 新增 wsToolSize；v12 → v13 新增 patLineDim；v10 = dock 迁移，v11 = templateNames，v12 = 删缩放阈值两键）");
   assert.deepEqual(
     [COSMOS_SETTINGS_DEFAULTS.zoomPointerFocus, "zoomDiveRatio" in COSMOS_SETTINGS_DEFAULTS, "zoomFlyOutRatio" in COSMOS_SETTINGS_DEFAULTS],
     [true, false, false],
@@ -851,7 +1003,7 @@ const BUTTON = { name: "审查", prompt: "请使用 /cosmos-review 审查本提�
     saveCosmosSettings
   } = await import("../src/settings.mjs");
 
-  assert.equal(COSMOS_SETTINGS_VERSION, 14, "设置面版本（拖拽平移键仍在册；v10 = dock，v11 = templateNames，v12 = 删缩放阈值两键，v13 = patLineDim，v14 = wsToolSize）");
+  assert.equal(COSMOS_SETTINGS_VERSION, 15, "设置面版本（拖拽平移键仍在册；v10 = dock，v11 = templateNames，v12 = 删缩放阈值两键，v13 = patLineDim，v14 = wsToolSize，v15 = worksContours/worksAscii）");
   assert.equal(COSMOS_SETTINGS_DEFAULTS.dragPan, false, "出厂默认关闭（鼠标拖拽保持旋转）");
   assert.equal(sanitizeCosmosSettings({}).dragPan, false, "空载荷 → false");
   assert.equal(sanitizeCosmosSettings({ dragPan: true }).dragPan, true, "合法 true 透传（开启态）");
@@ -1153,7 +1305,7 @@ const BUTTON = { name: "审查", prompt: "请使用 /cosmos-review 审查本提�
     shortcutLabelOf
   } = await import("../src/shortcuts.mjs");
 
-  assert.equal(COSMOS_SETTINGS_VERSION, 14, "设置面 v14（shortcuts 子对象 + launchMode + templateNames + patLineDim + wsToolSize + 删缩放阈值两键并入；v10 = dock 迁移）");
+  assert.equal(COSMOS_SETTINGS_VERSION, 15, "设置面 v15（shortcuts 子对象 + launchMode + templateNames + patLineDim + wsToolSize + worksContours/worksAscii + 删缩放阈值两键并入；v10 = dock 迁移）");
   assert.deepEqual(
     COSMOS_SETTINGS_DEFAULTS.shortcuts,
     { closePage: "Escape", goHome: "Backquote", togglePan: "KeyM", voiceToggle: "Ctrl+KeyQ" },
@@ -1163,7 +1315,7 @@ const BUTTON = { name: "审查", prompt: "请使用 /cosmos-review 审查本提�
   assert.ok(Object.isFrozen(COSMOS_SETTINGS_DEFAULTS.shortcuts), "缺省子对象冻结（防误改）");
   /* 构造头注记：v10 = add-cosmos-rightbar-dock（v9 = 历史独立窗口变更，v8 = add-cosmos-shortcuts） */
   const settingsSource = readFileSync(new URL("../src/settings.mjs", import.meta.url), "utf8");
-  assert.ok(settingsSource.includes("设置面（version 14"), "文档头版本注记同步 v14");
+  assert.ok(settingsSource.includes("设置面（version 15"), "文档头版本注记同步 v15");
   assert.ok(settingsSource.includes("shortcutsOf(source.shortcuts)"), "净房接线 shortcutsOf（单一来源）");
 
   /* v8 净房：空载荷 → 四键缺省；合法值透传；与 shortcutsOf 同源 */
@@ -1486,7 +1638,7 @@ const BUTTON = { name: "审查", prompt: "请使用 /cosmos-review 审查本提�
     saveCosmosSettings
   } = await import("../src/settings.mjs");
 
-  assert.equal(COSMOS_SETTINGS_VERSION, 14, "设置面 v14（v13 → v14 新增 wsToolSize；v12 → v13 新增 patLineDim；v11 → v12 删缩放阈值两键；v10 → v11 新增 templateNames）");
+  assert.equal(COSMOS_SETTINGS_VERSION, 15, "设置面 v15（v14 → v15 新增 worksContours/worksAscii；v13 → v14 新增 wsToolSize；v12 → v13 新增 patLineDim；v11 → v12 删缩放阈值两键；v10 → v11 新增 templateNames）");
   assert.equal(COSMOS_SETTINGS_DEFAULTS.templateNames, false, "出厂缺省关闭（关闭态默认渲染零变化）");
   assert.equal(sanitizeCosmosSettings({}).templateNames, false, "空载荷 → false");
   assert.equal(sanitizeCosmosSettings({ templateNames: true }).templateNames, true, "合法 true 透传（开启态）");
@@ -1539,7 +1691,7 @@ const BUTTON = { name: "审查", prompt: "请使用 /cosmos-review 审查本提�
     saveCosmosSettings
   } = await import("../src/settings.mjs");
 
-  assert.equal(COSMOS_SETTINGS_VERSION, 14, "设置面 v14（v13 → v14 新增 wsToolSize；v12 → v13 新增 patLineDim）");
+  assert.equal(COSMOS_SETTINGS_VERSION, 15, "设置面 v15（v14 → v15 新增 worksContours/worksAscii；v13 → v14 新增 wsToolSize；v12 → v13 新增 patLineDim）");
   assert.equal(COSMOS_SETTINGS_DEFAULTS.patLineDim, 50, "出厂缺省 50（= 引擎因子 0.5，默认渲染零变化）");
   assert.deepEqual(COSMOS_SETTINGS_BOUNDS.patLineDim, [5, 100], "数值界 [5, 100]（纯 [min,max] 形状）");
   assert.equal(sanitizeCosmosSettings({}).patLineDim, 50, "空载荷 → 50");

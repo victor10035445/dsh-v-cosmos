@@ -16,6 +16,7 @@ import { isEditableTarget, isUiChromeTarget } from "../src/cosmos/engine.mjs";
 import { createSkinD } from "../src/cosmos/skin-d.mjs";
 import { sessionRowStateOf } from "../src/panel.mjs";
 import { FLOAT_TEXTAREA_MAX_HEIGHT, FLOAT_TEXTAREA_MIN_HEIGHT, floatTextareaHeightOf } from "../src/constellation-actions.mjs";
+import { createEmbryoDismissExecutor } from "../src/actions.mjs";
 
 /* ── DOM 桩（引擎所需最小面；与 render-smoke 同款） ── */
 function makeCtx2d() {
@@ -639,9 +640,9 @@ const engineSource = readFileSync(new URL("../src/cosmos/engine.mjs", import.met
   assert.ok(settingsSource.includes("PRE_STATES.includes(button.preState)"), "漂移判定（枚举外值）");
   assert.ok(settingsSource.includes('errorText("preStateUnavailable", "不可用")'), "漂移值原样回显并标「不可用」");
   assert.ok(settingsSource.includes('const isProto = button.preState === "proto";'), "星胚行判据");
-  assert.ok(settingsSource.includes("disabled={disabled || isProto}"), "星胚行「提示词在前」禁用");
+  assert.ok(settingsSource.includes("disabled={disabled || isProto || isDirect}"), "星胚/直执行行「提示词在前」禁用");
   assert.ok(settingsSource.includes("copyText(copy.newSessionTitleProto)"), "星胚行「新增会话」锁定说明");
-  assert.ok(settingsSource.includes('title={isProto ? copyText(copy.prependTitleProto)'), "星胚行「提示词在前」禁用说明");
+  assert.ok(settingsSource.includes('title={isDirect ? directTitle : isProto ? copyText(copy.prependTitleProto)'), "星胚行「提示词在前」禁用说明（直执行行说明优先）");
   for (const key of ["preStateLabel", "preStateUnlimited", "preStateProto", "preStateCreated", "preStateReviewed", "preStateExecuted", "preStateUnavailable", "newSessionTitleProto", "prependTitleProto", "buttonPreStateInvalid"]) {
     const occurrences = clientSource.split('"cosmos.settings.' + key + '":').length - 1;
     assert.ok(occurrences >= 2, "词典 zh/en 成对：" + key);
@@ -655,6 +656,12 @@ const engineSource = readFileSync(new URL("../src/cosmos/engine.mjs", import.met
   assert.ok(settingsSource.includes("view.levelVisible"), "级别下拉仅带等级元数据时渲染");
   assert.ok(settingsSource.includes("!state.writable"), "不可写降级提示");
   assert.ok(settingsSource.includes("state.buttonsInvalid"), "草稿校验错误提示");
+  /* 行头不挤压名称输入（修复：add-cosmos-embryo-dismiss-button 后行内控件增至 9 个——
+     无 flex-wrap 且 `.cs-name{min-width:0}` 时名称框在窄设置面板会被压到 16px，视觉上
+     「名称为空」；此处锁定换行 + 名称最小宽，防回归）。 */
+  assert.ok(settingsSource.includes(".cs-rowHead{display:flex;align-items:center;gap:6px;flex-wrap:wrap}"), "行头允许换行（控件增多不挤压名称）");
+  assert.ok(settingsSource.includes(".cs-name{flex:1 1 160px;min-width:120px;"), "名称输入最小宽 120px（不塌缩为空框）");
+  assert.ok(settingsSource.includes("white-space:nowrap;cursor:pointer"), "行内勾选标签不折行（换行只发生在控件之间）");
   assert.ok(clientSource.includes('ctx.slots.restore') || true, "占位（无该 API 依赖）");
 }
 
@@ -1463,7 +1470,7 @@ function goldLiteralsOutsideVarFallback(source) {
   /* 冷启动按持久化皮肤构造（无「先默认后切」闪跳）+ 已打开整页热切 */
   assert.ok(clientSource.includes("const skin = createSkin(settings.skin);"), "打开整页按持久化皮肤构造皮肤实例");
   assert.ok(clientSource.includes("style: skin,"), "引擎构造参数 = 目标皮肤（首帧即目标皮肤）");
-  assert.ok(clientSource.includes("engine?.setSkin?.(createSkin(applied));"), "点选即对已打开整页热切（呈现层替换）");
+  assert.ok(clientSource.includes("engine?.setSkin?.(createSkin(applied), skinModeOf(applied));"), "点选即对已打开整页热切（呈现层替换 + 明暗模式同步）");
   assert.ok(clientSource.includes("selectSkin(id) {"), "控制器皮肤选择入口");
   assert.ok(clientSource.includes("cosmosSkinStore.set({ skin: merged.skin });"), "选择先经净房再落 store");
   assert.ok(clientSource.includes("activeSkinPalette().prop[info.lifecycle]"), "恒星临终色取当前皮肤 palette（换肤后超新星同源）");
@@ -2284,57 +2291,54 @@ function goldLiteralsOutsideVarFallback(source) {
   assert.ok(clientSource.includes("const buttonDraftsFace = {"), "草稿数据面 face（设置页注入）");
 }
 
-/* ── 16. 星胚移除接线（add-cosmos-embryo-dismiss 5.3 / spec「移除入口与确认交互」） ──
-   行为面直测在 test/engine-smoke.mjs（两击确认 / 在途门 / 回弹 / 未注入静默）与
-   test/dismiss-smoke.mjs（服务端 outcome 全分支）；此处按既有 house style 固化
-   client 接线、请求形状与 outcome → toast 文案映射（含守卫拒绝分支）、zh/en 成对。 */
+/* ── 16. 星胚移除入口（add-cosmos-embryo-dismiss-button 6.2 / spec cosmos-embryo-dismiss
+      「动作条直执行移除入口」、spec cosmos-actions「星胚直执行执行链路」）──
+   行为面直测在 test/actions-smoke.mjs 4e（执行体：整组顺序 / 不短路 / 聚合三态 / 冷却门 /
+   旧锚点可达）与服务端 test/dismiss-smoke.mjs；此处按既有 house style 固化 tips 侧拆除面、
+   客户端接线（三分流优先级 / 行级禁用豁免 / 执行体装配 / 键盘等效）与词典 zh/en 成对。 */
 {
-  /* 引擎侧：proto 卡唯一按钮行 + 钩子（正式提案星卡无按钮由 engine-smoke 行为面覆盖） */
+  /* ① tips 侧拆除（4.1–4.3）：星胚卡无按钮行、dismiss 瞬态机制与回调面全数退役。 */
   const cardHtmlBody = engineSource.slice(
     engineSource.indexOf("function cardHtml(e)"),
     engineSource.indexOf("function updateOverlay()")
   );
   assert.ok(cardHtmlBody.length > 0, "cardHtml 切片可定位");
-  assert.ok(cardHtmlBody.includes("s.lifecycle === 'proto'"), "按钮行按 lifecycle=proto 门控");
-  assert.ok(cardHtmlBody.includes('data-action="dismiss-embryo"'), "按钮稳定钩子 data-action=dismiss-embryo");
-  assert.ok(cardHtmlBody.includes('data-ws="'), "按钮携带 data-ws（workspaceId 钩子）");
-  assert.ok(cardHtmlBody.includes('data-slug="'), "按钮携带 data-slug（proto 星 id = 锚点 slug）");
-  assert.ok(cardHtmlBody.includes("escapeHtml(E.labels.dismiss.remove)"), "按钮文案走注入词典（locale 同源）");
-  assert.equal((engineSource.match(/cd-btn-dismiss/g) ?? []).length, 1, "仅 star 分支渲染该按钮（行星/彗星零侵入）");
-  assert.ok(engineSource.includes("const dismissRow ="), "按钮行局部装配（星卡 markup 唯一增量）");
-
-  /* 引擎侧：click 分流先于 data-session 早退守卫 + 两击确认直接 DOM + 在途门 */
+  assert.ok(!cardHtmlBody.includes("dismiss-embryo"), "proto 卡 MUST NOT 渲染移除按钮（无按钮行）");
+  assert.ok(!cardHtmlBody.includes("dismissRow"), "按钮行局部装配已拆除");
+  assert.ok(!cardHtmlBody.includes("cd-btn-dismiss"), "移除按钮类随入口退役");
+  assert.ok(!cardHtmlBody.includes("E.labels.dismiss"), "按钮文案注入面已收缩");
+  for (const gone of [
+    "handleDismissClick",
+    "clearDismissConfirm",
+    "dismissConfirmKey",
+    "dismissConfirmTimer",
+    "DISMISS_CONFIRM_MS",
+    "dismissInFlight",
+    "onDismissEmbryo",
+    "dismiss: Object.freeze",
+    "data-ws=",
+    "data-slug="
+  ]) {
+    assert.ok(!engineSource.includes(gone), "tips dismiss 机制已整体拆除：" + gone);
+  }
+  /* click 分流：无 dismiss 分支（会话类动作仍先取 data-action 再取 data-session）。 */
   const clickSlice = engineSource.slice(
     engineSource.indexOf("E.el.card.addEventListener('click'"),
     engineSource.indexOf("function isEmptyConstellation")
   );
   assert.ok(clickSlice.length > 0, "信息卡 click 切片可定位");
-  assert.ok(clickSlice.includes("action === 'dismiss-embryo'"), "click 分流含 dismiss 分支");
+  assert.ok(!clickSlice.includes("dismiss-embryo"), "click 分流无 dismiss 分支");
   assert.ok(
-    clickSlice.indexOf("action === 'dismiss-embryo'") < clickSlice.indexOf("getAttribute('data-session')"),
-    "dismiss 分流 MUST 先于 data-session 早退守卫（按钮不携会话 id）"
+    clickSlice.indexOf("getAttribute('data-action')") < clickSlice.indexOf("getAttribute('data-session')"),
+    "会话类动作分流口径零变化"
   );
-  assert.ok(clickSlice.includes("function handleDismissClick(target)"), "dismiss 处理器收口为单一函数");
-  const dismissHandler = engineSource.slice(
-    engineSource.indexOf("function handleDismissClick(target)"),
-    engineSource.indexOf("function isEmptyConstellation")
-  );
-  assert.ok(!/innerHTML|cardHtml\(/.test(dismissHandler), "确认态 / 在途态 MUST NOT 经 cardHtml 重渲染");
-  assert.ok(dismissHandler.includes("textContent = E.labels.dismiss.confirm"), "首击就地切确认态文案（直接 DOM）");
-  assert.ok(dismissHandler.includes("DISMISS_CONFIRM_MS"), "约 3s 无操作回弹窗口");
-  assert.ok(dismissHandler.includes("dismissConfirmKey !== key"), "第二击判据 = 同目标确认态在册");
-  assert.ok(dismissHandler.includes("E.dismissInFlight.has(key)"), "per-目标在途门拦截重复派发");
-  assert.ok(dismissHandler.includes("pending.then(done, done)"), "响应到达（无论 outcome）/ 拒绝均解锁");
-  assert.ok(dismissHandler.includes("if (!E.onDismissEmbryo)"), "回调未注入 → 静默 no-op 守卫");
-  assert.ok(dismissHandler.includes("target.disabled = true"), "在途禁用态经直接 DOM 切换");
-  assert.ok(engineSource.includes("DISMISS_CONFIRM_MS = 3000"), "回弹窗口常量导出（冒烟可直读）");
-  assert.ok(engineSource.includes("|life:") , "lifecycle 进内容签名（proto→created 同 id 翻转即重建）");
-  assert.ok(engineSource.includes("if (!scr2 && (dismissConfirmKey || dismissConfirmTimer)) clearDismissConfirm(true)"), "收卡清理确认态定时器（不跨卡片生命周期残留）");
+  assert.ok(engineSource.includes("|life:"), "lifecycle 仍进内容签名（proto→created 翻转刷新状态行）");
+  assert.ok(!clientSource.includes("onDismissEmbryo"), "client 引擎注入点已移除");
+  assert.ok(!clientSource.includes("labels.dismiss"), "引擎 labels 契约收缩（无 dismiss 项）");
 
-  /* client 接线：端点常量 / 引擎注入 / 请求形状 */
-  assert.ok(clientSource.includes('const DISMISS_EMBRYO_PATH = "/api/dsh-v-cosmos/dismiss-embryo";'), "dismiss 端点常量");
-  assert.ok(clientSource.includes("onDismissEmbryo: (input) => actions.dismissEmbryo(input)"), "attach 注入 onDismissEmbryo（与 onArchiveSession 并列）");
-  assert.ok(clientSource.includes("async dismissEmbryo(input)"), "actions.dismissEmbryo 执行体");
+  /* ② 单条请求执行体（3.1）：逐 slug 无 toast 形态，返回观测面保留。 */
+  assert.ok(clientSource.includes('const DISMISS_EMBRYO_PATH = "/api/dsh-v-cosmos/dismiss-embryo";'), "dismiss 端点常量零变化");
+  assert.ok(clientSource.includes("async dismissEmbryo(input)"), "actions.dismissEmbryo 单条执行体");
   const dismissAt = clientSource.indexOf("async dismissEmbryo(input)");
   const addWorkspaceAt = clientSource.indexOf("async addWorkspace()", dismissAt);
   assert.ok(dismissAt > 0 && addWorkspaceAt > dismissAt, "dismissEmbryo 切片可定位");
@@ -2342,33 +2346,79 @@ function goldLiteralsOutsideVarFallback(source) {
   const bodyLine = dismissBody.split("\n").find((line) => line.includes("JSON.stringify(")) ?? "";
   assert.ok(bodyLine.includes("workspaceId, slug"), "请求体 = { workspaceId, slug }");
   assert.ok(dismissBody.includes("fetch(DISMISS_EMBRYO_PATH"), "POST 自有 dismiss 端点");
+  assert.ok(!dismissBody.includes("engine?.toast"), "MUST NOT 自带 toast（呈现职责移交动作条执行体）");
   assert.ok(!/sessionIds|stopActivity/.test(dismissBody), "MUST NOT 复用归档请求形状");
   assert.ok(!/closePage|cosmosOpenStore/.test(dismissBody), "MUST NOT 关整页（消散由骨架差分 + 既有变体承接）");
   assert.ok(!/pending-changes|unlink|openspec/i.test(dismissBody), "MUST NOT 触碰 openspec 工件（服务端动词）");
   assert.ok(!/setScene|refreshSkeleton/.test(dismissBody), "MUST NOT 主动收卡 / 拉骨架（fs.watch → SSE 既有管道）");
-
-  /* client 接线：outcome → toast 文案映射（含守卫拒绝分支；失败携带端点 reason） */
-  assert.ok(dismissBody.includes('outcome === "deleted"') && dismissBody.includes('tr("cosmos.dismiss.deleted", "星胚已移除")'), "deleted → 成功 toast");
+  assert.ok(dismissBody.includes('outcome === "deleted"') && dismissBody.includes('tr("cosmos.dismiss.deleted", "星胚已移除")'), "deleted → 成功文案");
   assert.ok(
     dismissBody.includes('outcome === "guard-dir-exists"') && dismissBody.includes('tr("cosmos.dismiss.guardDirExists", "同名提案已创建，未移除")'),
-    "guard-dir-exists → 守卫拒绝专用 toast"
+    "guard-dir-exists → 守卫拒绝专用文案"
   );
   assert.ok(dismissBody.includes('outcome === "already-missing"') && dismissBody.includes('tr("cosmos.dismiss.alreadyMissing"'), "already-missing → 中性文案");
   assert.ok(dismissBody.includes('outcome === "missing-workspace"') && dismissBody.includes('tr("cosmos.dismiss.missingWorkspace"'), "missing-workspace → 失败文案");
   assert.ok(dismissBody.includes('tr("cosmos.dismiss.failed", "移除失败：") + (reason ||'), "failed → 文案携带端点 reason");
-  assert.ok(dismissBody.includes('tr("cosmos.dismiss.requestFailed"'), "网络/非 2xx → 请求级失败 toast");
+  assert.ok(dismissBody.includes('tr("cosmos.dismiss.requestFailed"'), "网络/非 2xx → 请求级失败文案");
   assert.ok(dismissBody.includes('tr("cosmos.dismiss.noTarget"'), "钩子残缺 → 缺目标提示");
-  assert.ok(dismissBody.includes("engine?.toast(notice.text)"), "呈现通道 = 引擎 toast（整页内）");
-  assert.ok(dismissBody.includes("return notice;"), "返回呈现产物（冒烟观测面）");
+  assert.ok(dismissBody.includes("return dismissNotice("), "每分支返回 {outcome, tone, text} 观测面（供执行体聚合）");
 
-  /* 引擎词典注入（按钮 / 确认态文案；outcome toast 不进引擎） */
-  assert.ok(clientSource.includes('remove: tr("cosmos.card.dismiss.remove", "移除星胚")'), "词典注入 remove（zh 基线）");
-  assert.ok(clientSource.includes('confirm: tr("cosmos.card.dismiss.confirm", "确认移除？")'), "词典注入 confirm（zh 基线）");
+  /* ③ 三分流优先级 + 执行体装配（3.2/3.4）。 */
+  const runAt = clientSource.indexOf("runButton(input) {");
+  assert.ok(runAt > 0, "runButton 切片可定位");
+  const runBody = clientSource.slice(runAt, clientSource.indexOf("runConstButton(input)", runAt));
+  const directAt = runBody.indexOf("isEmbryoDismissButton(input?.button)");
+  const protoAt = runBody.indexOf('input?.button?.preState === "proto"');
+  const actionAt = runBody.indexOf("actionExecutor.run(input)");
+  assert.ok(directAt > 0 && protoAt > directAt && actionAt > protoAt, "三分流优先级：直执行 > proto 消息链路 > 提案动作链路");
+  assert.ok(runBody.includes("embryoDismissExecutor.run(input)"), "直执行分流指向新执行体");
 
-  /* 词典 zh/en 成对（缺键回落中文基线；outcome 文案归 client 词典） */
+  const execAt = clientSource.indexOf("const embryoDismissExecutor = createEmbryoDismissExecutor({");
+  assert.ok(execAt > 0, "执行体装配（apply fiber 作用域）");
+  const execBody = clientSource.slice(execAt, clientSource.indexOf("const constExecutor", execAt));
+  assert.ok(execBody.includes("dismissOne: (input) => actions.dismissEmbryo(input)"), "单条请求注入 = actions.dismissEmbryo");
+  assert.ok(execBody.includes("gate: actionGate"), "与提案/星胚执行体共享同一冷却门实例");
+  assert.ok(execBody.includes("notify: (text) => notifyToast?.(text)"), "toast 通道与既有执行体同源");
+  for (const key of ["cosmos.dismiss.groupAll", "cosmos.dismiss.groupPartial", "cosmos.dismiss.groupNone"]) {
+    assert.ok(execBody.includes(key), "组级聚合文案来自词典面：" + key);
+  }
+
+  /* ④ 行级禁用豁免（3.3）：直执行行不套用「缺少探索会话关联」（旧锚点可达）。 */
+  const stateAt = clientSource.indexOf("const actionButtonStateOf = (button) => {");
+  assert.ok(stateAt > 0, "actionButtonStateOf 切片可定位");
+  const stateBody = clientSource.slice(stateAt, clientSource.indexOf("const runConstAction", stateAt));
+  assert.ok(
+    stateBody.indexOf("isEmbryoDismissButton(button)") > 0
+      && stateBody.indexOf("isEmbryoDismissButton(button)") < stateBody.indexOf("selectedCard.sessionId"),
+    "直执行豁免 MUST 先于旧锚点禁用判定"
+  );
+
+  /* ⑤ 键盘触发等效复用（spec 场景「键盘触发等效」）：分发器 → runAction → runButton 单出口。 */
+  assert.ok(clientSource.includes("view.runAction(entry.button);"), "快捷键分发复用点击链路（同一分流 / 同一门控复验 / 同一防重入门）");
+  assert.ok(clientSource.includes("await controller.actions.runButton({ button, card });"), "点击唯一出口 = runButton");
+
+  /* ⑥ 执行体直测（整组顺序 + 聚合文案；行为面全矩阵在 actions-smoke 4e）。 */
+  const callOrder = [];
+  const groupToasts = [];
+  const directResult = await createEmbryoDismissExecutor({
+    dismissOne: async ({ slug }) => {
+      callOrder.push(slug);
+      return { outcome: "deleted", tone: "ok", text: "星胚已移除" };
+    },
+    notify: (text) => groupToasts.push(text),
+    now: () => 1
+  }).run({
+    button: { name: "移除", prompt: "", autoSend: false, newSession: false, preState: "proto", embryoDismiss: true },
+    card: { key: "proto\u0000sess", lifecycle: "proto", act: 0, isEmbryo: true, slugs: ["add-a", "add-b"], wsId: "ws1" }
+  });
+  assert.deepEqual(callOrder, ["add-a", "add-b"], "整组按 slugs 顺序逐条调用（无并行）");
+  assert.equal(directResult.ok, true);
+  assert.equal(directResult.removed, 2);
+  assert.deepEqual(groupToasts, ["已移除 2 个星胚"], "组级聚合文案经 notify 呈现（单次）");
+
+  /* ⑦ 词典：tips 按钮键已删除；outcome 文案保留；组级聚合与设置键 zh/en 成对。 */
+  assert.ok(!clientSource.includes("cosmos.card.dismiss"), "tips 按钮/确认态词典键已删除");
   const dictPairs = [
-    ["cosmos.card.dismiss.remove", "移除星胚", "Remove embryo"],
-    ["cosmos.card.dismiss.confirm", "确认移除？", "Confirm removal?"],
     ["cosmos.dismiss.deleted", "星胚已移除", "Embryo removed"],
     ["cosmos.dismiss.alreadyMissing", "该星胚已不存在", "That embryo is already gone"],
     ["cosmos.dismiss.guardDirExists", "同名提案已创建，未移除", "A proposal with this name exists; not removed"],
@@ -2376,12 +2426,38 @@ function goldLiteralsOutsideVarFallback(source) {
     ["cosmos.dismiss.failed", "移除失败：", "Removal failed: "],
     ["cosmos.dismiss.failedUnknown", "未知错误", "unknown error"],
     ["cosmos.dismiss.requestFailed", "移除请求失败：", "Removal request failed: "],
-    ["cosmos.dismiss.noTarget", "缺少星胚定位信息，未移除", "Missing embryo target; not removed"]
+    ["cosmos.dismiss.noTarget", "缺少星胚定位信息，未移除", "Missing embryo target; not removed"],
+    ["cosmos.dismiss.groupAll", "已移除 {count} 个星胚", "Removed {count} embryos"],
+    ["cosmos.dismiss.groupPartial", "已移除 {removed}/{total}（首条失败：{reason}）", "Removed {removed}/{total} (first failure: {reason})"],
+    ["cosmos.dismiss.groupNone", "未移除（{reason}）", "Not removed ({reason})"],
+    ["cosmos.settings.embryoDismissLabel", "直达移除（免提示词）", "Direct removal (no prompt)"],
+    ["cosmos.settings.embryoDismissProtoOnly", "直达移除仅限前置状态为待创建（星胚）的按钮", "Direct removal is limited to buttons whose pre-state is Pending creation (embryo)"],
+    ["cosmos.settings.buttonEmbryoDismissProtoOnly", "直达移除仅限前置状态为待创建（星胚）的按钮", "Direct removal is limited to buttons whose pre-state is Pending creation (embryo)"]
   ];
   for (const [key, zh, en] of dictPairs) {
     assert.ok(clientSource.includes('"' + key + '": "' + zh + '"'), "词典 zh 缺键基线：" + key);
     assert.ok(clientSource.includes('"' + key + '": "' + en + '"'), "词典 en：" + key);
   }
+  for (const key of [
+    "embryoDismissTitle",
+    "embryoDismissDriftTitle",
+    "embryoDismissActiveTitle",
+    "embryoDismissModelTitle",
+    "buttonPromptPhDirect",
+    "buttonEmbryoDismissInvalid"
+  ]) {
+    const occurrences = clientSource.split('"cosmos.settings.' + key + '":').length - 1;
+    assert.ok(occurrences >= 2, "设置词典 zh/en 成对：" + key);
+  }
+
+  /* ⑧ 设置页控件呈现面（5.1/5.2 源码锚点；行为面在 settings-panel-smoke）。 */
+  assert.ok(settingsSource.includes("showEmbryoDismiss: true") && settingsSource.includes("showEmbryoDismiss: false"), "快捷动作呈现 / 星座动作不呈现");
+  assert.ok(settingsSource.includes('face.editButton(index, "embryoDismiss", event.target.checked)'), "复选框走草稿编辑（暂存-保存模型）");
+  assert.ok(settingsSource.includes("disabled={disabled || (!isProto && !directChecked)}"), "非星胚行禁用（漂移勾选保留取消路径）");
+  assert.ok(settingsSource.includes("disabled={disabled || isDirect}"), "直执行行消息面控件禁用");
+  assert.ok(settingsSource.includes("modelRow(button, index, isDirect)"), "模型与级别一并禁用");
+  assert.ok(settingsSource.includes("buttonPromptPhDirect"), "直执行行提示词占位说明");
+  assert.ok(settingsSource.includes("data-embryo-dismiss="), "行内漂移标记（漂移值标「不可用」）");
 }
 
 /* ── 24. 源码锚点：卡片任务进度条（p1-add-cosmos-card-progress-bars 3.1–3.4 / 4.2/4.3） ──
@@ -2728,8 +2804,8 @@ function goldLiteralsOutsideVarFallback(source) {
   assert.ok(namesFaceBody.includes("set:"), "face.set");
   assert.ok(namesFaceBody.includes("controller.saveTemplateNames"), "整页存活 → 控制器写入（热更通道）");
   assert.ok(namesFaceBody.includes("saveCosmosSettings({ templateNames: enabled === true })"), "整页未开 → 仍即时持久化（下次开页读回）");
-  assert.ok(clientSource.includes("inject: () => ({ launch: launchFace, paths: pathsSettings, templateNames: templateNamesFace, patLineDim: patLineDimFace })"),
-    "「通用」页签注入 templateNames / patLineDim face");
+  assert.ok(clientSource.includes("inject: () => ({ launch: launchFace, paths: pathsSettings, templateNames: templateNamesFace, patLineDim: patLineDimFace, worksFace: worksFaceSettings })"),
+    "「通用」页签注入 templateNames / patLineDim / worksFace face");
   assert.ok(clientSource.includes("cosmosTemplateNamesStore.set({ templateNames: next.templateNames });"),
     "storage 跨窗桥同步 templateNames 镜像");
   assert.ok(clientSource.includes("controllerRef.current?.getEngine?.()?.setTuning?.({ templateNames: next.templateNames === true });"),
@@ -2796,8 +2872,8 @@ function goldLiteralsOutsideVarFallback(source) {
   assert.ok(lineFaceBody.includes("set:"), "face.set");
   assert.ok(lineFaceBody.includes("controller.savePatLineDim"), "整页存活 → 控制器写入（热更通道）");
   assert.ok(lineFaceBody.includes("saveCosmosSettings({ patLineDim: value })"), "整页未开 → 仍即时持久化（下次开页读回）");
-  assert.ok(clientSource.includes("templateNames: templateNamesFace, patLineDim: patLineDimFace }"),
-    "「通用」页签注入 patLineDim face");
+  assert.ok(clientSource.includes("templateNames: templateNamesFace, patLineDim: patLineDimFace, worksFace: worksFaceSettings }"),
+    "「通用」页签注入 patLineDim / worksFace face");
   assert.ok(clientSource.includes("cosmosPatLineDimStore.set({ patLineDim: next.patLineDim });"),
     "storage 跨窗桥同步 patLineDim 镜像");
   assert.ok(clientSource.includes("setTuning?.({ patLineDim: next.patLineDim / 100 })"),

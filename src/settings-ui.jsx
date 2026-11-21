@@ -84,6 +84,9 @@ const ACTION_COPY = {
   showJump: true,
   /* 每按钮「前置状态」：仅快捷动作行提供（星座按钮无提案选中上下文）。 */
   showPreState: true,
+  /* 每按钮「直达移除（免提示词）」（add-cosmos-embryo-dismiss-button 5.1）：仅快捷动作行
+     提供（星胚直执行需要提案选中上下文与 proto 前置状态，星座按钮两者皆无）。 */
+  showEmbryoDismiss: true,
   /* 「发送前编辑」轻量偏好：仅星座动作页签提供（add-cosmos-native-composer 4.1）。 */
   showPreflight: false,
   newSessionTitle: ["newSessionTitle", "固定为「新增会话」：在提案所属工作区创建新会话（不可修改）"],
@@ -100,6 +103,7 @@ const CONSTELLATION_COPY = {
   showPrepend: false,
   showJump: false,
   showPreState: false,
+  showEmbryoDismiss: false,
   showPreflight: true,
   newSessionTitle: ["constNewSessionTitle", "固定为「新增会话」：在当前星座对应工作区创建新会话（不可修改）"],
   newSessionTitleProto: null,
@@ -211,13 +215,13 @@ export const COSMOS_SETTINGS_CSS = `
 .cs-addBtn:hover:not(:disabled){border-color:var(--dsw-alias-border-inverted);color:var(--dsw-alias-label-primary)}
 .cs-addBtn:disabled{opacity:.5;cursor:not-allowed}
 .cs-row{position:relative;display:flex;flex-direction:column;gap:4px;padding:8px;border:1px solid var(--dsw-alias-border-l2);border-radius:10px}
-.cs-rowHead{display:flex;align-items:center;gap:6px}
+.cs-rowHead{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
 .cs-grip{flex:none;align-self:stretch;display:inline-flex;align-items:center;justify-content:center;width:14px;color:var(--dsw-alias-label-tertiary);font-size:13px;line-height:18px;cursor:grab;-webkit-user-select:none;user-select:none}
 .cs-grip:hover{color:var(--dsw-alias-label-secondary)}
 .cs-grip[data-disabled=true]{opacity:.45;cursor:not-allowed}
-.cs-name{flex:1;min-width:0;padding:3px 8px;border:1px solid var(--dsw-alias-border-l2);border-radius:6px;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);font:var(--dsw-font-markdown-code-block-small,12px ui-monospace,SFMono-Regular,Menlo,monospace);outline:none}
+.cs-name{flex:1 1 160px;min-width:120px;padding:3px 8px;border:1px solid var(--dsw-alias-border-l2);border-radius:6px;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);font:var(--dsw-font-markdown-code-block-small,12px ui-monospace,SFMono-Regular,Menlo,monospace);outline:none}
 .cs-name:focus{border-color:var(--dsw-alias-border-inverted)}
-.cs-auto{flex:none;display:inline-flex;align-items:center;gap:5px;color:var(--dsw-alias-label-secondary);font-size:12px;line-height:16px;cursor:pointer;-webkit-user-select:none;user-select:none}
+.cs-auto{flex:none;display:inline-flex;align-items:center;gap:5px;color:var(--dsw-alias-label-secondary);font-size:12px;line-height:16px;white-space:nowrap;cursor:pointer;-webkit-user-select:none;user-select:none}
 .cs-auto input{margin:0;cursor:pointer;accent-color:var(--dsw-alias-border-inverted)}
 .cs-badge{flex:none;padding:1px 8px;border-radius:999px;background:var(--dsw-alias-interactive-bg-hover-solid);color:var(--dsw-alias-label-secondary);font-size:11px;line-height:16px}
 .cs-locked{cursor:default}
@@ -517,7 +521,7 @@ export function CosmosPathsSection(props) {
  *    line-alpha 3.3/D4）。仓库首个 range 控件——行式样式类 `cs-range*`（cs-sizeRow 同族）。
  *  - 两档在 web 与桌面形态同效，无任何形态禁用或降级说明（独立窗口的协议判据随能力退役）。
  *  - face 缺失（旧宿主未注入）→ 降级占位（不渲染可点却永不生效的控件，与其它页签同纪律）。
- * @param {{t: Function, launch?: object, paths?: object|null, templateNames?: object|null, patLineDim?: object|null}} props
+ * @param {{t: Function, launch?: object, paths?: object|null, templateNames?: object|null, patLineDim?: object|null, worksFace?: object|null}} props
  */
 export function CosmosGeneralPanel(props) {
   const t = props.t;
@@ -546,6 +550,19 @@ export function CosmosGeneralPanel(props) {
   const patLineDimValue = lineSnapshot !== null && typeof lineSnapshot === "object" && Number.isFinite(Number(lineSnapshot.patLineDim))
     ? Math.min(100, Math.max(5, Math.round(Number(lineSnapshot.patLineDim))))
     : 50;
+  /* 星场呈现 face（p2-add-cosmos-works-face 1.2）：独立受控镜像（与 templateNames 同款
+     即时偏好）；快照缺键/非法 → 回显缺省 true（净房兜底，不抛错）。 */
+  const worksFace = props.worksFace ?? null;
+  const worksSnapshot = useSyncExternalStore(
+    worksFace ? worksFace.subscribe : noopSubscribe,
+    worksFace ? worksFace.getSnapshot : noopSnapshot
+  );
+  const worksContoursOn = worksSnapshot !== null && typeof worksSnapshot === "object"
+    ? worksSnapshot.worksContours !== false
+    : true;
+  const worksAsciiOn = worksSnapshot !== null && typeof worksSnapshot === "object"
+    ? worksSnapshot.worksAscii !== false
+    : true;
   const current = snapshot !== null && typeof snapshot === "object" && COSMOS_LAUNCH_MODES.includes(snapshot.launchMode)
     ? snapshot.launchMode
     : "embedded";
@@ -579,6 +596,24 @@ export function CosmosGeneralPanel(props) {
     t,
     "cosmos.settings.patLineDimHint",
     "调低会弱化星座图样的辨识度（连线更淡、空槽装饰点同比变暗）；纯装饰层，不影响恒星、行星与拾取。"
+  );
+  /** 星场两开关写入（p2 1.2）：face.set(patch) 唯一落点（控制器净房持久化 + 引擎热更）。 */
+  const setWorksOption = (key, enabled) => {
+    try {
+      worksFace?.set?.({ [key]: enabled === true });
+    } catch (error) {
+      console.error("[dsh-v-cosmos] works face setting failed:", error);
+    }
+  };
+  const worksContoursHint = tr(
+    t,
+    "cosmos.settings.worksContoursHint",
+    "在星场叠加合成势场的等势线（多焦点邻近处呈鞍部融合）；关闭后立即停绘，不影响焦点与拾取。"
+  );
+  const worksAsciiHint = tr(
+    t,
+    "cosmos.settings.worksAsciiHint",
+    "星场背景的 ASCII 字符底纹（势阱处字符渐密 + 慢掷数据脉冲）；仅隐约标注感，关闭零残留。"
   );
   if (face === null) {
     return (
@@ -649,6 +684,38 @@ export function CosmosGeneralPanel(props) {
               <span className="cs-launchHint">{patLineDimHint}</span>
             </>
           ) : null}
+        </fieldset>
+      ) : null}
+      {/* 星场组（p2-add-cosmos-works-face 1.2）：两枚「轻量即时偏好」布尔开关——等势线 /
+          ASCII 底纹，缺省均开；face 缺席（旧宿主未注入）→ 整组不渲染（同其它页签纪律）。 */}
+      {worksFace !== null ? (
+        <fieldset className="cs-launch" data-plugin-anchor="dsh-v-cosmos:settings-works-face">
+          <legend className="cs-launchLegend">{tr(t, "cosmos.settings.worksFaceLegend", "星场")}</legend>
+          <label className="cs-launchRow" title={worksContoursHint} data-setting="worksContours">
+            <input
+              type="checkbox"
+              checked={worksContoursOn}
+              aria-label={tr(t, "cosmos.settings.worksContoursAria", "星场等势线开关")}
+              onChange={(event) => setWorksOption("worksContours", event.target.checked)}
+            />
+            <span className="cs-launchText">
+              <span>{tr(t, "cosmos.settings.worksContoursLabel", "等势线")}</span>
+              <span className="cs-launchHint">{worksContoursHint}</span>
+            </span>
+          </label>
+          <label className="cs-launchRow" title={worksAsciiHint} data-setting="worksAscii">
+            <input
+              type="checkbox"
+              checked={worksAsciiOn}
+              aria-label={tr(t, "cosmos.settings.worksAsciiAria", "星场 ASCII 底纹开关")}
+              onChange={(event) => setWorksOption("worksAscii", event.target.checked)}
+            />
+            <span className="cs-launchText">
+              <span>{tr(t, "cosmos.settings.worksAsciiLabel", "ASCII 底纹")}</span>
+              <span className="cs-launchHint">{worksAsciiHint}</span>
+            </span>
+          </label>
+          <div className="cs-meta">{tr(t, "cosmos.settings.worksFaceInstant", "改动立即生效并保存（星场下一帧即跟随）")}</div>
         </fieldset>
       ) : null}
       <div className="cs-meta">{tr(t, "cosmos.settings.launchModeInstant", "改动立即生效并保存")}</div>
@@ -839,10 +906,18 @@ export function CosmosActionsPanel(props) {
     );
   };
 
-  const modelRow = (button, index) => {
+  /**
+   * 模型与级别行（`preStateField` / `shortcutField` 同排）。
+   * `extraDisabled` = 该行语义收窄（add-cosmos-embryo-dismiss-button：直执行行不组装消息、
+   * 不选模型 → 控件禁用 + 说明 title；存储形状不变）。
+   */
+  const modelRow = (button, index, extraDisabled) => {
     const bound = buttonModelOf(button.model);
     const view = describeButtonModel(bound, catalog);
-    const controlDisabled = disabled;
+    const controlDisabled = disabled || extraDisabled === true;
+    const directTitle = extraDisabled === true
+      ? errorText("embryoDismissModelTitle", "直达移除点击即执行移除：不组装消息、不涉及会话与模型")
+      : undefined;
     const options = [<option key="@follow" value="">{errorText("buttonModelFollow", "跟随会话（默认）")}</option>];
     for (const item of view.options) options.push(<option key={item.key} value={item.key}>{item.label}</option>);
     if (view.drift) {
@@ -867,13 +942,14 @@ export function CosmosActionsPanel(props) {
         );
       }
       levelSelect = (
-        <label className="cs-modelField">
+        <label className="cs-modelField" title={directTitle}>
           <span className="cs-modelCap">{errorText("buttonEffortLabel", "级别")}</span>
           <select
             className="cs-select"
             value={view.levelValue}
             disabled={controlDisabled}
             aria-label={errorText("buttonEffortLabel", "级别")}
+            title={directTitle}
             onChange={(event) => {
               const effort = event.target.value;
               if (effort === view.levelValue) return; // 漂移项被重选：空操作
@@ -890,13 +966,14 @@ export function CosmosActionsPanel(props) {
       <div className="cs-modelRow">
         {preStateField(button, index)}
         {shortcutField(button, index)}
-        <label className="cs-modelField">
+        <label className="cs-modelField" title={directTitle}>
           <span className="cs-modelCap">{errorText("buttonModelLabel", "模型")}</span>
           <select
             className="cs-select"
             value={view.key}
             disabled={controlDisabled}
             aria-label={errorText("buttonModelLabel", "模型")}
+            title={directTitle}
             onChange={(event) => {
               const next = event.target.value;
               if (next === "") {
@@ -988,6 +1065,15 @@ export function CosmosActionsPanel(props) {
         const over = drag !== null && drag.overIndex === index ? drag.edge : null;
         /* 星胚行（preState=proto）：锁定方向翻转（不勾选「新增会话」）且「提示词在前」禁用。 */
         const isProto = button.preState === "proto";
+        /* 直执行行（add-cosmos-embryo-dismiss-button 5.1/5.2）：`embryoDismiss === true`。
+           `directDrift` = 手工编辑漂移（非 proto 行 + true）——原样回显勾选并标不可用，
+           保存由草稿校验拒绝；该行复选框仍可取消（唯一修复路径）。 */
+        const directChecked = button.embryoDismiss === true;
+        const directDrift = directChecked && !isProto;
+        const isDirect = directChecked && isProto;
+        const directTitle = isDirect
+          ? errorText("embryoDismissActiveTitle", "直达移除点击即执行移除：不组装消息、不导航、不涉及会话与模型")
+          : undefined;
         return (
           <div
             className="cs-row"
@@ -1044,14 +1130,14 @@ export function CosmosActionsPanel(props) {
               {copy.showPrepend ? (
                 <label
                   className="cs-auto"
-                  title={isProto ? copyText(copy.prependTitleProto) : errorText("prependTitle", "勾选：提示词在消息里位于 @提案引用之前")}
+                  title={isDirect ? directTitle : isProto ? copyText(copy.prependTitleProto) : errorText("prependTitle", "勾选：提示词在消息里位于 @提案引用之前")}
                 >
                   <input
                     type="checkbox"
                     checked={button.prepend === true}
-                    disabled={disabled || isProto}
+                    disabled={disabled || isProto || isDirect}
                     onChange={(event) => {
-                      if (isProto) return;
+                      if (isProto || isDirect) return;
                       face.editButton(index, "prepend", event.target.checked);
                     }}
                   />
@@ -1062,11 +1148,36 @@ export function CosmosActionsPanel(props) {
                 <input
                   type="checkbox"
                   checked={button.autoSend === true}
-                  disabled={disabled}
+                  disabled={disabled || isDirect}
+                  title={directTitle}
                   onChange={(event) => face.editButton(index, "autoSend", event.target.checked)}
                 />
                 {errorText("autoSendLabel", "自动发送")}
               </label>
+              {/* 「直达移除（免提示词）」（add-cosmos-embryo-dismiss-button 5.1）：仅快捷动作
+                  行呈现；仅当前置状态草稿为「待创建（星胚）」时可勾选（其余行禁用 + 说明）。
+                  勾选即清空草稿提示词并禁用消息面控件（下方）；切走前置状态由控制器自动清勾。 */}
+              {copy.showEmbryoDismiss ? (
+                <label
+                  className="cs-auto"
+                  data-embryo-dismiss={directDrift ? "drift" : directChecked ? "true" : undefined}
+                  title={directDrift
+                    ? errorText("embryoDismissDriftTitle", "直达移除仅限前置状态为待创建（星胚）的按钮：本行配置不可用，保存会被拒绝")
+                    : isProto
+                      ? errorText("embryoDismissTitle", "勾选：点击该按钮即删除选中星胚的全部锚点（免提示词、无确认弹层、不导航）；仅「待创建（星胚）」行可用")
+                      : errorText("embryoDismissProtoOnly", "直达移除仅限前置状态为待创建（星胚）的按钮")}
+                >
+                  <input
+                    type="checkbox"
+                    checked={directChecked}
+                    /* 非 proto 且未勾选 → 禁用（不可成为直执行）；漂移勾选保留取消路径。 */
+                    disabled={disabled || (!isProto && !directChecked)}
+                    aria-label={errorText("embryoDismissLabel", "直达移除（免提示词）")}
+                    onChange={(event) => face.editButton(index, "embryoDismiss", event.target.checked)}
+                  />
+                  {errorText("embryoDismissLabel", "直达移除（免提示词）")}
+                </label>
+              ) : null}
               <label
                 className="cs-auto cs-locked"
                 title={isProto ? copyText(copy.newSessionTitleProto) : copyText(copy.newSessionTitle)}
@@ -1076,13 +1187,14 @@ export function CosmosActionsPanel(props) {
                 <input type="checkbox" checked={!isProto} disabled readOnly />
                 <span className="cs-badge">{errorText("newSessionLabel", "新增会话")}</span>
               </label>
-              {/* 每按钮「执行后跳转」（缺省勾选）：仅快捷动作行提供——星座链路恒整页保持。 */}
+              {/* 每按钮「执行后跳转」（缺省勾选）：仅快捷动作行提供——星座链路恒整页保持；
+                  直执行行零流转（不导航、不关页）→ 控件禁用 + 说明。 */}
               {copy.showJump ? (
-                <label className="cs-auto" title={errorText("jumpTitle", "每个按钮独立设置：勾选 = 执行成功后关闭 Cosmos 整页、右侧呈现该会话；取消 = 保持 Cosmos 画面（新会话照常创建，勾选自动发送则照常提交首回合）。")}>
+                <label className="cs-auto" title={isDirect ? directTitle : errorText("jumpTitle", "每个按钮独立设置：勾选 = 执行成功后关闭 Cosmos 整页、右侧呈现该会话；取消 = 保持 Cosmos 画面（新会话照常创建，勾选自动发送则照常提交首回合）。")}>
                   <input
                     type="checkbox"
                     checked={button.jumpNewSession !== false}
-                    disabled={disabled}
+                    disabled={disabled || isDirect}
                     onChange={(event) => face.editButton(index, "jumpNewSession", event.target.checked)}
                   />
                   {errorText("jumpLabel", "执行后跳转")}
@@ -1098,14 +1210,17 @@ export function CosmosActionsPanel(props) {
                 ✕
               </button>
             </div>
-            {modelRow(button, index)}
+            {modelRow(button, index, isDirect)}
             <textarea
               className="cs-prompt"
               rows={Math.min(8, Math.max(2, String(button.prompt ?? "").split("\n").length))}
               value={button.prompt}
-              placeholder={errorText("buttonPromptPh", "提示词：随消息进入新会话草稿…")}
+              placeholder={isDirect
+                ? errorText("buttonPromptPhDirect", "直执行按钮不需要提示词（点击即移除选中星胚）")
+                : errorText("buttonPromptPh", "提示词：随消息进入新会话草稿…")}
+              title={directTitle}
               spellCheck={false}
-              disabled={disabled}
+              disabled={disabled || isDirect}
               onChange={(event) => face.editButton(index, "prompt", event.target.value)}
             />
             {over === "after" ? <div className="cs-dropLine" data-edge="after" /> : null}

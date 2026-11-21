@@ -20,9 +20,12 @@
  * （Node/隐私模式缺席 → 缺省），键 `dsh-v-cosmos:settings`（旧名 `dsh-cosmos:settings`
  * 存量读取回落迁移，写入恒走新键）。
  *
- * 设置面（version 14，add-cosmos-template-reassign 返工引入 v13 → v14：新增顶部模板工具
- * 边长键 `wsToolSize`（缺省 32、界 [28,48]）；v13 = add-cosmos-figure-line-alpha 的图样连线
- * 亮度 `patLineDim`（缺省 50 = 引擎因子 0.5，默认渲染零变化）；v12 =
+ * 设置面（version 15，p2-add-cosmos-works-face 引入 v14 → v15：新增星场呈现两开关
+ * `worksContours`（等势线）/ `worksAscii`（ASCII 底纹），布尔键、缺省均 true、
+ * 净房与 dragPan/templateNames 同构；载荷读出缺键补默认，零迁移；v14 =
+ * add-cosmos-template-reassign 返工新增顶部模板工具边长键 `wsToolSize`（缺省 32、
+ * 界 [28,48]）；v13 = add-cosmos-figure-line-alpha 的图样连线亮度 `patLineDim`（缺省
+ * 50 = 引擎因子 0.5，默认渲染零变化）；v12 =
  * add-cosmos-zoom-ruler 3.1 删除缩放阈值两键——阈值已收敛为引擎常量并向顶部缩放标尺
  * 开放，设置面不再有对应控件；v11 = add-cosmos-template-name-toggle 的
  * `templateNames` 布尔键 v10 → v11；v10 = add-cosmos-rightbar-dock 的 `launchMode` 两档
@@ -73,6 +76,10 @@
  *  - wsToolSize：钻取态顶部模板工具（「指定模板」/「随机重掷」）方形 icon 按钮边长（px，
  *    界 [28, 48]，缺省 **32**）。仅钻取态右上星座标牌旁呈现；经 `--cos-ws-tool-size` 令牌
  *    下发（add-cosmos-template-reassign 返工 D8），银河态零呈现。
+ *  - worksContours / worksAscii：星场（星座作品面）两个**轻量即时偏好**布尔键——等势线 /
+ *    ASCII 底纹，缺省均 **true**（spec「开关默认开」）。写入即时持久化并经既有热更通道
+ *    （`engine.setTuning`）同步引擎，下一帧生效、无需重开整页；非布尔值回落缺省（净房）。
+ *    呈现于设置面「通用」页签的「星场」组（p2-add-cosmos-works-face 1.2）。
  * 后续设置 UI 直接调 `saveCosmosSettings`（写侧净房内置），引擎经 `engine.setTuning` /
  * `engine.setShortcuts` / `engine.setSkin` 热更新（无需重开整页）。
  */
@@ -91,7 +98,7 @@ export const COSMOS_SETTINGS_KEY = SETTINGS_KEY;
     add-cosmos-rightbar-dock：`launchMode` 改 `embedded`/`dock` 两档并迁移历史
     `window` 值；v9 = 历史独立窗口变更新增 `launchMode`；v8 = 快捷键子对象；
     v1–v13 载荷读出补默认）。 */
-export const COSMOS_SETTINGS_VERSION = 14;
+export const COSMOS_SETTINGS_VERSION = 15;
 
 /**
  * Cosmos 入口打开方式枚举（add-cosmos-rightbar-dock）：
@@ -156,7 +163,11 @@ export const COSMOS_SETTINGS_DEFAULTS = Object.freeze({
   /* ── 顶部模板工具边长（add-cosmos-template-reassign 返工 D8）：钻取态右上角星座标牌旁的
      「指定模板 / 随机重掷」方形 icon 按钮边长 px；缺省 32（贴合顶部标牌行高），界 [28, 48]。
      不改底部 HUD 图标按钮键 `hudBtnSize`（两者语义分离）。 ── */
-  wsToolSize: 32
+  wsToolSize: 32,
+  /* ── 星场呈现（p2-add-cosmos-works-face D7）：等势线 / ASCII 底纹，缺省均开（spec
+     「开关默认开」）；布尔键净房同 dragPan/templateNames，关页重开保持。 ── */
+  worksContours: true,
+  worksAscii: true
 });
 
 /** 界（写侧 400 的前置净房界；越界值落回界内端点，SHALL NOT 抛错）。
@@ -303,6 +314,11 @@ export function sanitizeCosmosSettings(raw) {
        `"on"` / 数字 `1` / null 等手工坏值一律回落缺省 false（SHALL NOT 抛错）；v10 及更早
        载荷（无该键）补缺省 false，呈现零变化。 */
     templateNames: boolOf(source.templateNames, COSMOS_SETTINGS_DEFAULTS.templateNames),
+    /* 星场呈现（p2-add-cosmos-works-face 1.2）：两个布尔键同构净房——字符串 "on" /
+       数字 1 / null 等手工坏值一律回落缺省 true（SHALL NOT 抛错）；v14 及更早载荷
+       （无两键）补缺省 true，呈现零变化。 */
+    worksContours: boolOf(source.worksContours, COSMOS_SETTINGS_DEFAULTS.worksContours),
+    worksAscii: boolOf(source.worksAscii, COSMOS_SETTINGS_DEFAULTS.worksAscii),
     /* 图样连线亮度（add-cosmos-figure-line-alpha 1.1/D1/D5）：百分比整数走 `clampTo` 同构
        净房——非数值形态回落缺省 50、越界落界内端点、四舍五入取整（与既有数值键一致）；
        v12 及更早载荷（无该键）补缺省 50，渲染零变化。 */
