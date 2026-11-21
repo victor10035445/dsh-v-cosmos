@@ -15,6 +15,7 @@ import {
   buildSkeleton,
   deriveLinks,
   matchProposalSlugs,
+  assignmentProposalSlugs,
   birthtimeWindowUnique,
   collectPendingNames,
   pendingItemsOf,
@@ -161,6 +162,51 @@ assert.deepEqual(
   "空 registry → 空骨架"
 );
 
+/* ── 点燃谱系骨架投影（add-cosmos-panel-birthline-sort 2.2 / spec「骨架投影」）：
+      宿主回调 `lineagesOf` 在同一帧扫描结果上配对，骨架按工作区挂 lineages；回调缺席 /
+      抛错 / 返非数组 → 空清单（读取失败按空谱系兜底，不中断扫描）。 ── */
+{
+  const ledger = [
+    { slug: "add-x", embryoAt: 111, embryoSessionId: "s-x", ignitedMs: 222 },
+    { slug: "add-y", embryoAt: 333, embryoSessionId: null, ignitedMs: 444 }
+  ];
+  const withLineages = buildSkeleton(
+    [{ id: "ws1", title: "WS", path: "C:/ws" }, { id: "ws2", title: "Other", path: "C:/other" }],
+    readers,
+    {
+      now: 42,
+      associations: [],
+      lineagesOf: (workspacePath) => (workspacePath === "C:/ws" ? ledger : [])
+    }
+  );
+  assert.deepEqual(withLineages.workspaces[0].lineages, ledger, "台账 2 条合法行原样透传（字段不改写）");
+  assert.deepEqual(withLineages.workspaces[1].lineages, [], "其他工作区 lineages 为空清单（路径命名空间不串扰）");
+  /* 回调缺席 / 抛错 / 非数组 → 空清单（容错纪律） */
+  assert.deepEqual(buildSkeleton([{ id: "ws1", path: "C:/ws" }], readers, { now: 1 }).workspaces[0].lineages, [], "回调缺席 → lineages 空数组");
+  assert.deepEqual(
+    buildSkeleton([{ id: "ws1", path: "C:/ws" }], readers, { now: 1, lineagesOf: () => { throw new Error("boom"); } }).workspaces[0].lineages,
+    [],
+    "回调抛错 → 按空谱系兜底（SHALL NOT 中断扫描）"
+  );
+  assert.deepEqual(
+    buildSkeleton([{ id: "ws1", path: "C:/ws" }], readers, { now: 1, lineagesOf: () => "bad" }).workspaces[0].lineages,
+    [],
+    "回调返非数组 → 空清单"
+  );
+  /* 回调输入 = 同一帧扫描结果（pending 锚点 + 活跃提案 slug，点燃配对的数据源） */
+  let observedInput = null;
+  buildSkeleton([{ id: "ws1", path: "C:/ws" }], readers, {
+    now: 1,
+    lineagesOf: (workspacePath, scanned) => {
+      observedInput = { workspacePath, pending: scanned.pending, activeSlugs: scanned.stars.map((star) => star.id) };
+      return [];
+    }
+  });
+  assert.equal(observedInput.workspacePath, "C:/ws", "回调收到工作区路径（台账命名空间键）");
+  assert.deepEqual(observedInput.activeSlugs, ["add-a", "add-b"], "回调收到活跃提案 slug（点燃配对输入）");
+  assert.deepEqual(observedInput.pending, [{ name: "explore-ui", by: "cosmos-explore", at: 300, sessionId: "sess-ws" }], "回调收到本帧 pending 锚点（sighting 登记输入）");
+}
+
 /* ── 骨架指纹涵盖 pending 条目整体序列化（add-cosmos-embryo-cards 2.1）：宿主
       `skeletonFingerprint` 以 `ws.pending` 整体入键 → 仅 sessionId 值增改即触发增量。 ── */
 {
@@ -192,6 +238,53 @@ assert.deepEqual(matchProposalSlugs("prefix_add-cosmos-entry-suffix", ["add-cosm
 assert.deepEqual(matchProposalSlugs("", ["add-a"]), [], "空文本 → 空");
 assert.deepEqual(matchProposalSlugs("text", []), [], "空清单 → 空");
 
+/* ── assignmentProposalSlugs：@提案目录指派引用解析（restrict-association-heuristics 1.2） ── */
+assert.deepEqual(
+  assignmentProposalSlugs("按 @C:/ws/openspec/changes/add-cosmos-entry 实施"),
+  ["add-cosmos-entry"],
+  "正斜杠路径命中（连字符 slug 不被截断）"
+);
+assert.deepEqual(
+  assignmentProposalSlugs("按 @C:\\ws\\openspec\\changes\\add-cosmos-entry 实施"),
+  ["add-cosmos-entry"],
+  "反斜杠路径：分隔符归一后命中"
+);
+assert.deepEqual(
+  assignmentProposalSlugs("@C:/ws/openspec/changes/add-a 与 @D:/other/openspec/changes/add-b 都要"),
+  ["add-a", "add-b"],
+  "多命中按出现序返回"
+);
+assert.deepEqual(
+  assignmentProposalSlugs("@C:/ws/openspec/changes/add-a 再提 @C:/ws/openspec/changes/add-a"),
+  ["add-a"],
+  "重复引用去重保序"
+);
+assert.deepEqual(
+  assignmentProposalSlugs("聊聊 add-a 与 add-b 的命名（正文提及，无 @ 路径引用）"),
+  [],
+  "正文提及（无 @ 引用）不产生指派信号"
+);
+assert.deepEqual(
+  assignmentProposalSlugs("@C:/ws/openspec/changes/add-a，然后 @C:/ws/openspec/changes/add-b。"),
+  ["add-a", "add-b"],
+  "尾随中英文标点不并入 slug"
+);
+assert.deepEqual(
+  assignmentProposalSlugs("@C:/ws/openspec/changes/add-a/tasks.md"),
+  ["add-a"],
+  "提案目录内子路径引用仍取提案 slug"
+);
+assert.deepEqual(
+  assignmentProposalSlugs("@C:/ws/openspec/changes/add-a#L12-L30"),
+  ["add-a"],
+  "行号锚点（#L12）不并入 slug"
+);
+assert.deepEqual(assignmentProposalSlugs("@C:/ws/openspec/changes/add-a-extra"), ["add-a-extra"], "slug 词边界：连字符整体保留");
+assert.deepEqual(assignmentProposalSlugs("只写 add-a 不加 @ 引用"), [], "缺 @ 前缀不命中");
+assert.deepEqual(assignmentProposalSlugs("@C:/ws/openspec/changes/"), [], "路径缺 slug → 不命中");
+assert.deepEqual(assignmentProposalSlugs(""), [], "空文本 → 空");
+assert.deepEqual(assignmentProposalSlugs(null), [], "非文本 → 空");
+
 /* ── birthtimeWindowUnique：±30min 唯一活跃会话 ── */
 const now = 1_000_000;
 const WINDOW = 30 * 60 * 1000;
@@ -214,6 +307,67 @@ assert.equal(
   birthtimeWindowUnique({ birthMs: null, detectedMs: now - 5000, sessions: [{ sessionId: "s9", lastActivityMs: now }] }),
   "s9",
   "birthMs 缺失回落检测时刻"
+);
+
+/* ── birthtimeWindowUnique：运行中会话候选排除（restrict-association-heuristics 3.3） ── */
+assert.equal(
+  birthtimeWindowUnique({
+    birthMs: now,
+    detectedMs: now,
+    sessions: [{ sessionId: "s1", lastActivityMs: now }],
+    runningSessionIds: new Set(["s1"])
+  }),
+  null,
+  "窗口内唯一候选正在运行 → 不建立（忙碌会话不接生新目录）"
+);
+assert.equal(
+  birthtimeWindowUnique({
+    birthMs: now,
+    detectedMs: now,
+    sessions: [{ sessionId: "s1", lastActivityMs: now }, { sessionId: "s2", lastActivityMs: now }],
+    runningSessionIds: ["s1"]
+  }),
+  "s2",
+  "运行中候选剔除后仅剩一个空闲候选 → 照常建立"
+);
+assert.equal(
+  birthtimeWindowUnique({
+    birthMs: now,
+    detectedMs: now,
+    sessions: [{ sessionId: "s1", lastActivityMs: now }, { sessionId: "s2", lastActivityMs: now }],
+    runningSessionIds: new Set(["s2"])
+  }),
+  "s1",
+  "剔除运行中候选后唯一空闲候选 → 建立"
+);
+assert.equal(
+  birthtimeWindowUnique({
+    birthMs: now,
+    detectedMs: now,
+    sessions: [
+      { sessionId: "s1", lastActivityMs: now },
+      { sessionId: "s2", lastActivityMs: now },
+      { sessionId: "s3", lastActivityMs: now }
+    ],
+    runningSessionIds: ["s3"]
+  }),
+  null,
+  "剔除运行中候选后仍两个空闲候选 → 唯一性不满足（不建立）"
+);
+assert.equal(
+  birthtimeWindowUnique({
+    birthMs: now,
+    detectedMs: now,
+    sessions: [{ sessionId: "s1", lastActivityMs: now }],
+    runningSessionIds: new Set()
+  }),
+  "s1",
+  "无运行中会话（空集合）→ 旧口径不变"
+);
+assert.equal(
+  birthtimeWindowUnique({ birthMs: now, detectedMs: now, sessions: [{ sessionId: "s1", lastActivityMs: now }] }),
+  "s1",
+  "runningSessionIds 缺失 → 不排除（容错退回旧口径）"
 );
 
 console.log("scan-smoke: all assertions passed");

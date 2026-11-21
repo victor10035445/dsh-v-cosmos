@@ -669,12 +669,13 @@ const engineSource = readFileSync(new URL("../src/cosmos/engine.mjs", import.met
 
 /* ── 9. 源码锚点：星座动作条（add-cosmos-constellation-actions 3.1/3.2） ── */
 {
-  assert.ok(clientSource.includes("function ConstActionBar({ t, buttons, onRun })"), "星座动作条组件");
+  assert.ok(clientSource.includes("function ConstActionBar({ t, buttons, onRun })"), "星座动作条组件（只承载用户配置按钮；模板动作已顶部化）");
   assert.ok(clientSource.includes('className="dsh-cosmos-const-actions"'), "动作条容器 CSS 钩子（.dsh-cosmos-const-*）");
   assert.ok(clientSource.includes('data-cosmos-const-actions="true"'), "动作条钩子 data-cosmos-const-actions");
   assert.ok(clientSource.includes('data-cosmos-const-action={button.name}'), "按钮稳定钩子 data-cosmos-const-action");
+  assert.ok(!clientSource.includes('data-cosmos-const-tool={tool.id}'), "内置模板动作已移出动作条（无 const-tool 钩子）");
   assert.ok(clientSource.includes('key={button.name + "-" + index}'), "按钮 key 稳定（内容差分零重写）");
-  assert.ok(clientSource.includes("if (!Array.isArray(buttons) || buttons.length === 0) return null;"), "空列表零布局");
+  assert.ok(clientSource.includes("if (list.length === 0) return null;"), "空列表零布局（用户按钮为空即整条不渲染）");
   assert.ok(clientSource.includes("min-height:var(--cos-const-action-h, 40px)"), "触屏点击目标 ≥40px（星座条同基线，高度经令牌可配）");
   assert.ok(clientSource.includes(".dsh-cosmos-const-action{"), "按钮 CSS 类存在");
   assert.ok(clientSource.includes("color:var(--dsw-alias-label-primary,var(--cos-accent-ink,#ffe3b8))"), "动作条配色优先官方 token，其次 HUD 主调令牌（3.1）");
@@ -682,13 +683,19 @@ const engineSource = readFileSync(new URL("../src/cosmos/engine.mjs", import.met
   assert.ok(clientSource.includes("flex:1 1 0;box-sizing:border-box;min-width:0;min-height:var(--cos-const-action-h, 40px)"), "等宽按钮（按行均分，宽 = 面板内容宽）");
   assert.ok(clientSource.includes("display:flex;flex-wrap:wrap;gap:5px"), "超出面板宽度自动换行");
   /* 三段结构 + 钻取态专属 + 恒可用（不依赖选中态） */
-  assert.ok(clientSource.includes("const showConstActions = drilled && Array.isArray(constButtons) && constButtons.length > 0;"), "仅钻取态 + 空列表不渲染");
+  assert.ok(
+    clientSource.includes("const showConstActions = drilled && Array.isArray(constButtons) && constButtons.length > 0;"),
+    "仅钻取态 + 用户按钮非空才渲染（模板动作不再参与 footer 门控）"
+  );
   assert.ok(
     clientSource.indexOf('className="dsh-cosmos-panel-head"') < clientSource.indexOf('className="dsh-cosmos-panel-list"')
       && clientSource.indexOf('className="dsh-cosmos-panel-list"') < clientSource.indexOf("{showConstActions ? <ConstActionBar"),
     "head → list → footer 三段结构（footer 在列表之后）"
   );
-  assert.ok(clientSource.includes("{showConstActions ? <ConstActionBar t={t} buttons={constButtons} onRun={onRunConst} /> : null}"), "footer 挂点");
+  assert.ok(
+    clientSource.includes("{showConstActions ? <ConstActionBar t={t} buttons={constButtons} onRun={onRunConst} /> : null}"),
+    "footer 挂点（只挂用户按钮）"
+  );
   assert.ok(!/className="dsh-cosmos-const-action"[^>]*disabled=/.test(clientSource), "星座按钮恒可用（无 disabled 态）");
   /* 列表滚动区随 footer 收缩：面板 flex 列 + 列表 flex:1/min-height:0 + footer flex:none */
   assert.ok(clientSource.includes("box-sizing:border-box;display:flex;flex-direction:column;color:var(--cos-ink,#ffe9cf)"), "面板为纵向 flex 容器（字色走 --cos-ink 令牌）");
@@ -699,6 +706,157 @@ const engineSource = readFileSync(new URL("../src/cosmos/engine.mjs", import.met
   assert.ok(clientSource.includes("await controller.actions.runConstButton({ button, group: drillGroup });"), "目标 = 当前钻取星座分组");
   /* 点击落在面板（选中作用面）内 → 不清除提案选中 */
   assert.ok(clientSource.includes("if (isSelectionSurface(event.target)) return;"), "点击星座按钮不清选中（面板即作用面）");
+}
+
+/* ── 9b. 源码锚点：顶部模板工具 + 选择器（add-cosmos-template-reassign 3.1–3.5 / 4.3，
+   返工后两枚模板动作与星座名称整组移到钻取态右上角） ──
+   行为面（净化/重掷域/选择器过滤/差分判级）由 template-assign-smoke 与 merge-smoke 直测；
+   此处按既有 house style 固化 client 接线、portal 槽位、数据可用性门控、跨窗桥与词典成对。 */
+{
+  const engineSource = readFileSync(new URL("../src/cosmos/engine.mjs", import.meta.url), "utf8");
+  /* ① 顶部两枚工具：数据可用性门控 + 文案 + 写链路 + 引擎槽位/显隐 */
+  assert.ok(
+    clientSource.includes("const drillFigure = drillGroup !== null ? templateForFigure(drillGroup.wsId) : null;"),
+    "当前 figure 命中单次查询（选择器高亮 + 重掷排除项 + 工具可用性）"
+  );
+  assert.ok(clientSource.includes("const wsToolButtons = (side) => {"), "顶部模板工具按钮渲染面（左 assign / 右 reroll）");
+  assert.ok(clientSource.includes('data-cosmos-ws-tool={assign ? "assign" : "reroll"}'), "两枚工具稳定钩子 data-cosmos-ws-tool");
+  assert.ok(clientSource.includes('tr("cosmos.tplActions.assign", "指定模板")'), "「指定模板」文案走词典");
+  assert.ok(clientSource.includes('tr("cosmos.tplActions.reroll", "随机重掷")'), "「随机重掷」文案走词典");
+  assert.ok(clientSource.includes("onClick={assign ? () => setTemplatePickerOpen(true) : rerollTemplate}"),
+    "「指定模板」→ 打开选择器 /「随机重掷」→ 重掷链路");
+  assert.ok(clientSource.includes("if (drillFigure === null) return null;"), "数据集不可用（命中 null）→ 两枚工具零呈现");
+  assert.ok(clientSource.includes("host.querySelector('.cos-wsbar-tools[data-side=\"left\"]')")
+    && clientSource.includes("host.querySelector('.cos-wsbar-tools[data-side=\"right\"]')"),
+    "portal 目标 = 引擎右上标牌组内工具槽");
+  assert.ok(clientSource.includes("createPortal(wsToolButtons(\"left\"), wsToolSlots.left)")
+    && clientSource.includes("createPortal(wsToolButtons(\"right\"), wsToolSlots.right)"),
+    "两枚工具 portal 到右上标牌组内左右槽（名称右侧方形图标）");
+  assert.ok(clientSource.includes("observer.observe(host, { childList: true });"), "引擎根重建/重挂载时重新解析槽位");
+  assert.ok(clientSource.includes(".dsh-cosmos-ws-tool{"), "顶部工具按钮 CSS 类存在");
+  assert.ok(clientSource.includes("width:100%;height:100%;padding:0"), "两枚按钮方形（宽度/高度吃满工具槽，padding:0）");
+  assert.ok(clientSource.includes(".dsh-cosmos-ws-tool-icon svg{display:block;width:60%;height:60%}"), "图标居中缩放（铅笔 / 骰子）");
+  assert.ok(clientSource.includes("const WS_EDIT_ICON_SVG ="), "指定模板图标常量（铅笔编辑）");
+  assert.ok(clientSource.includes("const WS_DICE_ICON_SVG ="), "随机重掷图标常量（骰子）");
+  assert.ok(clientSource.includes("assign ? WS_EDIT_ICON_SVG : WS_DICE_ICON_SVG"), "两枚按钮各用其图标（编辑 / 骰子）");
+  assert.ok(clientSource.includes("aria-label={label}") && clientSource.includes("title={title}"), "icon-only 按钮 aria-label + title（可访问名）");
+  assert.ok(engineSource.includes('class="cos-wsbar-tools" data-side="left"')
+    && engineSource.includes('class="cos-wsbar-tools" data-side="right"'), "引擎建左右工具槽（DOM 一次）");
+  assert.ok(engineSource.includes('E.el.badgeCluster.dataset.drilled = wsbarDrilled ? "true" : "false";'),
+    "仅钻取态置 data-drilled（银河态零呈现）");
+  assert.ok(engineSource.includes('.cos-badge-cluster[data-drilled="true"] { display: flex; }'),
+    "右上标牌组显隐与钻取态同源门控");
+  assert.ok(engineSource.includes("position: absolute; top: 14px; right: 16px"), "标牌 + 工具整组固定右上角");
+  assert.ok(engineSource.includes("width: var(--cos-ws-tool-size, 32px);") && engineSource.includes("height: var(--cos-ws-tool-size, 32px);"),
+    "工具槽方形（宽 = 高 = wsToolSize）");
+  assert.ok(clientSource.includes('[\'.cos-wsbar-tools[data-side="left"]\', "wsbar-tool-left"]')
+    && clientSource.includes('[\'.cos-wsbar-tools[data-side="right"]\', "wsbar-tool-right"]'),
+    "顶部工具纳入浮签避让矩形集（钻取态专属类别）");
+  assert.ok(clientSource.includes('"wsbar-tool-left", "wsbar-tool-right"'), "顶部工具矩形仅钻取态参与判定");
+
+  /* ② 重掷：当前命中排除 + 直接写覆盖（无「随机模式」状态） */
+  assert.ok(clientSource.includes("const nextId = randomTemplateIdOf(current?.id ?? null);"), "重掷 = 当前 figure 命中之外等概率（排除项来自当前命中）");
+  assert.ok(clientSource.includes("controllerRef.current?.actions?.assignTemplate?.(wsId, nextId);"), "重掷直接写覆盖（与手选同构）");
+  assert.ok(!/randomMode|randomState|rerollMode/.test(clientSource), "无「随机模式」中间状态");
+
+  /* ③ 写链路：净房落盘 → 模块态注入 → 重装配（同一入口服务选中/恢复默认/重掷） */
+  assert.ok(clientSource.includes("assignTemplate(wsId, templateId) {"), "控制器唯一写入口 assignTemplate");
+  assert.ok(clientSource.includes("const patch = { [wsId]: typeof templateId === \"string\" && templateId ? templateId : null };"),
+    "null/空 = 恢复默认（删除覆盖条目）");
+  assert.ok(clientSource.includes("const next = saveTemplateOverrides(patch);"), "净房 + localStorage 落盘");
+  assert.ok(clientSource.includes("setTemplateOverrides(next);"), "merge 模块态重新注入");
+  assert.ok(clientSource.includes("scheduleRebuild();"), "注入后触发场景差分重装配");
+  assert.ok(clientSource.includes("controllerRef.current?.actions?.assignTemplate?.(wsId, templateId);"), "选中 = 写盘即生效（无暂存钮）");
+  assert.ok(clientSource.includes("onReset={() => applyTemplateChoice(null)}"), "恢复默认 = 删除该星座覆盖条目");
+  assert.ok(clientSource.includes("setTemplateOverrides(loadTemplateOverrides());"), "控制器构造即装载持久覆盖（首帧即指定命中，无闪跳）");
+
+  /* ④ 跨窗桥：storage 事件 → 净房投影 → 重新注入（与本面无关键静默忽略） */
+  assert.ok(clientSource.includes("const next = templateOverridesFromStorageEvent(event);"), "storage 事件经净房投影");
+  assert.ok(clientSource.includes("controllerRef.current?.actions?.applyTemplateOverrides?.(next);"), "他窗改动 → 重新注入 → 差分自动更新");
+  assert.ok(clientSource.includes('"dsh-v-cosmos: template overrides storage bridge"'), "跨窗桥 effect 标签（生命周期可观测）");
+  assert.ok(clientSource.includes("applyTemplateOverrides(map) {") && clientSource.includes("const next = setTemplateOverrides(map);"),
+    "重新注入单点入口（净房后写模块态）");
+
+  /* ⑤ 选择器浮层源码切片：portal 模态 + 88 列表 + 搜索 + 当前高亮 + 恢复默认 + 空态 + 关闭键 */
+  const pickerAt = clientSource.indexOf("function TemplatePicker(");
+  const pickerBody = clientSource.slice(pickerAt, clientSource.indexOf("底部动作按钮条", pickerAt));
+  assert.ok(pickerAt > 0 && pickerBody.length > 0, "TemplatePicker 源码切片");
+  assert.ok(pickerBody.includes("return createPortal("), "选择器为 body portal 模态（与星座浮窗同款挂载）");
+  assert.ok(pickerBody.includes("const rows = templatePickerRowsOf(query);"), "列表数据面 = 纯函数投影（可冒烟直测）");
+  assert.ok(pickerBody.includes('data-cosmos-template-picker="true"'), "选择器稳定钩子 data-cosmos-template-picker");
+  assert.ok(pickerBody.includes('data-cosmos-template-row={id}'), "模板行稳定钩子 data-cosmos-template-row");
+  assert.ok(pickerBody.includes('data-current={isCurrent ? "true" : undefined}'), "当前命中行高亮钩子 data-current");
+  assert.ok(pickerBody.includes("aria-selected={isCurrent}"), "当前命中行 aria-selected（可访问性）");
+  assert.ok(pickerBody.includes('data-cosmos-template-reset="true"'), "「恢复默认」项稳定钩子");
+  assert.ok(pickerBody.includes('t("cosmos.tplPicker.reset", "恢复默认（星图分布）")'), "恢复默认文案（词典）");
+  assert.ok(pickerBody.includes('t("cosmos.tplPicker.hint", "星座位置由星图分布决定，不随模板变化")'), "位置解耦 hint（spec 明文）");
+  assert.ok(pickerBody.includes('t("cosmos.tplPicker.empty", "无匹配模板")'), "空态文案（搜索无命中 / 数据集不可用）");
+  assert.ok(pickerBody.includes('placeholder={t("cosmos.tplPicker.searchPlaceholder", "搜索模板（中文名 / 英文名）")}'), "搜索占位文案");
+  assert.ok(pickerBody.includes("onChange={(event) => onQuery?.(event.target.value)}"), "受控搜索过滤");
+  assert.ok(pickerBody.includes('window.addEventListener("keydown", onKey, true);'), "关闭键 capture 相位监听（先于页面关页/退银河分层）");
+  assert.ok(pickerBody.includes("if (!shortcutMatches(event, currentShortcuts().closePage)) return;"), "关闭键跟随全局配置（canonical）");
+  assert.ok(pickerBody.includes("event.stopPropagation();"), "关闭键不冒泡到外壳分层");
+  assert.ok(pickerBody.includes('className="dsh-cosmos-tpl-picker-backdrop" onClick={onClose}'), "背景点击关闭");
+  assert.ok(
+    pickerBody.includes("onPointerDown={(event) => event.stopPropagation()}")
+      && pickerBody.includes("onClick={(event) => event.stopPropagation()}"),
+    "模态事件隔离：选择器内点击不触达整页「取消选中」处理器（portal 沿 React 树冒泡）"
+  );
+  assert.ok(pickerBody.includes('t("cosmos.tplPicker.close", "关闭")'), "关闭钮 aria/title 文案");
+  assert.ok(!/disabled=/.test(pickerBody), "选择器行/恢复默认恒可用（无禁用态死入口）");
+
+  /* ⑥ 选择器挂载门控：仅钻取态 + 开合态；当前命中传入高亮 */
+  assert.ok(clientSource.includes("{templatePickerOpen && drillGroup !== null ? ("), "仅钻取态 + 开合态渲染选择器（银河态不可达）");
+  assert.ok(clientSource.includes("currentId={drillFigure?.id ?? null}"), "当前 figure 命中传入高亮");
+  assert.ok(clientSource.includes("const [templatePickerOpen, setTemplatePickerOpen] = useState(false);"), "开合态为会话态（不开页持久化）");
+  assert.ok(
+    clientSource.includes("setTemplatePickerOpen(false);\n    setTemplateQuery(\"\");\n  }, [drill?.wsId]);"),
+    "钻取目标切换/退出 → 选择器自动关闭（不跨星座残留）"
+  );
+
+  /* ⑦ 词典 zh/en 成对（动作两项 + 选择器全量键） */
+  for (const key of [
+    "cosmos.tplActions.assign",
+    "cosmos.tplActions.assignTitle",
+    "cosmos.tplActions.reroll",
+    "cosmos.tplActions.rerollTitle",
+    "cosmos.tplPicker.title",
+    "cosmos.tplPicker.close",
+    "cosmos.tplPicker.searchPlaceholder",
+    "cosmos.tplPicker.searchAria",
+    "cosmos.tplPicker.listAria",
+    "cosmos.tplPicker.hint",
+    "cosmos.tplPicker.reset",
+    "cosmos.tplPicker.resetHint",
+    "cosmos.tplPicker.empty"
+  ]) {
+    assert.equal(
+      (clientSource.match(new RegExp('"' + key.replace(/\./g, "\\.") + '": ', "g")) ?? []).length,
+      2,
+      "词典 zh/en 成对：" + key
+    );
+  }
+
+  /* ⑧ CSS 钩子与 z 序（模态层低于 toast/浮窗、高于面板） */
+  for (const hook of [
+    ".dsh-cosmos-tpl-picker{",
+    ".dsh-cosmos-tpl-picker-backdrop{",
+    ".dsh-cosmos-tpl-picker-card{",
+    ".dsh-cosmos-tpl-picker-search{",
+    ".dsh-cosmos-tpl-picker-list{",
+    ".dsh-cosmos-tpl-picker-reset{",
+    ".dsh-cosmos-tpl-picker-row[data-current=true]{",
+    ".dsh-cosmos-tpl-picker-empty{"
+  ]) {
+    assert.ok(clientSource.includes(hook), "选择器 CSS 钩子：" + hook);
+  }
+  assert.ok(clientSource.includes("z-index:9997"), "选择器 z 序低于 toast（9999）/浮窗（9998）、高于面板（42）");
+
+  /* ⑨ 引擎零改动（spec「引擎消费面形状不变」）：引擎不感知覆盖表 / 图样口径 / 写入口 */
+  assert.ok(!engineSource.includes("tplOverrides"), "引擎零改动：不感知覆盖表存储键");
+  assert.ok(!engineSource.includes("templateForFigure"), "引擎零改动：不感知图样口径查询");
+  assert.ok(!engineSource.includes("assignTemplate"), "引擎零改动：不感知模板指定写入口");
+  assert.ok(engineSource.includes("tplZh: typeof w.tplZh === \"string\" && w.tplZh ? w.tplZh : null,"), "引擎消费面 ws.tplZh 形状不变");
 }
 
 /** 浮窗组件源码切片（段注释定界；供挂载落稿/门控锚点统计）。 */
@@ -1767,14 +1925,16 @@ function goldLiteralsOutsideVarFallback(source) {
   /* 2.1 / 2.2 行容器居中的跨文件几何一致（step2-add-constellation-switcher D1：定位/限宽职责
      自标牌移交 `.cos-wsbar`，标牌改行内中央格）：470 = 2×(面板 187 + 安全边距 48)；
      844 = 标牌上限 480 + 2×(条目槽 170 + 间隙 12)；160px 为页面宽度不足下限。两侧条目槽
-     固定对称宽度 → 标牌页面水平居中自动成立（0/1/≥2 条目组合等价）。
-     面板换边为右缘（swap-cosmos-panel-sides）后，标牌仍居中 → 两侧间距对称，预留口径不变。 */
+     固定对称宽度 → 切换条目以页面中心为支点成对（add-cosmos-template-reassign 返工后
+     星座名称与模板工具整组移到右上角，本容器只承载切换条目）。 */
   const wsbarRule = engineSource.slice(engineSource.indexOf(".cos-wsbar {"), engineSource.indexOf(".cos-wsbar-side {"));
   const badgeRule = engineSource.slice(engineSource.indexOf(".cos-badge {"), engineSource.indexOf(".cos-badge b {"));
-  assert.ok(wsbarRule.includes("left: 50%") && wsbarRule.includes("transform: translateX(-50%)"), "引擎 CSS：行容器水平居中（left:50% + translateX(-50%)）");
-  assert.ok(badgeRule.includes("text-align: center"), "引擎 CSS：标牌文本居中（中央格）");
-  assert.ok(badgeRule.includes("max-width: 480px") && !badgeRule.includes("position: absolute") && !badgeRule.includes("calc(100% - 470px)"),
-    "引擎 CSS：标牌收敛为单一上限 480px、不再绝对定位 / 挂百分比限宽（几何承诺等价迁移）");
+  assert.ok(wsbarRule.includes("left: 50%") && wsbarRule.includes("transform: translateX(-50%)"), "引擎 CSS：切换条目容器水平居中（left:50% + translateX(-50%)）");
+  assert.ok(badgeRule.includes("text-align: right"), "引擎 CSS：标牌随右上角组右对齐排版");
+  assert.ok(badgeRule.includes("max-width: min(480px, 40vw)") && !badgeRule.includes("position: absolute") && !badgeRule.includes("calc(100% - 470px)"),
+    "引擎 CSS：标牌上限收敛（右上角组 40vw），不再绝对定位 / 挂百分比限宽");
+  assert.ok(engineSource.includes("position: absolute; top: 14px; right: 16px"), "引擎 CSS：标牌 + 工具整组固定右上角（top:14 / right:16）");
+  assert.ok(engineSource.includes('.cos-badge-cluster[data-drilled="true"] { display: flex; }'), "引擎 CSS：右上标牌组仅钻取态呈现");
   const limitM = /max-width: max\((\d+)px, min\((\d+)px, calc\(100% - (\d+)px\)\)\)/.exec(wsbarRule);
   assert.ok(limitM, "引擎 CSS：行容器限宽口径可解析（下限 / 上限 / 避让预留）");
   const sideRule = engineSource.slice(engineSource.indexOf(".cos-wsbar-side {"), engineSource.indexOf(".cos-wsbar-side[data-side=\"left\"] {"));
@@ -1805,7 +1965,7 @@ function goldLiteralsOutsideVarFallback(source) {
   assert.equal(atSide, floor, "侧栏在场（视口 700 / 页面 480）：min() 为负 → 下限兜底");
   assert.ok(atSide > 0, "行容器 MUST 不退化为 0 宽（spec「MUST 呈现标牌」）");
   assert.ok((sidePage - atSide) / 2 < panelW, "该档允许与面板横向重叠（降级，纵向由面板下移隔离）");
-  assert.ok(engineSource.includes("@media (max-width: 520px) { .cos-wsbar { max-width: calc(100% - 40px); } .cos-wsbar-side { display: none; } }"), "窄视口断点规则在册（<520px：容器放宽 + 条目槽隐藏）");
+  assert.ok(engineSource.includes("@media (max-width: 520px) { .cos-wsbar { max-width: calc(100% - 40px); }") && engineSource.includes(".cos-wsbar-side { display: none; }"), "窄视口断点规则在册（<520px：容器放宽 + 条目槽隐藏；标牌组右上仍呈现）");
 
   /* 2.3 顶部窗口 chrome 安全区（真机触发区修复）：DSH Desktop 在 Windows 窗口顶部保留 40px
      caption 拖拽带（preload-app.cjs 注入 data-windows-titlebar + --dsh-windows-titlebar-height:
@@ -2009,7 +2169,8 @@ function goldLiteralsOutsideVarFallback(source) {
   for (const token of [
     "--cos-session-w", "--cos-session-h", "--cos-const-panel-w", "--cos-const-panel-h",
     "--cos-add-btn-size", "--cos-hud-btn-size", "--cos-action-btn-w", "--cos-action-btn-h",
-    "--cos-const-action-h", "--cos-search-w", "--cos-search-h", "--cos-ws-title-size"
+    "--cos-const-action-h", "--cos-search-w", "--cos-search-h", "--cos-ws-title-size",
+    "--cos-ws-tool-size"
   ]) {
     assert.ok(settingsSource.includes('"' + token + '"'), "投影覆盖令牌 " + token);
   }
@@ -2041,6 +2202,7 @@ function goldLiteralsOutsideVarFallback(source) {
   /* 星座标题字号在引擎 CSS（.cos-badge b）侧消费 */
   const engineSource = readFileSync(new URL("../src/cosmos/engine.mjs", import.meta.url), "utf8");
   assert.ok(engineSource.includes("font-size: var(--cos-ws-title-size, 13px)"), "星座标题字号经令牌下发（引擎标牌）");
+  assert.ok(engineSource.includes("width: var(--cos-ws-tool-size, 32px);") && engineSource.includes("height: var(--cos-ws-tool-size, 32px);"), "顶部模板工具边长经令牌下发（引擎工具槽，方形）");
   assert.ok(engineSource.includes("width: var(--cos-hud-btn-size, 44px); height: var(--cos-hud-btn-size, 44px)"), "HUD 按钮边长经令牌（home）");
   /* 页签更名「界面」：可见文案换名，slot id / face 名保持 nav（内部契约零迁移） */
   assert.ok(clientSource.includes('"cosmos.settings.tabInterface": "界面"'), "词典 zh：页签更名「界面」");
@@ -2097,7 +2259,7 @@ function goldLiteralsOutsideVarFallback(source) {
   assert.ok(!/isEditableTarget/.test(voiceBody), "语音组合键不做可编辑焦点守卫（浮窗 textarea 聚焦主场景）");
   assert.ok(voiceBody.includes("event.isComposing === true || event.keyCode === 229 || event.repeat === true"), "语音键保留组字 + repeat 守卫");
   assert.ok(voiceBody.includes("event.preventDefault();"), "命中语音键 preventDefault");
-  assert.equal((clientSource.match(/window\.addEventListener\("keydown", onKey, true\);/g) ?? []).length, 2, "浮窗两条 capture 监听（收卡键 + 语音键）");
+  assert.equal((constFloatBody(clientSource).match(/window\.addEventListener\("keydown", onKey, true\);/g) ?? []).length, 2, "浮窗两条 capture 监听（收卡键 + 语音键）");
   /* ⑤ 浮窗模态计数（D13 探针）：armed 加减 + 下界 0 + 引擎注入 + 页组关闭时仍恒 0 */
   assert.ok(clientSource.includes("cosmosFloatArmedCount += 1;"), "浮窗 armed → 计数 +1");
   assert.ok(clientSource.includes("cosmosFloatArmedCount = Math.max(0, cosmosFloatArmedCount - 1);"), "收卡/卸载 → 计数 -1（防御下界 0）");
@@ -2555,8 +2717,8 @@ function goldLiteralsOutsideVarFallback(source) {
     "受控镜像冷启动读持久值");
   assert.ok(clientSource.includes("saveTemplateNames(enabled) {") && clientSource.includes("saveCosmosSettings({ templateNames: enabled === true })"),
     "控制器写入：净房持久化（布尔归一口径）");
-  assert.ok(clientSource.includes("engine?.setTuning(merged);") && clientSource.includes("cosmosTemplateNamesStore.set({ templateNames: merged.templateNames });"),
-    "写入链：引擎 setTuning 热更 + 受控镜像同步");
+  assert.ok(clientSource.includes("engine?.setTuning(tuningPatchOf(merged));") && clientSource.includes("cosmosTemplateNamesStore.set({ templateNames: merged.templateNames });"),
+    "写入链：引擎 setTuning 热更（百分比 → 因子）+ 受控镜像同步");
   const namesFaceBody = clientSource.slice(
     clientSource.indexOf("const templateNamesFace = {"),
     clientSource.indexOf("ctx.slots.inject(SETTINGS_TAB_SLOT", clientSource.indexOf("const templateNamesFace = {"))
@@ -2566,8 +2728,8 @@ function goldLiteralsOutsideVarFallback(source) {
   assert.ok(namesFaceBody.includes("set:"), "face.set");
   assert.ok(namesFaceBody.includes("controller.saveTemplateNames"), "整页存活 → 控制器写入（热更通道）");
   assert.ok(namesFaceBody.includes("saveCosmosSettings({ templateNames: enabled === true })"), "整页未开 → 仍即时持久化（下次开页读回）");
-  assert.ok(clientSource.includes("inject: () => ({ launch: launchFace, paths: pathsSettings, templateNames: templateNamesFace })"),
-    "「通用」页签注入 templateNames face");
+  assert.ok(clientSource.includes("inject: () => ({ launch: launchFace, paths: pathsSettings, templateNames: templateNamesFace, patLineDim: patLineDimFace })"),
+    "「通用」页签注入 templateNames / patLineDim face");
   assert.ok(clientSource.includes("cosmosTemplateNamesStore.set({ templateNames: next.templateNames });"),
     "storage 跨窗桥同步 templateNames 镜像");
   assert.ok(clientSource.includes("controllerRef.current?.getEngine?.()?.setTuning?.({ templateNames: next.templateNames === true });"),
@@ -2595,6 +2757,75 @@ function goldLiteralsOutsideVarFallback(source) {
   }
 }
 
+/* ── 图样连线亮度设置面（add-cosmos-figure-line-alpha 3.1–3.4 / 4.3）：源码锚点 ──
+   React 树 Node 侧不可挂载 → 滑杆控件/face 接线与词典成对走源码锚点；净房与引擎呈现
+   分别由 settings-panel-smoke（4.1）与 engine-smoke（4.2）运行时直测。 */
+{
+  /* ① 「通用」页签滑杆行：range 5–100 step 5 + 数值回显 + title/hint 双通道 + 独立 face。 */
+  assert.ok(settingsSource.includes('data-setting="patLineDim"'), "「通用」页签滑杆行挂点（data-setting）");
+  assert.ok(settingsSource.includes('type="range"'), "仓库首个 range 控件（滑杆）");
+  assert.ok(settingsSource.includes("min={5}") && settingsSource.includes("max={100}") && settingsSource.includes("step={5}"),
+    "合法域 5–100、步进 5");
+  assert.ok(settingsSource.includes("value={patLineDimValue}"), "受控镜像回显（滑杆 value）");
+  assert.ok(settingsSource.includes("onChange={(event) => setPatLineDim(Number(event.target.value))}"),
+    "拖拽即提交（无草稿态，数值归一）");
+  assert.ok(settingsSource.includes('aria-label={tr(t, "cosmos.settings.patLineDimAria"'), "滑杆 aria-label 走词典");
+  assert.ok(settingsSource.includes('title={patLineDimHint}'), "辨识度代价提示经 title 通道（悬停可读）");
+  assert.ok(settingsSource.includes('"cosmos.settings.patLineDimHint"'), "行内 hint 走词典");
+  assert.ok(settingsSource.includes("const lineFace = props.patLineDim ?? null;"), "独立 patLineDim face（与 launch/templateNames 正交）");
+  assert.ok(settingsSource.includes("lineFace?.set?.(value)"), "face.set 即时写（无暂存钮）");
+  assert.ok(settingsSource.includes("{patLineDimValue}%"), "数值回显（百分比）");
+  assert.ok(settingsSource.includes(".cs-rangeRow") && settingsSource.includes(".cs-rangeInput"), "新增行式样式类（cs-sizeRow 同族）");
+  assert.ok(settingsSource.includes("min-height:44px"), "滑杆行触控目标 ≥44px");
+
+  /* ② client 接线：受控镜像 + 控制器写入（持久化 → 引擎因子热更 → 镜像）+ face 三件套 + 注入。 */
+  assert.ok(clientSource.includes("const cosmosPatLineDimStore = createSnapshotStore({ patLineDim: loadCosmosSettings().patLineDim });"),
+    "受控镜像冷启动读持久值");
+  assert.ok(clientSource.includes("savePatLineDim(value) {") && clientSource.includes("saveCosmosSettings({ patLineDim: value })"),
+    "控制器写入：净房持久化（clampTo 百分比口径）");
+  assert.ok(clientSource.includes("engine?.setTuning({ patLineDim: merged.patLineDim / 100 });"),
+    "写入链：百分比 → 因子 setTuning 热更");
+  assert.ok(clientSource.includes("cosmosPatLineDimStore.set({ patLineDim: merged.patLineDim });"),
+    "写入链：受控镜像同步（滑杆回显）");
+  const lineFaceBody = clientSource.slice(
+    clientSource.indexOf("const patLineDimFace = {"),
+    clientSource.indexOf("ctx.slots.inject(SETTINGS_TAB_SLOT", clientSource.indexOf("const patLineDimFace = {"))
+  );
+  assert.ok(lineFaceBody.includes("getSnapshot:"), "face.getSnapshot");
+  assert.ok(lineFaceBody.includes("subscribe:"), "face.subscribe");
+  assert.ok(lineFaceBody.includes("set:"), "face.set");
+  assert.ok(lineFaceBody.includes("controller.savePatLineDim"), "整页存活 → 控制器写入（热更通道）");
+  assert.ok(lineFaceBody.includes("saveCosmosSettings({ patLineDim: value })"), "整页未开 → 仍即时持久化（下次开页读回）");
+  assert.ok(clientSource.includes("templateNames: templateNamesFace, patLineDim: patLineDimFace }"),
+    "「通用」页签注入 patLineDim face");
+  assert.ok(clientSource.includes("cosmosPatLineDimStore.set({ patLineDim: next.patLineDim });"),
+    "storage 跨窗桥同步 patLineDim 镜像");
+  assert.ok(clientSource.includes("setTuning?.({ patLineDim: next.patLineDim / 100 })"),
+    "storage 跨窗桥：已打开整页因子热更（仅本键真实值变时触达）");
+  assert.ok(clientSource.includes("cosmosPatLineDimStore,"), "受控镜像导出面（观测/冒烟）");
+
+  /* ③ 引擎接线：镜像初值、setTuning 数值分支 + 独立夹取、段/点同帧同源。 */
+  assert.ok(engineSource.includes("patLineDim: patLineDimOf(opts.settings?.patLineDim),"),
+    "引擎镜像初值（百分比 → 因子，非有限回落 0.5）");
+  assert.ok(engineSource.includes("typeof settings?.patLineDim === \"number\" && Number.isFinite(settings.patLineDim)"),
+    "setTuning 数值入参才更新（部分写语义）");
+  assert.ok(engineSource.includes("clamp(settings.patLineDim, PAT_LINE_DIM_MIN, PAT_LINE_DIM_MAX)"),
+    "独立夹取 [0.05, 1]");
+  assert.ok(engineSource.includes("const patLineAlpha = E.patLineDim;") && engineSource.includes("const patDotAlpha = Math.min(PAT_DOT_DIM, patLineAlpha * PAT_DOT_LINE_RATIO);"),
+    "帧内单次取镜像 + 点因子派生（恒 ≤ 线）");
+  assert.ok(engineSource.includes("alpha: patLineAlpha") && engineSource.includes("alpha: patDotAlpha"),
+    "段 α 与两观测面同帧同源");
+
+  /* ④ 词典 zh/en 成对（图例 / 标签 / 提示 / aria 四键）。 */
+  for (const key of ["patLineDimLegend", "patLineDimLabel", "patLineDimHint", "patLineDimAria"]) {
+    assert.equal(
+      (clientSource.match(new RegExp('"cosmos\\.settings\\.' + key + '": ', "g")) ?? []).length,
+      2,
+      "词典 zh/en 成对：cosmos.settings." + key
+    );
+  }
+}
+
 /* ── 浮签与 UI 铬件的遮挡避让与命中隔离（polish-cosmos-tip-ui-avoidance 2.1–2.3 / 3.1–3.4 /
       4.1–4.2 / 5.2 源码锚点）：React 树 Node 侧不可挂载 → 收集/发布接线与引擎消费点走
       源码锚点，几何与门禁行为由 engine-smoke 的 B/C 两段运行时直测（5.1–5.5）。 ── */
@@ -2611,11 +2842,14 @@ function goldLiteralsOutsideVarFallback(source) {
     '[".cos-home-btn", "home"],',
     '[".cos-dragpan-btn", "dragpan"],',
     '[\'.cos-wsbar-side[data-side="left"]\', "wsbar-left"],',
-    '[\'.cos-wsbar-side[data-side="right"]\', "wsbar-right"]'
+    '[\'.cos-wsbar-side[data-side="right"]\', "wsbar-right"]',
+    '[\'.cos-wsbar-tools[data-side="left"]\', "wsbar-tool-left"]',
+    '[\'.cos-wsbar-tools[data-side="right"]\', "wsbar-tool-right"]',
+    '[".cos-badge-cluster", "wstools"]'
   ]) {
     assert.ok(clientSource.includes(pair), "收集表覆盖：" + pair);
   }
-  assert.ok(clientSource.includes('const COSMOS_CHROME_DRILL_ONLY = new Set(["wsbar-left", "wsbar-right"]);'),
+  assert.ok(clientSource.includes('const COSMOS_CHROME_DRILL_ONLY = new Set(["wsbar-left", "wsbar-right", "wsbar-tool-left", "wsbar-tool-right", "wstools"]);'),
     "钻取态专属类别（银河态槽位不可见 → MUST NOT 参与判定，防隐形阻挡带）");
   assert.ok(clientSource.includes("if (drill == null && COSMOS_CHROME_DRILL_ONLY.has(kind)) continue;"),
     "银河态跳过 wsbar 槽位矩形（呈现态才参与）");

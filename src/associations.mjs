@@ -15,6 +15,10 @@
  * 双轨（fix-cosmos-association-scope）：`origin: "explicit"` 条目是会话的**绑定声明**
  * （bind-session 端点经 `applyBinding` 替换写入），对持有该工作区 explicit 条目的会话，
  * 启发式两条规则均被压制（`explicitBoundSessionIds`）；启发式只对无绑定会话生效。
+ *
+ * 信号口径（restrict-association-heuristics）：规则 1 只认**用户侧指派信号**（`@<提案目录>`
+ * 引用解析产物，scan.mjs `assignmentProposalSlugs`），正文提及/assistant 回显不建立关联；
+ * 规则 2 的候选排除判定时刻**正在运行**的会话（等待决策保留候选）。
  */
 
 import { matchProposalSlugs, birthtimeWindowUnique } from "./scan.mjs";
@@ -280,26 +284,39 @@ export function resolveWorkspacePath(input) {
 }
 
 /**
- * 启发式规则 1 装配（纯函数，任务 3.2）：会话归属该工作区且近期上下文文本含提案
- * slug → 全部命中提案关联。已有关联条目的提案跳过（幂等由 upsertAssociation 兜底）。
+ * 启发式规则 1 装配（纯函数，restrict-association-heuristics 2.2）：会话归属该工作区且
+ * 用户侧上下文出现 `@<提案目录>` **指派引用** → 命中提案关联。
+ *
+ * 输入信号 = 指派信号清单（`assignmentSlugs`，scan.mjs `assignmentProposalSlugs` 的解析产物；
+ * 与活跃提案清单取交集、去重保序）——正文叙述 / 提案清单罗列 / assistant 回显不在其列，
+ * 因此不再建立关联（「拿提到当在干」的语义错误由信号口径纠正，而非概率性封顶）。
+ * 已有关联条目的提案跳过（幂等由 upsertAssociation 兜底）。
  *
  * @param {object} input
  * @param {string} input.workspacePath 工作区路径指纹
  * @param {string} input.sessionId 会话 id
  * @param {string[]} input.proposalNames 活跃提案名（骨架扫描结果）
- * @param {string} input.contextText 该会话近期上下文文本（宿主从 ctx.agents 快照提取）
+ * @param {string[]} input.assignmentSlugs 指派信号 slug 清单（用户侧 @引用解析产物）
  * @param {Array<object>} [input.entries] 现有关联条目
  * @param {number} [input.now]
  * @returns {{ entries: Array<object>, added: string[] }}（added = 新增提案名）
  */
 export function applyContextHeuristic(input) {
   const proposalNames = Array.isArray(input?.proposalNames) ? input.proposalNames : [];
+  const active = new Set(proposalNames.filter((name) => typeof name === "string" && name));
   const already = new Set(
     (Array.isArray(input?.entries) ? input.entries : [])
       .filter((entry) => entry?.sessionId === input?.sessionId && entry?.workspace === input?.workspacePath)
       .map((entry) => entry?.proposal)
   );
-  const matched = matchProposalSlugs(input?.contextText ?? "", proposalNames).filter((name) => !already.has(name));
+  const matched = [];
+  const seen = new Set();
+  for (const slug of Array.isArray(input?.assignmentSlugs) ? input.assignmentSlugs : []) {
+    if (typeof slug !== "string" || !slug) continue;
+    if (!active.has(slug) || already.has(slug) || seen.has(slug)) continue;
+    seen.add(slug);
+    matched.push(slug);
+  }
   const entries = Array.isArray(input?.entries) ? input.entries : [];
   const added = [];
   let current = entries;
@@ -317,15 +334,17 @@ export function applyContextHeuristic(input) {
 }
 
 /**
- * 启发式规则 2 装配（纯函数，任务 3.3）：提案目录出现 ±30min 窗口内该工作区
- * **唯一**活跃会话 → 关联。窗口判定与唯一性在 scan.mjs `birthtimeWindowUnique`；
- * 本函数只做装配与幂等。
+ * 启发式规则 2 装配（纯函数，任务 3.3 / restrict-association-heuristics 3.x）：提案目录出现
+ * ±30min 窗口内该工作区**唯一**活跃会话 → 关联。窗口判定与唯一性在 scan.mjs
+ * `birthtimeWindowUnique`；运行中会话经 `runningSessionIds` 排除（忙碌会话不接生新目录），
+ * 等待决策（running=false）会话保留候选。本函数只做装配与幂等。
  *
  * @param {object} input
  * @param {string} input.workspacePath
  * @param {object} input.proposal 骨架恒星（{ id, birthMs }）
  * @param {number|null} input.detectedMs fs.watch 首次检测时刻（birthMs 取不到时回落）
  * @param {Array<{sessionId: string, lastActivityMs: number}>} input.activeSessions 该工作区活跃会话
+ * @param {Set<string>|string[]} [input.runningSessionIds] 判定时刻正在运行的会话（候选排除）
  * @param {Array<object>} [input.entries]
  * @param {number} [input.now]
  * @returns {{ entries: Array<object>, added: boolean }}
@@ -334,7 +353,8 @@ export function applyBirthtimeHeuristic(input) {
   const matchedId = birthtimeWindowUnique({
     birthMs: input?.proposal?.birthMs ?? null,
     detectedMs: input?.detectedMs,
-    sessions: input?.activeSessions ?? []
+    sessions: input?.activeSessions ?? [],
+    runningSessionIds: input?.runningSessionIds
   });
   const entries = Array.isArray(input?.entries) ? input.entries : [];
   if (!matchedId) return { entries, added: false };

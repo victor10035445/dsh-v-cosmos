@@ -96,7 +96,8 @@ const near = (v, w, eps = 1e-9) => Math.abs(v - w) < eps;
     {
       panSpeed: 120, panShiftBoost: 3, skin: "rosepine",
       zoomPointerFocus: true, sessionPanelOpen: true, constPreflight: "float", dragPan: false,
-      /* 界面尺寸 12 键（add-cosmos-layout-tuning D2）：缺省 = 引入配置面之前的现值。 */
+      /* 界面尺寸 13 键（add-cosmos-layout-tuning D2；add-cosmos-template-reassign 返工扩
+         wsToolSize）：缺省 = 引入配置面之前的现值。 */
       sessionPanelWidth: 260, sessionPanelHeight: 0, constPanelWidth: 187, constPanelHeight: 0,
       addBtnSize: 44, hudBtnSize: 44, actionBtnWidth: 112, actionBtnHeight: 40,
       constActionHeight: 40, searchWidth: 320, searchHeight: 0, wsTitleSize: 13,
@@ -105,11 +106,15 @@ const near = (v, w, eps = 1e-9) => Math.abs(v - w) < eps;
       /* 入口打开方式（add-cosmos-rightbar-dock）：缺省 embedded = 现状。 */
       launchMode: "embedded",
       /* 星座模板名显示（add-cosmos-template-name-toggle）：缺省关闭 ⇒ 默认渲染零变化。 */
-      templateNames: false
+      templateNames: false,
+      /* 图样连线亮度（add-cosmos-figure-line-alpha）：缺省 50% = 引擎因子 0.5。 */
+      patLineDim: 50,
+      /* 顶部模板工具高度（add-cosmos-template-reassign 返工）：缺省 32px。 */
+      wsToolSize: 32
     },
-    "出厂默认（含默认皮肤、指针聚焦、会话面板展开态、发送前编辑分支 float、拖拽平移关闭、界面尺寸 12 键 = 现值、快捷键四键、入口打开方式 embedded、星座模板名关闭；缩放阈值两键已退场）"
+    "出厂默认（含默认皮肤、指针聚焦、会话面板展开态、发送前编辑分支 float、拖拽平移关闭、界面尺寸 13 键 = 现值、快捷键四键、入口打开方式 embedded、星座模板名关闭、图样连线亮度 50、顶部工具按钮高 32；缩放阈值两键已退场）"
   );
-  assert.equal(COSMOS_SETTINGS_VERSION, 12, "设置面 v12（v10 = launchMode/dock 迁移，v11 = templateNames，v12 = 删缩放阈值两键）");
+  assert.equal(COSMOS_SETTINGS_VERSION, 14, "设置面 v14（v13 → v14 新增 wsToolSize；v12 → v13 新增 patLineDim；v10 = launchMode/dock 迁移，v11 = templateNames，v12 = 删缩放阈值两键）");
   assert.equal("zoomDiveRatio" in COSMOS_SETTINGS_DEFAULTS, false, "进入阈值设置键已退场（阈值 = 引擎常量）");
   assert.equal("zoomFlyOutRatio" in COSMOS_SETTINGS_DEFAULTS, false, "返回阈值设置键已退场（距离单判常量）");
   assert.deepEqual(sanitizeCosmosSettings({}), COSMOS_SETTINGS_DEFAULTS, "空配置 → 默认");
@@ -128,7 +133,9 @@ const near = (v, w, eps = 1e-9) => Math.abs(v - w) < eps;
       constActionHeight: 40, searchWidth: 320, searchHeight: 0, wsTitleSize: 13,
       shortcuts: { closePage: "Escape", goHome: "Backquote", togglePan: "KeyM", voiceToggle: "Ctrl+KeyQ" },
       launchMode: "embedded",
-      templateNames: false
+      templateNames: false,
+      patLineDim: 50,
+      wsToolSize: 32
     },
     "越界落端点 + 未知键剥离"
   );
@@ -150,10 +157,20 @@ const near = (v, w, eps = 1e-9) => Math.abs(v - w) < eps;
     [
       "actionBtnHeight", "actionBtnWidth", "addBtnSize", "constActionHeight",
       "constPanelHeight", "constPanelWidth", "hudBtnSize", "panShiftBoost",
-      "panSpeed", "searchHeight", "searchWidth", "sessionPanelHeight",
-      "sessionPanelWidth", "wsTitleSize"
+      "panSpeed", "patLineDim", "searchHeight", "searchWidth", "sessionPanelHeight",
+      "sessionPanelWidth", "wsTitleSize", "wsToolSize"
     ],
-    "BOUNDS 保持纯数值形状（不混入枚举/布尔键；界面尺寸 12 键全为数值界；缩放阈值两键已删）"
+    "BOUNDS 保持纯数值形状（不混入枚举/布尔键；界面尺寸 13 键与 patLineDim 全为数值界；缩放阈值两键已删）"
+  );
+  assert.deepEqual(
+    [
+      sanitizeCosmosSettings({ wsToolSize: 20 }).wsToolSize,
+      sanitizeCosmosSettings({ wsToolSize: 60 }).wsToolSize,
+      sanitizeCosmosSettings({ wsToolSize: 40.6 }).wsToolSize,
+      sanitizeCosmosSettings({ wsToolSize: "x" }).wsToolSize
+    ],
+    [28, 48, 41, 32],
+    "顶部工具高度净房：越界落端点 / 取整 / 非数字回落 32"
   );
   assert.equal(COSMOS_SKIN_IDS.length, 12, "枚举来源 = 注册表 12 套");
   /* 合法 id 透传（逐枚） */
@@ -227,7 +244,7 @@ const near = (v, w, eps = 1e-9) => Math.abs(v - w) < eps;
   assert.deepEqual(
     sizeKeys.map((key) => sanitizeCosmosSettings(bad)[key]),
     sizeKeys.map((key) => defaults[key]),
-    "非数字一律回落缺省（12 键）"
+    "非数字一律回落缺省（13 键）"
   );
 
   /* v6 旧载荷（无尺寸键）→ 逐键补默认 */
@@ -257,18 +274,19 @@ const near = (v, w, eps = 1e-9) => Math.abs(v - w) < eps;
       "--cos-const-action-h": "40px",
       "--cos-search-w": "320px",
       "--cos-search-h": "0px",
-      "--cos-ws-title-size": "13px"
+      "--cos-ws-title-size": "13px",
+      "--cos-ws-tool-size": "32px"
     },
-    "缺省投影 = 现值字面量（高度 none = 不设上限）"
+    "缺省投影 = 现值字面量（高度 none = 不设上限；顶部工具 32px）"
   );
   const custom = cosmosLayoutTokensOf({
     ...COSMOS_SETTINGS_DEFAULTS,
     sessionPanelWidth: 320, sessionPanelHeight: 600, constPanelWidth: 220,
-    hudBtnSize: 56, searchWidth: 420, searchHeight: 36, wsTitleSize: 16
+    hudBtnSize: 56, searchWidth: 420, searchHeight: 36, wsTitleSize: 16, wsToolSize: 40
   });
   assert.deepEqual(
-    [custom["--cos-session-w"], custom["--cos-session-h"], custom["--cos-const-panel-w"], custom["--cos-hud-btn-size"], custom["--cos-search-w"], custom["--cos-search-h"], custom["--cos-ws-title-size"]],
-    ["320px", "600px", "220px", "56px", "420px", "36px", "16px"],
+    [custom["--cos-session-w"], custom["--cos-session-h"], custom["--cos-const-panel-w"], custom["--cos-hud-btn-size"], custom["--cos-search-w"], custom["--cos-search-h"], custom["--cos-ws-title-size"], custom["--cos-ws-tool-size"]],
+    ["320px", "600px", "220px", "56px", "420px", "36px", "16px", "40px"],
     "自定义投影逐键生效（高度 >0 → Npx）"
   );
   /* 缺键/非法 → 逐键回落现值（令牌层不引入第二套默认值语义） */
@@ -2536,8 +2554,12 @@ const EXPECTED_FIT_DIST = FILTER_FIT_MARGIN / Math.tan(Math.PI / 6) * 1.1;
   const chip = mine.filter((el) => String(el.className).startsWith("cos-chip")).pop();
   const homeBtn = mine.find((el) => el.className === "cos-home-btn");
   const badgeEl = rootEl._by[".cos-badge"];
+  const wsbarEl = rootEl._by[".cos-wsbar"];
+  const badgeClusterEl = rootEl._by[".cos-badge-cluster"];
   const cardEl = rootEl._by[".cos-card"];
-  assert.ok(chip && homeBtn && badgeEl, "覆盖层元素齐备（chip / 回到银河 / 星座标牌）");
+  assert.ok(chip && homeBtn && badgeEl && wsbarEl && badgeClusterEl, "覆盖层元素齐备（chip / 回到银河 / 星座标牌 / 切换条目容器 / 右上标牌组）");
+  assert.ok(rootEl._by['.cos-wsbar-tools[data-side="left"]'] && rootEl._by['.cos-wsbar-tools[data-side="right"]'], "顶部模板工具左右槽已建（add-cosmos-template-reassign 返工）");
+  assert.equal(badgeClusterEl.dataset.drilled, "false", "银河态 data-drilled=false（模板工具零呈现）");
 
   const fire = (el, type, ev) => { for (const fn of el.listeners[type] ?? []) fn(ev); };
   const input = () => eng.inspectInput();
@@ -2553,10 +2575,16 @@ const EXPECTED_FIT_DIST = FILTER_FIT_MARGIN / Math.tan(Math.PI / 6) * 1.1;
 
   /* HUD 精简（D5/6.3）：ensureDom 产物与 ENGINE_CSS 均不再有面包屑/右上提示 */
   const markup = String(rootEl.innerHTML);
-  assert.ok(markup.includes("cos-canvas") && markup.includes("cos-wsbar") && markup.includes("cos-badge"), "ensureDom 产物含 canvas、行容器与星座标牌");
-  const wsbarOrder = ['data-side="left"', 'cos-badge', 'data-side="right"'].map((token) => markup.indexOf(token));
-  assert.ok(wsbarOrder[0] >= 0 && wsbarOrder[0] < wsbarOrder[1] && wsbarOrder[1] < wsbarOrder[2],
-    "行容器 DOM 顺序 [左条目槽][标牌][右条目槽]（标牌天然居中格）");
+  assert.ok(markup.includes("cos-canvas") && markup.includes("cos-wsbar") && markup.includes('class="cos-badge"') && markup.includes("cos-badge-cluster"), "ensureDom 产物含 canvas、切换条目容器、右上标牌组与星座标牌");
+  const wsbarLeftAt = markup.indexOf('cos-wsbar-side" data-side="left"');
+  const wsbarRightAt = markup.indexOf('cos-wsbar-side" data-side="right"');
+  assert.ok(wsbarLeftAt >= 0 && wsbarLeftAt < wsbarRightAt, "顶部中央容器 DOM 顺序 [左条目槽][右条目槽]（切换条目成对）");
+  const clusterAt = markup.indexOf("cos-badge-cluster");
+  const badgeAt = markup.indexOf('class="cos-badge"');
+  const toolLeftAt = markup.indexOf('cos-wsbar-tools" data-side="left"');
+  const toolRightAt = markup.indexOf('cos-wsbar-tools" data-side="right"');
+  assert.ok(clusterAt >= 0 && clusterAt < badgeAt && badgeAt < toolLeftAt && toolLeftAt < toolRightAt,
+    "右上标牌组 DOM 顺序 [星座标牌][指定模板][随机重掷]（名称在左、方形图标在右）");
   assert.ok(!markup.includes("cos-crumb"), "ensureDom 产物无面包屑");
   assert.ok(!markup.includes("cos-hint"), "ensureDom 产物无右上操作提示");
   assert.ok(!ENGINE_CSS.includes(".cos-crumb"), "ENGINE_CSS 无 .cos-crumb 规则");
@@ -2666,18 +2694,23 @@ const EXPECTED_FIT_DIST = FILTER_FIT_MARGIN / Math.tan(Math.PI / 6) * 1.1;
   fakeNow += 1300; // 钻取补间播完（E.focusMix → 1）
   step1(1);
   assert.equal(eng.inspectFilter().focus.diving, true, "钻取态成立");
+  assert.equal(badgeClusterEl.dataset.drilled, "true", "钻取态 data-drilled=true（顶部模板工具呈现）");
   assert.ok(String(badgeEl.dataset.html).includes("ws-one"), "标牌含星座名（dataset.html 守卫值已写）");
   assert.ok(String(badgeEl.innerHTML).includes("ws-one"), "标牌渲染星座名");
   assert.ok(/✦1 ●1 ◇0 ☄1 ☁0/.test(String(badgeEl.innerHTML)), "标牌含全量计数仪表 ✦●◇☄☁");
   /* 标牌定位口径（step2-add-constellation-switcher D1：定位/限宽职责移交行容器 `.cos-wsbar`，
      标牌改行内中央格——视觉样式与文本居中不变，几何承诺等价迁移） */
   assert.ok(/\.cos-wsbar \{[^}]*left: 50%; transform: translateX\(-50%\)/.test(ENGINE_CSS), "行容器承接水平居中（left:50% + translateX(-50%)，顶部中央锚点）");
-  assert.ok(/\.cos-badge \{[^}]*text-align: center/.test(ENGINE_CSS), "标牌文本居中排版（名称 + 计数两行）");
-  assert.ok(/\.cos-badge \{[^}]*max-width: 480px/.test(ENGINE_CSS), "标牌收敛为单一上限 480px（避让由行容器承担）");
+  assert.ok(/\.cos-badge \{[^}]*text-align: right/.test(ENGINE_CSS), "标牌随右上角组右对齐排版（名称 + 计数两行）");
+  assert.ok(/\.cos-badge \{[^}]*max-width: min\(480px, 40vw\)/.test(ENGINE_CSS), "标牌上限收敛（右上角组 40vw，避免压住中心切换条目）");
   assert.ok(!/\.cos-badge \{[^}]*position: absolute/.test(ENGINE_CSS), "标牌不再绝对定位（中央格参与 flex 布局）");
   assert.ok(!/\.cos-badge \{[^}]*calc\(100% - 470px\)/.test(ENGINE_CSS), "标牌不挂百分比限宽（基准双重折减防护）");
   assert.ok(/\.cos-wsbar \{[^}]*max-width: max\(160px, min\(844px, calc\(100% - 470px\)\)\)/.test(ENGINE_CSS), "行容器限宽避让左面板（187px）与右缘（470 = 2×(187+48)），160px 下限兜底页面宽度不足");
-  assert.ok(ENGINE_CSS.includes("@media (max-width: 520px) { .cos-wsbar { max-width: calc(100% - 40px); } .cos-wsbar-side { display: none; } }"), "窄视口（<520px）断点改挂容器：放宽限宽 + 隐藏条目槽（仅留标牌）");
+  assert.ok(ENGINE_CSS.includes("@media (max-width: 520px) { .cos-wsbar { max-width: calc(100% - 40px); }") && ENGINE_CSS.includes(".cos-wsbar-side { display: none; }"), "窄视口（<520px）断点：容器放宽 + 条目槽隐藏（触屏仍有 chip / 搜索路径）");
+  assert.ok(/\.cos-badge-cluster \{[^}]*position: absolute; top: 14px; right: 16px/.test(ENGINE_CSS), "标牌组（名称 + 两枚工具）固定右上角（top:14 / right:16）");
+  assert.ok(ENGINE_CSS.includes('.cos-badge-cluster[data-drilled="true"] { display: flex; }'), "标牌组仅钻取态 display:flex（银河态整体零呈现）");
+  assert.ok(/\.cos-wsbar-tools \{[^}]*width: var\(--cos-ws-tool-size, 32px\);[^}]*height: var\(--cos-ws-tool-size, 32px\)/.test(ENGINE_CSS), "工具槽方形（宽 = 高 = wsToolSize）");
+  assert.ok(ENGINE_CSS.includes('.cos-wsbar { position: absolute; top: 14px; left: 50%; transform: translateX(-50%)'), "切换条目容器仍在顶部中央（不被右上标牌组侵占）");
   badgeEl.innerHTML = "MARKER";
   step1(1);
   assert.equal(badgeEl.innerHTML, "MARKER", "内容未变 → 标牌零重写（内容差分守卫生效）");
@@ -2698,6 +2731,7 @@ const EXPECTED_FIT_DIST = FILTER_FIT_MARGIN / Math.tan(Math.PI / 6) * 1.1;
   step1(1);
   assert.equal(eng.inspectFilter().focus.diving, false, "飞回银河：退出钻取");
   assert.equal(String(badgeEl.innerHTML), "", "回到银河后标牌清空（银河视图无标牌）");
+  assert.equal(badgeClusterEl.dataset.drilled, "false", "回到银河后 data-drilled=false（顶部模板工具零呈现）");
   const tweenAtRoot = eng.inspectFilter().tween;
   const divesAtRoot = input().dives;
   fire(homeBtn, "click", {});
@@ -6458,6 +6492,65 @@ function goldLiteralsOutsideVarFallback(source) {
   assert.deepEqual(dots.map((r) => r.slotIndex), [3, 4], "空槽 = 前 min(N, L) 槽位之后的余下内核槽位");
   assert.ok(dots.every((r) => r.alpha > 0 && r.alpha < 0.5), `装饰点 α MUST 低于图样线（${dots.map((r) => r.alpha)} < 0.5）`);
   assert.ok(!dots.some((r) => r.slotIndex < 3), "被占槽位不叠加装饰点（恒星本体覆盖）");
+
+  /* ④b 设置面映射与热更（add-cosmos-figure-line-alpha 2.1–2.3 / 4.2）：显式值映射、
+     setTuning 防御夹取与非数值忽略、点因子派生式（线 0.2 → 点 0.088；线 0.1 → 点 0.044；
+     恒 < 线）、观测面口径与段/点同帧一致。 */
+  eng.setTuning({ patLineDim: 0.2 });
+  step(1);
+  rows = eng.inspectPatternLines();
+  assert.ok(rows.every((r) => Math.abs(r.alpha - 0.2) < 1e-9), "显式设置值映射：0.2 → 段 α 0.2（当帧生效）");
+  dots = eng.inspectPatternDots();
+  assert.ok(dots.every((r) => Math.abs(r.alpha - 0.088) < 1e-9), "派生点 α = min(0.22, 0.2 × 0.44) = 0.088");
+  assert.ok(dots.every((r) => r.alpha < rows[0].alpha), "点恒弱于线（显式值 0.088 < 0.2）");
+  eng.setTuning({ patLineDim: 0.1 });
+  step(1);
+  rows = eng.inspectPatternLines();
+  dots = eng.inspectPatternDots();
+  assert.ok(rows.every((r) => Math.abs(r.alpha - 0.1) < 1e-9), "线 0.1 → 段 α 0.1");
+  assert.ok(dots.every((r) => Math.abs(r.alpha - 0.044) < 1e-9), "线 0.1 → 点 α 0.044（min(0.22, 0.044)）");
+  assert.ok(dots.every((r) => r.alpha < rows[0].alpha), "点恒弱于线（线 0.1 时 0.044 < 0.1）");
+  /* 防御夹取：下界 0.05 / 上界 1（界外落端点）；非数值忽略（保持原值）；缺键部分写幂等。 */
+  eng.setTuning({ patLineDim: 0.001 });
+  step(1);
+  rows = eng.inspectPatternLines();
+  dots = eng.inspectPatternDots();
+  assert.ok(rows.every((r) => Math.abs(r.alpha - 0.05) < 1e-9), "下越界 → 夹到 0.05");
+  assert.ok(dots.every((r) => Math.abs(r.alpha - 0.022) < 1e-9), "点随线下越界 → 0.022");
+  eng.setTuning({ patLineDim: 7 });
+  step(1);
+  rows = eng.inspectPatternLines();
+  dots = eng.inspectPatternDots();
+  assert.ok(rows.every((r) => Math.abs(r.alpha - 1) < 1e-9), "上越界 → 夹到 1");
+  assert.ok(dots.every((r) => Math.abs(r.alpha - 0.22) < 1e-9), "线 1 → 点 = min(0.22, 0.44) = 0.22（上限兜底）");
+  eng.setTuning({ patLineDim: "0.3" });
+  step(1);
+  assert.ok(eng.inspectPatternLines().every((r) => Math.abs(r.alpha - 1) < 1e-9), "非数值入参忽略（保持 1）");
+  eng.setTuning({});
+  step(1);
+  assert.ok(eng.inspectPatternLines().every((r) => Math.abs(r.alpha - 1) < 1e-9), "缺键部分写幂等（保持 1）");
+  eng.setTuning({ patLineDim: 0.5 });
+  step(1);
+  rows = eng.inspectPatternLines();
+  assert.ok(rows.every((r) => Math.abs(r.alpha - 0.5) < 1e-9), "复位 0.5（后续段回归基线）");
+  assert.ok(eng.inspectPatternDots().every((r) => Math.abs(r.alpha - 0.22) < 1e-9), "复位点 0.22");
+
+  /* ④c 构造期显式设置映射（2.1）：settings.patLineDim 百分比 → 因子；非法值回落 0.5。 */
+  const preset = createCosmosEngine({ container: stubEl("div"), style: createSkinD(), settings: { patLineDim: 20 } });
+  preset.setScene(patternScene(), "rebuild");
+  preset.start();
+  step(1);
+  assert.ok(preset.inspectPatternLines().every((r) => Math.abs(r.alpha - 0.2) < 1e-9), "构造期 20% → 因子 0.2（首帧即生效）");
+  assert.ok(preset.inspectPatternDots().every((r) => Math.abs(r.alpha - 0.088) < 1e-9), "构造期点因子派生 0.088");
+  preset.stop();
+  preset.dispose();
+  const invalidPreset = createCosmosEngine({ container: stubEl("div"), style: createSkinD(), settings: { patLineDim: "bright" } });
+  invalidPreset.setScene(patternScene(), "rebuild");
+  invalidPreset.start();
+  step(1);
+  assert.ok(invalidPreset.inspectPatternLines().every((r) => Math.abs(r.alpha - 0.5) < 1e-9), "非法构造值回落 0.5（缺省渲染零变化）");
+  invalidPreset.stop();
+  invalidPreset.dispose();
 
   /* ⑤ patch 不重播、段/点恒等（2.1/D2）：恒星 off 滑位只改恒星落位，图样为模板静态几何。 */
   const shifted = patternScene();

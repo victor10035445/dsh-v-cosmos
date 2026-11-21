@@ -57,6 +57,13 @@
  *                                 仅实际变更时落盘 + 广播 `associations-changed`（幂等
  *                                 重绑零写入零广播）；200 `{ok, bound}`。持有 explicit
  *                                 条目的会话被启发式两条规则压制（见 runHeuristics）。
+ *  - POST /api/dsh-v-cosmos/render-skill-text 渲染服务端点
+ *                                 （step5-cosmos-path-render-convergence）：外部技能加载
+ *                                 机制把待注入正文整段提交 `{text}` → 按契约「路径令牌
+ *                                 契约」渲染后返回 `{content, rendered, configured,
+ *                                 containsToken, warning}`；渲染复用 provider `get()` 同一
+ *                                 核心与同一配置读取面（状态化警示），不依赖 skills 服务；
+ *                                 缺 text / 非字符串 → 400；零配置、零持久化、零工件写入。
  *  - POST /api/dsh-v-cosmos/dismiss-embryo 星胚移除（add-cosmos-embryo-dismiss 2.1 /
  *                                 CONTRACT §6.3：**仅用户显式点击驱动**，禁止任何推导触发）：
  *                                 请求 `{workspaceId, slug}`；守卫链依序执行 = workspace
@@ -70,25 +77,37 @@
  *                                 `{outcome, reason?}`（deleted / already-missing /
  *                                 guard-dir-exists / missing-workspace / failed）。
  *                                 `.state.json` 与 `changes/<name>/` 恒不触碰。
- *  - cosmos-spec 技能 provider（step3-cosmos-skill-provider-render）：条件注入
- *    `ctx.inject(['skills'])` 注册 SkillProvider（skills 缺席仅该分支不激活）——扫描
- *    canonical 目录（paths.cosmosSpecDir → <packageDir>/cosmos-spec → 空）产出目录表，
- *    同名 rank 50 压过本地接线（100–600）；`get()` 每次读盘并按契约渲染
- *    `OPENSPEC_PATH` 令牌（未配置 → 原样 + 头部警示行）；canonical 根 fs.watch
- *    （recursive + ≥2s 防抖）→ 注册期 invalidate()（目录表自持失效，design D5）。
- *  - 路径令牌读取兜底（tools/post-execute）：路径类入参工具 isError 且入参以
- *    OPENSPEC_PATH 开头 → block 纠正反馈（已配置给解析路径 / 未配置给设置指引，原
- *    错误文本内嵌）；其余恒 next() 透传（纯逻辑见 skill-provider.mjs，design D4）。
+ *  - cosmos-spec 技能 provider（step3-cosmos-skill-provider-render；step4 状态化；
+ *    step5 last-good）：条件注入 `ctx.inject(['skills'])` 注册 SkillProvider（skills
+ *    缺席仅该分支不激活）——扫描 canonical 目录（paths.cosmosSpecDir →
+ *    <packageDir>/cosmos-spec → 空）产出目录表，同名 rank 50 压过本地接线（100–600）；
+ *    层目录读取失败（扫描不可信）回退最近一次可信候选集并报告 complete=false（不跨根
+ *    回退、dispose 清空）；`get()` 每次读盘并按契约渲染 `OPENSPEC_PATH` 令牌（未配置 /
+ *    读取异常 → 原样 + 头部**状态化**警示行；读取状态源 = 配置存储装载结局，damaged 走
+ *    warn-once 日志）；canonical 根 fs.watch（recursive + ≥2s 防抖）→ 注册期
+ *    invalidate()（目录表自持失效，design D5）。
+ *  - 路径令牌读取兜底（tools/post-execute）：路径类入参工具（含 glob/grep 的
+ *    `path` 与 `pattern` 键）isError 且入参以 OPENSPEC_PATH 开头、命令类工具
+ *    （bash/pwsh 的 `command`）isError 且命令串内出现令牌 → block 纠正反馈（已配置给
+ *    解析路径 / 未配置给设置指引，解析根可解析时均附「cosmos-spec 技能目录扫描根」行，
+ *    原错误文本内嵌）；其余恒 next() 透传（纯逻辑见 skill-provider.mjs，design D3–D6）。
  *  - 关联存储：$DSH_HOME/storages/dsh-v-cosmos.json（storage-json 同款语义：内存态即
  *    全量、temp 写 + rename 原子替换）。**MUST NOT 落盘到 openspec 工件**——
  *    工作区目录恒只读（零侵入纪律，任务 3.6 冒烟断言）；唯一例外 = `/dismiss-embryo`
  *    的用户显式动词单文件删除（见上）。旧名 dsh-cosmos 的存量
  *    存储首启回读迁移（读取回落，写入恒走新名）。
- *  - 启发式 v1（design.md 优先级）：
- *      1. 会话归属该工作区（registry sessionIds / cwd）且近期上下文文本
- *         （ctx.agents 快照最近消息）含提案 slug → 关联；
+ *  - 点燃谱系台账（add-cosmos-panel-birthline-sort 2.1/2.2）：独立存储
+ *    $DSH_HOME/storages/dsh-v-cosmos.birthlines.json（同族模式，关联/队列写入不覆盖）。
+ *    每帧骨架装配时逐工作区做扫描差分（锚点在册 → 同名提案目录出现）捕获点燃事件并
+ *    持久化 `{slug, embryoAt, embryoSessionId, ignitedMs}`；骨架 workspace 挂 `lineages`
+ *    供 merge 层回查。**不落任何 openspec 工件**（CONTRACT 红线）；dismiss / 手工创建
+ *    不误记，sighting TTL 7 天、行/sighting 上限 512。
+ *  - 启发式 v1（design.md 优先级；restrict-association-heuristics 收紧信号口径）：
+ *      1. 会话归属该工作区且近期**用户侧**消息出现 `@<提案目录>` **指派引用** → 关联
+ *         （正文叙述 / 提案清单罗列 / assistant 回显一律不建立关联）；
  *      2. 提案目录出现（stat.birthtime，取不到回落 fs.watch 检测时刻）±30min
- *         窗口内该工作区唯一活跃会话 → 关联；
+ *         窗口内该工作区**空闲**的唯一活跃会话 → 关联（判定时刻运行中的会话不接生新目录；
+ *         等待决策的会话保留候选）；
  *    origin: "heuristic" 全部记录；已存在三元关联不重写（幂等，重扫零抖动）。
  *  - fs.watch 增量监听（生命周期对齐 hive「懒启动 / 补挂 / 摘除」请求期对账）：
  *    per-workspace `openspec/` recursive watch（add-celestial-states 2.3：从 changes/
@@ -110,7 +129,7 @@ import { existsSync, mkdirSync, openSync, readFileSync, readdirSync, closeSync, 
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildSkeleton, scanProposal } from "./scan.mjs";
+import { buildSkeleton, scanProposal, assignmentProposalSlugs } from "./scan.mjs";
 import { actionButtonVisible } from "./buttons.mjs";
 import {
   createQueueStore,
@@ -141,13 +160,28 @@ import {
   applyBinding,
   explicitBoundSessionIds
 } from "./associations.mjs";
+/* 点燃谱系台账（add-cosmos-panel-birthline-sort 2.1/2.2）：纯逻辑在 birthline.mjs
+   （扫描差分 / 点燃配对 / TTL 清理 / 投影），本文件只做持久化 store 接线与骨架注入。 */
+import {
+  emptyBirthlineDoc,
+  lineagesOf,
+  observeWorkspaceBirthlines,
+  parseBirthlineDoc,
+  serializeBirthlineDoc
+} from "./birthline.mjs";
 /* cosmos-spec 技能 provider 纯逻辑（step3-cosmos-skill-provider-render 1.1/1.2）：
-   扫描 / 令牌渲染 / 兜底反馈组合全部在纯逻辑模块，本文件只做宿主接线。 */
+   扫描 / 令牌渲染 / 兜底反馈组合全部在纯逻辑模块，本文件只做宿主接线。
+   step4-cosmos-path-unset-visibility：命令串令牌词提取（findTokenCommandPath）与
+   状态化读取接入同一纯逻辑面。
+   step5-cosmos-path-render-convergence：渲染服务端点复用 renderSkillTextReport
+   （与 provider get() 同一渲染核心与同一配置读取面，语义单点）。 */
 import {
   PATH_TOKEN,
   composeTokenFeedback,
   createCosmosSpecProvider,
+  findTokenCommandPath,
   isTokenOccurrenceAt,
+  renderSkillTextReport,
   resolveTokenPath
 } from "./skill-provider.mjs";
 
@@ -184,17 +218,51 @@ const CONTEXT_EVENT_WINDOW = 200;
 const HEURISTIC_SESSION_CAP = 64;
 
 /**
- * 路径类入参键表（step3 design D4 / spec「路径令牌读取兜底」）：read / write / edit =
- * `file_path`；str_replace_editor / glob / grep = `path`。兜底监听只观察此表内工具。
+ * 路径令牌兜底判定表（step3 design D4 / step4-cosmos-path-unset-visibility D3/D4；
+ * spec「路径令牌读取兜底」）：工具名 → 判定规则列表（`key` = 入参键，`mode` = 判定形态）。
+ *  - `prefix`：入参以令牌开头（整词谓词，`isTokenOccurrenceAt(raw, 0)`）——路径类工具
+ *    read / write / edit（`file_path`）、str_replace_editor / glob / grep（`path`）；
+ *  - `command`：命令串内令牌出现（`findTokenCommandPath` 全文扫描 + 路径词截取）——
+ *    命令类工具 bash / pwsh（`command`），不要求命令开头（`cat OPENSPEC_PATH/x.md`
+ *    的令牌在命令中部）。
+ * glob / grep 的 `path` 与 `pattern` **同批纳入**（step4 D4）：pattern 形如令牌前缀
+ * 开头是技能文本照抄形态；两键均按开头整词判定，任一命中即可，结果为 isError 才拦截
+ * （零命中非 error 恒透传——真实空结果是合法观测）。
  */
-const TOKEN_PATH_ARG_KEYS = new Map([
-  ["read", "file_path"],
-  ["write", "file_path"],
-  ["edit", "file_path"],
-  ["str_replace_editor", "path"],
-  ["glob", "path"],
-  ["grep", "path"]
+const TOKEN_ARG_RULES = new Map([
+  ["read", [{ key: "file_path", mode: "prefix" }]],
+  ["write", [{ key: "file_path", mode: "prefix" }]],
+  ["edit", [{ key: "file_path", mode: "prefix" }]],
+  ["str_replace_editor", [{ key: "path", mode: "prefix" }]],
+  ["glob", [{ key: "path", mode: "prefix" }, { key: "pattern", mode: "prefix" }]],
+  ["grep", [{ key: "path", mode: "prefix" }, { key: "pattern", mode: "prefix" }]],
+  ["bash", [{ key: "command", mode: "command" }]],
+  ["pwsh", [{ key: "command", mode: "command" }]]
 ]);
+
+/**
+ * 兜底判定：按工具规则的判定形态取「令牌开头的路径词」（纯同步字符串判断，无异步 IO）。
+ * 规则按声明序短路——首个命中即返回；无命中 / 非表内工具 → null（调用方 next() 透传）。
+ * @param {unknown} toolName 工具名
+ * @param {unknown} args 工具入参
+ * @returns {string|null} 待解析的路径词（prefix 形态 = 原入参；command 形态 = 提取子串）
+ */
+function tokenPathOf(toolName, args) {
+  if (typeof toolName !== "string") return null;
+  const rules = TOKEN_ARG_RULES.get(toolName);
+  if (!rules || args === null || typeof args !== "object") return null;
+  for (const rule of rules) {
+    const raw = args[rule.key];
+    if (typeof raw !== "string") continue;
+    if (rule.mode === "command") {
+      const found = findTokenCommandPath(raw);
+      if (found) return found;
+    } else if (isTokenOccurrenceAt(raw, 0)) {
+      return raw;
+    }
+  }
+  return null;
+}
 
 /**
  * 插件包目录（canonical 回退根 `<packageDir>/cosmos-spec` 的基准）：自模块文件向上
@@ -230,17 +298,30 @@ export function isDismissableSlug(slug) {
 
 /* ── 存储路径：$DSH_HOME（非空）优先，否则 ~/.dsh（对齐 hive storagePath 语义） ── */
 
-export function storagePath(env = process.env) {
+/** 插件数据根（`$DSH_HOME` 非空优先，否则 `~/.dsh`）。 */
+function dshHomeOf(env = process.env) {
   const envHome = typeof env.DSH_HOME === "string" ? env.DSH_HOME.trim() : "";
-  const home = envHome || join(homedir(), ".dsh");
-  return join(home, "storages", "dsh-v-cosmos.json");
+  return envHome || join(homedir(), ".dsh");
+}
+
+export function storagePath(env = process.env) {
+  return join(dshHomeOf(env), "storages", "dsh-v-cosmos.json");
+}
+
+/**
+ * 点燃谱系台账存储路径（`$DSH_HOME/storages/dsh-v-cosmos.birthlines.json`，
+ * add-cosmos-panel-birthline-sort 2.1）：与关联存储（`dsh-v-cosmos.json`）／队列存储
+ * （`dsh-v-cosmos.queues.json`）同族模式，各自独立文件——关联/队列写入互不覆盖台账。
+ * @param {Record<string, string|undefined>} [env]
+ * @returns {string}
+ */
+export function birthlineStoragePath(env = process.env) {
+  return join(dshHomeOf(env), "storages", "dsh-v-cosmos.birthlines.json");
 }
 
 /** 旧名存储路径（品牌更名前；仅读取回落，SHALL NOT 写入）。 */
 export function legacyStoragePath(env = process.env) {
-  const envHome = typeof env.DSH_HOME === "string" ? env.DSH_HOME.trim() : "";
-  const home = envHome || join(homedir(), ".dsh");
-  return join(home, "storages", LEGACY_STORAGE_FILENAME);
+  return join(dshHomeOf(env), "storages", LEGACY_STORAGE_FILENAME);
 }
 
 /**
@@ -410,6 +491,37 @@ export function lastActivityMsOf(agent, now) {
   return now;
 }
 
+/**
+ * 提取会话近期**用户侧**上下文文本（规则 1 指派信号源；restrict-association-heuristics 2.1）。
+ *
+ * 读取通道与 `contextTextOf` 分离（design D2「新增读取路径」）：宿主 dsh-session 的
+ * `user/message` 事件 `data` **即消息本体**（无 `.message` 包装，文本块在 `data.content`），
+ * 既有 `contextTextOf` 读 `data.message.content` 结构上看不到用户侧文本——因此规则 1 的
+ * 指派 @ 引用必须走本通道。判定面 = 事件 `type`（不依赖消息体 role）：`type` 缺失或
+ * 非 `user/message` 的事件一律跳过（宁缺勿滥：assistant 回显 / 工具结果不算指派）。
+ * 容错读面：非数组 content / 文本块缺失 → 跳过，异常一律空串。
+ * @param {object} agent ctx.agents.get(sessionId) 形
+ * @returns {string}
+ */
+export function userContextTextOf(agent) {
+  try {
+    const events = agent?.session?.snapshotEvents?.() ?? [];
+    const window = typeof events.slice === "function" ? events.slice(-CONTEXT_EVENT_WINDOW) : [];
+    const parts = [];
+    for (const event of window) {
+      if (event?.type !== "user/message") continue;
+      const blocks = event?.data?.content;
+      if (!Array.isArray(blocks)) continue;
+      for (const block of blocks) {
+        if (block?.type === "text" && typeof block.text === "string" && block.text) parts.push(block.text);
+      }
+    }
+    return parts.join("\n");
+  } catch {
+    return "";
+  }
+}
+
 /* ── 插件主体 ── */
 
 /**
@@ -424,6 +536,10 @@ export function lastActivityMsOf(agent, now) {
 export function apply(ctx, config, options = {}) {
   /** 关联条目（内存态即全量；持久化 = temp 写 + rename）。 */
   let entries = [];
+  /** 点燃谱系台账文档（内存态即最新；持久化 = 独立 store 单 JSON 节，损坏/缺席按空台账兜底）。 */
+  let birthlineDoc = emptyBirthlineDoc();
+  /** 本轮骨架装配是否产生台账变更（落盘判定；谱系变化另经骨架指纹触发广播）。 */
+  let birthlineDirty = false;
   /** 组合层视图（entry config；宿主半区不注册 settings 命名空间——design D7）。 */
   const baseView = normalizeView(config);
   /** 动作按钮配置共享存储（`$DSH_HOME/dsh-v-cosmos.config.json`）。 */
@@ -436,6 +552,54 @@ export function apply(ctx, config, options = {}) {
   const readPaths = () => {
     const view = configStore.snapshot(baseView);
     return view?.value?.paths ?? { openspecPath: null, cosmosSpecDir: null };
+  };
+  /** 读取异常告警一次性闩（step4 D1：同一异常态只以 warn 告警一次，成功装载后清除）。 */
+  let readErrorWarned = false;
+  /**
+   * 读取状态（spec「令牌渲染」状态化警示 / step4 D1）：`"ok" | "unset" | "read-error"`。
+   * 状态源 = **配置存储装载结局**（design 勘误：`readPaths()` 链为纯内存同步读取、不抛错
+   * ——共享配置存储损坏在 store 内部消化；真实可观测的读取失败信号是装载结局）：
+   *  - `damaged`（正式文件与备份链均不可用、读取已降级到组合层）→ `"read-error"`，
+   *    并以 warn 级告警一次（成功装载清除闩，下次再损坏再告警一次）；
+   *  - 其余：`openspecPath` 空白 / 缺失 → `"unset"`，非空 → `"ok"`；
+   *  - 外层 try/catch 仅作防御兜底（意外异常归 `"read-error"`）。
+   * @returns {"ok"|"unset"|"read-error"}
+   */
+  const readPathsStatus = () => {
+    try {
+      if (configStore.loadOutcome() === "damaged") {
+        if (!readErrorWarned) {
+          readErrorWarned = true;
+          ctx.logger?.warn?.(
+            "[dsh-v-cosmos] 读取状态：共享配置存储装载失败（正式文件与备份链均不可用），路径令牌渲染降级为读取异常警示"
+          );
+        }
+        return "read-error";
+      }
+      readErrorWarned = false; // 成功装载清除闩（自然恢复；下次再损坏再告警一次）
+      const value = readPaths()?.openspecPath;
+      return typeof value === "string" && value.trim() !== "" ? "ok" : "unset";
+    } catch {
+      return "read-error";
+    }
+  };
+  /**
+   * 兜底反馈扫描根桥接（step4 D5 作用域桥接）：provider 实例闭包在
+   * `ctx.inject(['skills'], …)` 分支内，主作用域不可见 `providerHandle`——由该分支注册
+   * 时赋值、卸载（dispose 回调）时置 null；桥缺席（skills 服务未激活 / 已卸载）→
+   * `null`，反馈省略扫描根提示行而不阻断兜底主体。
+   * @type {null | (() => (string|null))}
+   */
+  let providerResolveRoot = null;
+  /** 桥接读取面：桥缺席 / 抛错 / 根不可解析 → null（反馈省略该行）。 */
+  const skillRootHintOf = () => {
+    if (typeof providerResolveRoot !== "function") return null;
+    try {
+      const root = providerResolveRoot();
+      return typeof root === "string" && root !== "" ? root : null;
+    } catch {
+      return null;
+    }
   };
   /* 尽早装载（provider list/get 与兜底监听先于主 effect 使用时也有值；幂等）。 */
   configStore.refresh();
@@ -492,6 +656,72 @@ export function apply(ctx, config, options = {}) {
       ctx.logger?.warn?.("[dsh-v-cosmos] 关联存储落盘失败: %s", String(error?.message || error));
     }
     broadcast({ type: "associations-changed" });
+  };
+
+  /**
+   * 点燃谱系台账持久化（add-cosmos-panel-birthline-sort 2.1）：独立 store 单 JSON 节，
+   * UTF-8 无 BOM、temp 写 + rename 原子替换（与关联/队列存储同族模式）。台账变化不单独
+   * 广播——谱系参与骨架下发，变化经 `skeletonFingerprint` 走既有 proposals-changed 链。
+   */
+  const persistBirthlines = () => {
+    try {
+      atomicWrite(birthlineStoragePath(), serializeBirthlineDoc(birthlineDoc, Date.now()));
+    } catch (error) {
+      ctx.logger?.warn?.("[dsh-v-cosmos] 谱系台账落盘失败: %s", String(error?.message || error));
+    }
+  };
+
+  /**
+   * 单工作区扫描差分观察（design D2/D3）：在同一帧的 pending / 活跃提案清单上登记
+   * sighting + 点燃配对，返回该工作区的谱系投影（供骨架挂 `lineages`）。读取/观察失败
+   * 一律按空清单兜底，SHALL NOT 中断骨架扫描。
+   * @param {string} workspacePath 工作区路径（台账命名空间键）
+   * @param {{stars?: Array<object>, pending?: Array<object>}} scanned 扫描产物
+   * @param {number} now 判定时刻
+   * @returns {Array<object>} 谱系行清单
+   */
+  const observeBirthlineFor = (workspacePath, scanned, now) => {
+    try {
+      const result = observeWorkspaceBirthlines(birthlineDoc, {
+        workspacePath,
+        pending: scanned?.pending,
+        activeSlugs: Array.isArray(scanned?.stars) ? scanned.stars.map((star) => star?.id) : [],
+        now
+      });
+      if (result.changed) {
+        birthlineDoc = result.doc;
+        birthlineDirty = true;
+      }
+      return lineagesOf(birthlineDoc, workspacePath);
+    } catch (error) {
+      ctx.logger?.warn?.("[dsh-v-cosmos] 谱系观察失败（按空谱系兜底）: %s", String(error?.message || error));
+      return [];
+    }
+  };
+
+  /**
+   * 骨架装配上下文（关联投影 + 谱系观察回调同拍注入）：所有 `buildSkeleton` 调用点共用，
+   * 避免「关联/谱系回填漏注入 → 下发旧数据」的旁路。
+   * @param {number} [now] 生成时刻
+   * @returns {object} buildSkeleton context
+   */
+  const skeletonContext = (now = Date.now()) => ({
+    now,
+    associations: projectionOf(entries),
+    lineagesOf: (workspacePath, scanned) => observeBirthlineFor(workspacePath, scanned, now)
+  });
+
+  /**
+   * 在册骨架重建（关联/谱系回填同拍；落盘一次）：调用方按需广播/返回。
+   * @param {number} [now]
+   * @returns {object} 新骨架
+   */
+  const rebuildSkeleton = (now = Date.now()) => {
+    birthlineDirty = false;
+    const next = buildSkeleton(listWorkspaces(), readers, skeletonContext(now));
+    if (birthlineDirty) persistBirthlines();
+    birthlineDirty = false;
+    return next;
   };
 
   /**
@@ -611,18 +841,63 @@ export function apply(ctx, config, options = {}) {
      纯投影（`queue-changed` 轻帧 → 客户端拉 `GET /queue` 对账）。
 
      执行通道 = 进程内 `sessionController` 直投（swap-cosmos-queue-native-executor：零配置、
-     零外部插件；链 create → selectModel → rename → prompt(mode=queue) 见 session-executor.mjs）。
+     零外部插件；链 create → selectModel → rename → **bindAssociation（显式关联绑定，
+     bind-queue-sessions-to-target）** → prompt(mode=queue) 见 session-executor.mjs）。
      完成判定信号面 = 宿主 agent 事件面（`agent/status` + 两道交互瀑布，prepend 观测）+ 重启
      冷读双源（活体 `ctx.agents.get(id).status` 优先 → 非活体 `sessionController.list()` 摘要）。 */
 
   /** 队列存储（`$DSH_HOME/storages/dsh-v-cosmos.queues.json`，原子写）。 */
   const queueStore = createQueueStore({ logger: ctx.logger ?? null });
 
+  /**
+   * 队列投递的显式关联绑定（bind-queue-sessions-to-target 2.1 / design D2–D5）：
+   * 进程内直调关联写入单点（不经 HTTP bind-session 端点——队列在服务端进程内，具备直调
+   * 条件），范围 = 工作区**路径**指纹 × 新会话 id，清单 = `[条目目标提案]`。写纪律与
+   * bind-session 端点同拍：**仅 `changed` 时**收尾（scanned 时重建在册骨架 → 持久化 →
+   * `associations-changed` 广播）；幂等重绑零抖动。全部失败静默降级（不抛穿投递链）：
+   * 工作区路径解析不到或写入异常只 warn 记录，该会话退回启发式推断——对齐动作条
+   * `bindExplicitAssociation` 的降级纪律，MUST NOT 影响条目成败判定。
+   *
+   * @param {{sessionId?: string, proposal?: string, workspaceId?: string}} [input]
+   *        workspaceId = 条目工作区 id（投递器透传；本函数据此解析工作区路径）
+   */
+  const bindQueuedSession = ({ sessionId, proposal, workspaceId } = {}) => {
+    try {
+      const id = typeof sessionId === "string" ? sessionId.trim() : "";
+      const name = typeof proposal === "string" ? proposal.trim() : "";
+      if (!id || !name) return;
+      const workspace = workspacePathOf(workspaceId);
+      if (!workspace) {
+        /* 解析不到视同绑定失败：静默跳过（不阻断投递），但保留可诊断的降级记录。 */
+        ctx.logger?.warn?.(
+          "[dsh-v-cosmos] 队列会话关联绑定跳过：工作区路径解析不到（%s）",
+          String(workspaceId ?? "")
+        );
+        return;
+      }
+      const result = applyBinding(entries, { workspace, sessionId: id, proposals: [name] });
+      entries = result.entries;
+      if (!result.changed) return;
+      /* 关联投影随骨架下发：已在册骨架需同拍重建（客户端收到 associations-changed 后
+         会重拉 /scene——不回填即返回旧边）。与 bind-session 端点逐字同拍。 */
+      if (scanned) {
+        skeleton = rebuildSkeleton();
+      }
+      persistAssociations();
+    } catch (error) {
+      ctx.logger?.warn?.(
+        "[dsh-v-cosmos] 队列会话关联绑定失败（不阻断投递）: %s",
+        String(error?.message || error)
+      );
+    }
+  };
+
   /** 投递器（失败显式返回原因；MUST NOT 回落前台 hero 通道）。 */
   const deliverQueuedEntry = createQueueDeliverer({
     sessionController: ctx.sessionController,
     agents: ctx.agents,
-    logger: ctx.logger ?? null
+    logger: ctx.logger ?? null,
+    bindAssociation: bindQueuedSession
   });
 
   /** 冷读器（重启对账：活体 status 优先 → list 摘要；waiting 恒 false）。 */
@@ -734,8 +1009,16 @@ export function apply(ctx, config, options = {}) {
     };
   };
 
-  /** 启发式执行（单工作区）：规则 1（归属+slug）优先、规则 2（birthtime 窗口）兜底。
+  /** 启发式执行（单工作区）：规则 1（归属+用户侧指派引用）优先、规则 2（birthtime 窗口）兜底。
       变更时落盘 + 广播 associations-changed；幂等条目不产生广播。
+
+      信号口径（restrict-association-heuristics / design D1–D5）：
+      - 规则 1 只从**用户侧消息**（`userContextTextOf`，事件 `type === "user/message"`）解析
+        `@<提案目录>` 指派引用（`assignmentProposalSlugs`）——正文提及与 assistant 回显不再
+        建立关联（「拿提到当在干」的语义错误由信号口径纠正）；
+      - 规则 2 的候选集合排除判定时刻**正在运行**的会话（数据源 = 调度器会话态缓存
+        `sessionStateOf`，与队列复验同源；null/不可达按非运行处理保留候选；等待决策的
+        会话 running=false 同样保留候选）。
 
       显式绑定压制（fix-cosmos-association-scope 2.2 / spec「显式会话关联绑定」）：
       以存储中 explicit 条目为**唯一依据**（无内存标志，重启由回读恢复）——规则 1 循环
@@ -747,20 +1030,27 @@ export function apply(ctx, config, options = {}) {
     const bound = explicitBoundSessionIds(entries, workspacePath);
     const heuristicActive = active.filter((session) => !bound.has(session.sessionId));
     const before = projectionOf(entries).length;
-    /* 规则 1：逐活跃会话的近期上下文 × 提案 slug（被绑定会话跳过）。 */
+    /* 规则 1：逐活跃会话的用户侧指派信号 × 提案目录（被绑定会话跳过）。 */
     for (const session of heuristicActive) {
-      const text = contextTextOf(session.agent);
-      if (!text) continue;
+      const assignmentSlugs = assignmentProposalSlugs(userContextTextOf(session.agent));
+      if (assignmentSlugs.length === 0) continue;
       const result = applyContextHeuristic({
         workspacePath,
         sessionId: session.sessionId,
         proposalNames,
-        contextText: text,
+        assignmentSlugs,
         entries,
         now
       });
       entries = result.entries;
       if (result.added.length > 0) changed = true;
+    }
+    /* 规则 2 的候选排除集合：判定时刻正在运行的会话（忙碌会话不可能是新目录的接生者）。
+       数据源 = 服务端可达会话态（调度器缓存；null/不可达 → 非运行，保留候选）。 */
+    const runningSessionIds = new Set();
+    for (const session of heuristicActive) {
+      const state = scheduler.sessionStateOf(session.sessionId);
+      if (state?.running === true) runningSessionIds.add(session.sessionId);
     }
     /* 规则 2：提案目录出现窗口 × 唯一活跃会话（已有关联的提案跳过；被绑定会话不参与
        唯一性判定——否则刚绑定的忙碌会话会误连后续新提案目录）。 */
@@ -776,6 +1066,7 @@ export function apply(ctx, config, options = {}) {
         proposal: { id: proposal.id, birthMs },
         detectedMs: birthMs ?? firstSeenMs.get(seenKey),
         activeSessions: heuristicActive.map((s) => ({ sessionId: s.sessionId, lastActivityMs: s.lastActivityMs })),
+        runningSessionIds,
         entries,
         now
       });
@@ -799,19 +1090,25 @@ export function apply(ctx, config, options = {}) {
     return true;
   };
 
-  /** 单工作区骨架指纹（增量比对键）：stars 含 lifecycle/setBy/at（add-celestial-states），pending 锚点一并入指纹。 */
-  const skeletonFingerprint = (ws) => JSON.stringify({ s: ws.stars, a: ws.archives, p: ws.pending, l: ws.links, assoc: ws.associations });
+  /** 单工作区骨架指纹（增量比对键）：stars 含 lifecycle/setBy/at（add-celestial-states），
+      pending 锚点一并入指纹；`lin` = 点燃谱系投影（add-cosmos-panel-birthline-sort 3.2：
+      谱系写入/时间线变化 MUST 触发增量广播，否则面板停留兜底块旧序）。 */
+  const skeletonFingerprint = (ws) => JSON.stringify({ s: ws.stars, a: ws.archives, p: ws.pending, lin: ws.lineages, l: ws.links, assoc: ws.associations });
 
   /**
    * 全量扫描（懒启动/请求期对账/watch 防抖共用入口）：
    * registry 清单 × 目录扫描 → 会话剪除 → 启发式 → 骨架装配（含关联边投影回填）。
    * 骨架变化 → proposals-changed；关联变化 → associations-changed（persist 内广播）。
+   * 点燃谱系（add-cosmos-panel-birthline-sort 2.2）：每帧扫描差分观察并入骨架装配，
+   * 台账变更落盘一次；谱系入指纹 → 变化走既有 proposals-changed 链。
    */
   const scanAll = ({ scope } = {}) => {
     const now = Date.now();
     const workspaces = listWorkspaces();
     const pruned = pruneAssociations();
-    let next = buildSkeleton(workspaces, readers, { now, associations: projectionOf(entries) });
+    const context = skeletonContext(now);
+    birthlineDirty = false;
+    let next = buildSkeleton(workspaces, readers, context);
     const entriesBefore = next.workspaces.reduce((n, ws) => n + ws.associations.length, 0);
     for (const ws of next.workspaces) {
       if (scope && !scope.has(ws.path)) continue;
@@ -821,8 +1118,10 @@ export function apply(ctx, config, options = {}) {
        重建廉价（目录再读一轮），以正确性优先。 */
     const entriesAfter = projectionOf(entries).length;
     if (pruned || entriesAfter !== entriesBefore) {
-      next = buildSkeleton(workspaces, readers, { now, associations: projectionOf(entries) });
+      next = buildSkeleton(workspaces, readers, { ...context, associations: projectionOf(entries) });
     }
+    if (birthlineDirty) persistBirthlines();
+    birthlineDirty = false;
     let skeletonChanged = pruned;
     const prevWsIds = new Set(skeleton.workspaces.map((ws) => ws.id));
     const nextWsIds = new Set();
@@ -937,12 +1236,15 @@ export function apply(ctx, config, options = {}) {
         const disposeRegistration = skillsCtx.skills.registerProvider((control) => {
           providerHandle = createCosmosSpecProvider({
             readPaths,
+            readPathsStatus,
             packageDir: providerDeps?.packageDir ?? PACKAGE_DIR,
             logger: ctx.logger ?? null,
             invalidate: () => control.invalidate(),
             deps: providerDeps
           });
           providerHandle.reconcileWatch(); // 注册期即挂载首监听（自持失效的载体）
+          /* 扫描根桥接（step4 D5）：主作用域兜底反馈经此读解析根（纯读，缺省省略提示行）。 */
+          providerResolveRoot = () => providerHandle?.resolveRoot() ?? null;
           canonicalHook = () => providerHandle.reconcileWatch({ invalidateIfChanged: true });
           configChangeHooks.add(canonicalHook);
           return providerHandle;
@@ -955,6 +1257,7 @@ export function apply(ctx, config, options = {}) {
           disposeRegistration();
           providerHandle?.dispose(); // 摘除 canonical fs.watch 句柄与防抖定时器
           providerHandle = null;
+          providerResolveRoot = null; // 桥随分支卸载（反馈退回省略扫描根行）
         };
       }, "dsh-v-cosmos: cosmos-spec skills provider");
       return disposeRegistrationEffect;
@@ -977,6 +1280,15 @@ export function apply(ctx, config, options = {}) {
     }
     entries = Array.isArray(doc?.entries) ? doc.entries : [];
     entries = normalizeAssociations(entries) ?? [];
+
+    /* 点燃谱系台账装载（add-cosmos-panel-birthline-sort 2.1）：独立 store 单 JSON 节；
+       文件缺席 / 损坏 / 超版本 → 空台账兜底重建（spec「台账文件损坏兜底重建」：
+       SHALL NOT 抛错、不中断骨架扫描；面板排序回落 birthMs 口径）。 */
+    try {
+      birthlineDoc = parseBirthlineDoc(readFileSync(birthlineStoragePath(), "utf8"), Date.now());
+    } catch {
+      birthlineDoc = emptyBirthlineDoc();
+    }
 
     /* ── 动作按钮配置共享存储（configstore.mjs） ──
        装载 + 幂等播种（组合层视图 = entry config；空视图 ⇒ 只写 revision/migratedFrom
@@ -1002,10 +1314,13 @@ export function apply(ctx, config, options = {}) {
       }
     });
 
-    /* ── 路径令牌读取兜底（step3-cosmos-skill-provider-render 3.1，tools/post-execute） ──
-       路径类入参工具（read/write/edit = file_path；str_replace_editor/glob/grep = path）
-       的结果为 isError 且入参以未解析令牌 OPENSPEC_PATH 开头（契约出现判定）→ block
-       纠正反馈（已配置：解析后绝对路径 + 重试指引；未配置：设置指引；原错误文本内嵌）。
+    /* ── 路径令牌读取兜底（step3 3.1 / step4 D3/D4/D5/D6，tools/post-execute） ──
+       拦截面覆盖两类工具形态（TOKEN_ARG_RULES）：路径类入参工具（read/write/edit =
+       file_path；str_replace_editor = path；glob/grep = path 或 pattern，均「开头整词」
+       判定）与命令类工具（bash/pwsh = command，`findTokenCommandPath` 全文扫描提取
+       第一个令牌开头的路径词）。结果为 isError 且命中 → block 纠正反馈（已配置：解析后
+       绝对路径 + 重试指引；未配置：设置指引；解析根可解析时两分支均附「cosmos-spec
+       技能目录扫描根」提示行；原错误文本内嵌）。glob/grep 零命中非 error 恒透传。
        其余调用恒 next() 透传（practices.md「不拥有决策必须 next()」纪律）。同步字符串
        判断（无异步 IO），观察 exec.signal；监听是提示词级纠偏——MUST NOT 静默改写调用
        或重试。全局层对所有 agent 生效：未命中路径零产出（design 风险表权衡）。 */
@@ -1015,15 +1330,14 @@ export function apply(ctx, config, options = {}) {
         try {
           if (!result?.isError) return next();
           if (exec?.signal?.aborted) return next(); // 观察 exec.signal：已中止交还瀑布
-          const argKey = TOKEN_PATH_ARG_KEYS.get(exec?.name);
-          if (!argKey) return next();
-          const rawPath = exec?.arguments?.[argKey];
-          if (typeof rawPath !== "string" || !isTokenOccurrenceAt(rawPath, 0)) return next();
-          const resolved = resolveTokenPath(rawPath, readPaths().openspecPath);
+          const tokenPath = tokenPathOf(exec?.name, exec?.arguments);
+          if (!tokenPath) return next();
+          const resolved = resolveTokenPath(tokenPath, readPaths().openspecPath);
           const feedback = composeTokenFeedback({
-            rawPath,
+            rawPath: tokenPath,
             resolved,
-            originalError: result?.error?.message ?? ""
+            originalError: result?.error?.message ?? "",
+            skillRootHint: skillRootHintOf()
           });
           return { kind: "block", feedback: [{ type: "text", text: feedback }] };
         } catch {
@@ -1081,7 +1395,7 @@ export function apply(ctx, config, options = {}) {
                 /* 会话归档不产生 fs.watch 事件 → 剪除挂在每次拉取（时序一收敛入口）；
                    剪动才重建骨架切片并广播。 */
                 if (pruneAssociations()) {
-                  skeleton = buildSkeleton(listWorkspaces(), readers, { now: Date.now(), associations: projectionOf(entries) });
+                  skeleton = rebuildSkeleton();
                   broadcast({ type: "proposals-changed" });
                 }
               }
@@ -1233,11 +1547,30 @@ export function apply(ctx, config, options = {}) {
               /* 关联投影随骨架下发：已在册骨架需同拍重建（客户端收到
                  associations-changed 后会重拉 /scene——不回填即返回旧边）。 */
               if (scanned) {
-                skeleton = buildSkeleton(listWorkspaces(), readers, { now: Date.now(), associations: projectionOf(entries) });
+                skeleton = rebuildSkeleton();
               }
               persistAssociations();
             }
             json(res, 200, { ok: true, bound: request.proposals });
+            return;
+          }
+
+          /* ── 渲染服务端点（step5-cosmos-path-render-convergence 2.1 / spec「渲染服务端点」） ──
+             外部技能加载机制（dsh-v-skill-links 等）注入前把待注入正文**整段**提交 →
+             端点按契约「路径令牌契约」语义渲染后整段返回（`content` + 四枚状态键）。
+             渲染复用 provider `get()` 同一核心与同一配置读取面（`readPaths` /
+             `readPathsStatus` → 状态化警示）——**不经过 providerHandle**：skills 服务
+             缺席时端点仍可用（渲染只依赖配置面，这正是外部加载器需要的独立性）。
+             零配置、零持久化、不触碰 openspec 工件：渲染只作用于响应；配置每次实时读取
+             （热生效）。请求净房：缺 text / 非字符串 → 400，不产生任何副作用。 */
+          if (route === "/render-skill-text" && req.method === "POST") {
+            const body = await readJsonBody(req);
+            if (typeof body?.text !== "string") {
+              json(res, 400, { error: "invalid", reason: "缺少 text（必须是字符串）" });
+              return;
+            }
+            const report = renderSkillTextReport(body.text, () => readPaths().openspecPath, readPathsStatus());
+            json(res, 200, report);
             return;
           }
 

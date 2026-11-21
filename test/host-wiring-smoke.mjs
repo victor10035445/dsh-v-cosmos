@@ -4,10 +4,10 @@
  * 运行：node test/host-wiring-smoke.mjs（含 ~3s 防抖等待）
  */
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { apply, storagePath, configStoragePath, contextTextOf, lastActivityMsOf, idSetFingerprint } from "../src/index.mjs";
+import { apply, storagePath, birthlineStoragePath, configStoragePath, contextTextOf, userContextTextOf, lastActivityMsOf, idSetFingerprint } from "../src/index.mjs";
 
 /* ── 注册指纹纯函数（add-cosmos-add-workspace D3/1.1）：排序 join、集合等价 ── */
 assert.equal(idSetFingerprint(["b", "a"]), idSetFingerprint(["a", "b"]), "指纹顺序无关（集合等价）");
@@ -30,9 +30,21 @@ try {
 
   /* ── stub ctx（webServer 捕获 handler；registry/agents 供给镜像） ── */
   const SESSION_ID = "sess-1";
+  /* 事件形状对齐宿主 dsh-session（2026-11-20 安装版）：`user/message` 的 `data`
+     即消息本体（无 `.message` 包装，文本块在 `data.content`），assistant 侧才带
+     `data.message`；`@提案目录` 引用是规则 1 的指派信号（正文提及不建立关联）。 */
   const events = [
-    { type: "user/message", at: 1700000000000, data: { message: { content: [{ type: "text", text: "帮我实现 add-demo 的骨架路由" }] } } },
-    { type: "assistant/message", at: 1700000000500, data: { message: { content: [{ type: "text", text: "好的，开始 add-demo。" }] } } }
+    {
+      type: "user/message",
+      time: 1700000000000,
+      data: {
+        id: "u1",
+        role: "user",
+        source: { kind: "user" },
+        content: [{ type: "text", text: "帮我实现 @" + join(wsRoot, "openspec", "changes", "add-demo") + " 的骨架路由" }]
+      }
+    },
+    { type: "assistant/message", time: 1700000000500, data: { message: { content: [{ type: "text", text: "好的，开始 add-demo。" }] } } }
   ];
   let archived = new Set();
   /** 可变工作区清单（注册/注销对账测试需要运行时增删行）。 */
@@ -75,9 +87,11 @@ try {
   };
   let capturedHandler = null;
 
-  /* ── 纯函数补充覆盖（contextTextOf / lastActivityMsOf） ── */
+  /* ── 纯函数补充覆盖（contextTextOf / userContextTextOf / lastActivityMsOf） ── */
   const agent = ctx.agents.get(SESSION_ID);
-  assert.ok(contextTextOf(agent).includes("add-demo"), "近期上下文文本含 slug");
+  assert.ok(contextTextOf(agent).includes("add-demo"), "assistant 侧上下文文本含 slug（既有读取面保留）");
+  assert.ok(userContextTextOf(agent).includes("add-demo"), "用户侧文本通道命中 @提案目录 引用");
+  assert.ok(!userContextTextOf(agent).includes("好的，开始"), "用户侧通道不含 assistant 回显（事件类型口径）");
   assert.equal(lastActivityMsOf(agent, 0), 1700000000500, "末事件时间戳");
 
   /* ── apply → 首次 GET /scene（懒扫描 + 启发式） ── */
@@ -108,7 +122,7 @@ try {
   assert.equal(stored.version, 1);
   assert.ok(
     stored.entries.some((e) => e.workspace === wsRoot && e.proposal === "add-demo" && e.sessionId === SESSION_ID && e.origin === "heuristic"),
-    "规则 1：上下文 slug → 关联落盘（origin: heuristic）"
+    "规则 1：用户侧 @提案目录指派引用 → 关联落盘（origin: heuristic）"
   );
 
   /* /scene 骨架形状：恒星/生命周期/关联边 */
@@ -211,6 +225,83 @@ try {
     assert.ok(
       dataFrameCount() > framesBeforeRegroup,
       "pending 条目整体序列化入 skeletonFingerprint → sessionId 值增改触发增量广播（不依赖客户端轮询）"
+    );
+  }
+
+  /* ── 点燃谱系台账宿主接线（add-cosmos-panel-birthline-sort 2.1–2.3）：锚点在册 →
+        sighting 落盘；同名提案目录出现且锚点删除 → 点燃配对写台账行并随骨架下发
+        `lineages`；dismiss（仅删锚点、无同名目录）不误记。 ── */
+  {
+    const changesRoot = join(wsRoot, "openspec", "changes");
+    const pendingDir = join(wsRoot, "openspec", "pending-changes");
+    const IGNITE_AT = 1700000001000;
+    const igniteAnchor = join(pendingDir, "ignite-one.json");
+    writeFileSync(
+      igniteAnchor,
+      JSON.stringify({ name: "ignite-one", by: "cosmos-explore", at: IGNITE_AT, sessionId: "sess-ignite" }),
+      "utf8"
+    );
+    await sleep(3000); // 防抖窗口（watcher 重扫；未触发则由下方 GET 兜底）
+    const anchorRes = captureJson();
+    await capturedHandler({ method: "GET", url: "/api/dsh-v-cosmos/scene" }, anchorRes.res);
+    await drain();
+    const anchorWs = anchorRes.body.scene.workspaces.find((w) => w.id === "ws1");
+    assert.ok(anchorWs.pending.some((p) => p.name === "ignite-one"), "锚点在册（sighting 登记来源）");
+    assert.deepEqual(anchorWs.lineages, [], "锚点在册帧不写台账行（仅登记 sighting）");
+    const sightingStore = JSON.parse(readFileSync(birthlineStoragePath(), "utf8"));
+    assert.ok(
+      (sightingStore.workspaces?.[wsRoot]?.sightings ?? []).some(
+        (row) => row.slug === "ignite-one" && row.at === IGNITE_AT && row.sessionId === "sess-ignite"
+      ),
+      "sighting 落盘插件自有 store（工作区零写入；跨重启保配对能力）"
+    );
+
+    const framesBeforeIgnite = dataFrameCount();
+    /* ff / cosmos-ff-change 的点燃两转变：先建提案目录，再删锚点（跨帧到达）→ sighting 兜住。 */
+    mkdirSync(join(changesRoot, "ignite-one"), { recursive: true });
+    writeFileSync(join(changesRoot, "ignite-one", "tasks.md"), "- [ ] one", "utf8");
+    unlinkSync(igniteAnchor);
+    await sleep(3000);
+    const litRes = captureJson();
+    await capturedHandler({ method: "GET", url: "/api/dsh-v-cosmos/scene" }, litRes.res);
+    await drain();
+    const litWs = litRes.body.scene.workspaces.find((w) => w.id === "ws1");
+    const lineage = litWs.lineages.find((row) => row.slug === "ignite-one");
+    assert.ok(lineage, "同名提案目录出现 + 锚点删除 → 扫描差分点燃配对写台账行");
+    assert.equal(lineage.embryoAt, IGNITE_AT, "台账 embryoAt = 锚点 at（点燃后谱系不失传）");
+    assert.equal(lineage.embryoSessionId, "sess-ignite", "台账 embryoSessionId = 锚点 sessionId");
+    assert.ok(lineage.ignitedMs > 0, "ignitedMs = 配对时刻");
+    assert.ok(dataFrameCount() > framesBeforeIgnite, "lineages 入骨架指纹 → proposals-changed 增量广播（面板即时归块）");
+    const litStore = JSON.parse(readFileSync(birthlineStoragePath(), "utf8"));
+    assert.ok(
+      (litStore.workspaces?.[wsRoot]?.lineages ?? []).some((row) => row.slug === "ignite-one"),
+      "台账行落盘（跨重启可回查，不与关联/队列存储互相覆盖）"
+    );
+    assert.equal(
+      (litStore.workspaces?.[wsRoot]?.sightings ?? []).some((row) => row.slug === "ignite-one"),
+      false,
+      "配对后 sighting 被消费（同一 sighting 只配一次）"
+    );
+
+    /* dismiss 不误记：仅删锚点（无同名提案目录）→ 台账无行。 */
+    const dismissAnchor = join(pendingDir, "dismiss-one.json");
+    writeFileSync(
+      dismissAnchor,
+      JSON.stringify({ name: "dismiss-one", by: "cosmos-explore", at: IGNITE_AT + 1 }),
+      "utf8"
+    );
+    await sleep(3000);
+    await capturedHandler({ method: "GET", url: "/api/dsh-v-cosmos/scene" }, stubRes([]));
+    unlinkSync(dismissAnchor);
+    await sleep(3000);
+    const dismissRes = captureJson();
+    await capturedHandler({ method: "GET", url: "/api/dsh-v-cosmos/scene" }, dismissRes.res);
+    await drain();
+    const dismissWs = dismissRes.body.scene.workspaces.find((w) => w.id === "ws1");
+    assert.equal(
+      dismissWs.lineages.some((row) => row.slug === "dismiss-one"),
+      false,
+      "dismiss（锚点消失、无同名提案）→ 台账不误记"
     );
   }
 

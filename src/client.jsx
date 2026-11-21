@@ -68,7 +68,10 @@ import {
   findDockTabOf,
   pageCloseActionOf
 } from "./dock.mjs";
-import { mergeScene, sceneDiffLevel, planetStateOf, relativeTime, matchWorkspaces, filteredPositions, findRegisteredWorkspace, normalizeWorkspacePath, isWindowsPlatform } from "./merge.mjs";
+import { mergeScene, sceneDiffLevel, planetStateOf, relativeTime, matchWorkspaces, filteredPositions, findRegisteredWorkspace, normalizeWorkspacePath, isWindowsPlatform, setTemplateOverrides, templateForFigure } from "./merge.mjs";
+/* 模板指定覆盖（add-cosmos-template-reassign）：存储/净化/重掷/选择器数据面/storage 投影
+   全部收敛在 template-assign.mjs（纯逻辑、可冒烟直测）；本文件只做 UI 与控制器接线。 */
+import { loadTemplateOverrides, randomTemplateIdOf, saveTemplateOverrides, templateOverridesFromStorageEvent, templatePickerRowsOf } from "./template-assign.mjs";
 import { createSkinD, SKIN_D_PALETTE } from "./cosmos/skin-d.mjs";
 import { COSMOS_DEFAULT_SKIN, COSMOS_SKIN_IDS, COSMOS_SKINS, applySkinTokens, createSkin, skinCardOf } from "./cosmos/skin-registry.mjs";
 import { createCosmosEngine, ENGINE_CSS, FX_PRIORITY, isEditableTarget, isUiChromeTarget, resolveBlastCoreOf, zoomMeterTrackOf, zoomRulerMotionOf, ZOOM_RULER_TICK, ZOOM_RULER_DIST_MIN, ZOOM_RULER_DIST_MAX, ZOOM_RULER_EASE_MS } from "./cosmos/engine.mjs";
@@ -184,6 +187,14 @@ const cosmosDockStore = createSnapshotStore({ available: false, active: false, s
  * 回落（仅持久化 + 本 store，下次开页构造读持久值）；`storage` 事件桥同步他窗写入。
  */
 const cosmosTemplateNamesStore = createSnapshotStore({ templateNames: loadCosmosSettings().templateNames });
+/**
+ * 图样连线亮度（add-cosmos-figure-line-alpha 3.1/D2）：模块级受控镜像——「通用」页签
+ * 滑杆 face 的受控读面（与 `cosmosTemplateNamesStore` 同构）。唯一写者 =
+ * `savePatLineDim`（整页存活时：净房持久化 + 引擎 `setTuning` 因子热更 + 本 store）与
+ * `patLineDimFace.set` 的整页缺席回落（仅持久化 + 本 store，下次开页构造读持久值）；
+ * `storage` 事件桥同步他窗写入。
+ */
+const cosmosPatLineDimStore = createSnapshotStore({ patLineDim: loadCosmosSettings().patLineDim });
 
 /**
  * 启动方式写入（唯一写者链路）：「配置-Cosmos·通用」face.set → 净房持久化 → 受控镜像。
@@ -586,6 +597,10 @@ function createCosmosController(ctx, notifyToast, channels) {
   let skeleton = null;
   let mergedScene = null;
   let engine = null;
+  /* 模板指定覆盖装载（add-cosmos-template-reassign 3.4/D6）：控制器构造即把持久覆盖表
+     净房后注入 merge 模块态——首次装配（含页未打开时的首帧）就按用户指定命中，MUST NOT
+     先哈希后补丁（避免首帧图样闪跳）。storage 跨窗桥在此之后重新注入。 */
+  setTemplateOverrides(loadTemplateOverrides());
   /* 宿主当前会话跟随器（add-cosmos-host-session-follow）：disposers 就绪后创建；
      镜像/哨兵/订阅随控制器（页开合无关），页关闭时引擎缺席仅记哨兵。 */
   let hostFollow = null;
@@ -1096,14 +1111,14 @@ function createCosmosController(ctx, notifyToast, channels) {
      */
     saveTuning(patch) {
       const merged = saveCosmosSettings(patch);
-      engine?.setTuning(merged);
+      engine?.setTuning(tuningPatchOf(merged));
       cosmosNavStore.set(navPrefsOf(merged));
       return merged;
     },
     /** 缩放导航设置写入（「导航」页签 face.set 的唯一落点）：与 saveTuning 同链路。 */
     saveNav(patch) {
       const merged = saveCosmosSettings(patch);
-      engine?.setTuning(merged);
+      engine?.setTuning(tuningPatchOf(merged));
       cosmosNavStore.set(navPrefsOf(merged));
       return merged;
     },
@@ -1117,8 +1132,23 @@ function createCosmosController(ctx, notifyToast, channels) {
      */
     saveTemplateNames(enabled) {
       const merged = saveCosmosSettings({ templateNames: enabled === true });
-      engine?.setTuning(merged);
+      engine?.setTuning(tuningPatchOf(merged));
       cosmosTemplateNamesStore.set({ templateNames: merged.templateNames });
+      return merged;
+    },
+    /**
+     * 图样连线亮度写入（add-cosmos-figure-line-alpha 3.1/D2；「通用」页签滑杆 face 的
+     * 整页存活落点）：轻量即时偏好——净房持久化（clampTo 取整/夹界）→ 已打开整页
+     * `engine.setTuning` 热更（**因子**入参 = 净房百分比 / 100，引擎侧独立夹取 [0.05, 1]）
+     * → 受控镜像同步（滑杆回显）。整页未开仅持久化（face 落点兜底）；值恒等时幂等
+     * （引擎侧值变才写镜像），无回环。
+     * @param {unknown} value 目标百分比（非法形态由净房回落缺省 50；越界落 [5, 100] 端点）
+     * @returns {object} 净房后的完整设置
+     */
+    savePatLineDim(value) {
+      const merged = saveCosmosSettings({ patLineDim: value });
+      engine?.setTuning({ patLineDim: merged.patLineDim / 100 });
+      cosmosPatLineDimStore.set({ patLineDim: merged.patLineDim });
       return merged;
     },
     /**
@@ -1183,6 +1213,36 @@ function createCosmosController(ctx, notifyToast, channels) {
     getFilterState() {
       const view = filterViewOf();
       return { query: filterQuery, matched: view.text ? view.count : view.total, total: view.total, active: view.text !== "" };
+    },
+    /**
+     * 模板指定写入（add-cosmos-template-reassign 3.2/3.3/3.4，唯一写链路）：
+     * `saveTemplateOverrides`（净房 + localStorage 落盘）→ `setTemplateOverrides`（merge 模块态
+     * 重新注入）→ 场景差分重装配（图样/名称/位置分流由 merge 承接）。
+     *  - `templateId` 字符串 = 指定；`null` / 空 = **恢复默认**（删除该星座覆盖条目）；
+     *  - 写盘失败（隐私模式）仍注入本次会话值（save 返回净房结果）；
+     *  - 目标与当前 figure 命中相同 → 场景数据恒等 → 差分判 none、无重建跳变。
+     * @param {string} wsId 工作区 id
+     * @param {string|null} templateId 目标模板 id（null = 恢复默认）
+     * @returns {Record<string, string>} 净房后的覆盖表
+     */
+    assignTemplate(wsId, templateId) {
+      if (typeof wsId !== "string" || !wsId) return loadTemplateOverrides();
+      const patch = { [wsId]: typeof templateId === "string" && templateId ? templateId : null };
+      const next = saveTemplateOverrides(patch);
+      setTemplateOverrides(next);
+      scheduleRebuild();
+      return next;
+    },
+    /**
+     * 覆盖表重新注入（add-cosmos-template-reassign 3.4/D6）：`storage` 跨窗桥 / 外部同步的
+     * 单点入口——净房后注入 merge 模块态并重装配（图样/名称随既有差分自动更新，位置不动）。
+     * @param {unknown} map 覆盖表（null / 非对象 → 清空）
+     * @returns {Record<string, string>} 净房后的覆盖表
+     */
+    applyTemplateOverrides(map) {
+      const next = setTemplateOverrides(map);
+      scheduleRebuild();
+      return next;
     }
   };
 
@@ -1596,7 +1656,7 @@ function createCosmosController(ctx, notifyToast, channels) {
            导航 store（该键无设置页控件，对照 sessionPanelOpen 先例）。 */
         onDragPanToggle: (enabled) => {
           const merged = saveCosmosSettings({ dragPan: enabled === true });
-          engine?.setTuning(merged);
+          engine?.setTuning(tuningPatchOf(merged));
           return merged;
         },
         /* 浮窗打开态探针（add-cosmos-shortcuts 4.2/D13）：浮窗 armed 即 true——
@@ -1821,6 +1881,7 @@ function ProgressRing({ progress }) {
 function ProposalPanel({ t, model, selectedKey, onSelect, drill, constButtons, onRunConst, closeKey, crossHover, onHoverCard }) {
   if (!model || !model.visible) return null;
   const drilled = drill !== null && drill !== undefined;
+  /* footer 门控（add-cosmos-template-reassign 返工）：模板动作已移出，只按用户星座按钮非空挂载。 */
   const showConstActions = drilled && Array.isArray(constButtons) && constButtons.length > 0;
   return (
     <aside
@@ -2409,9 +2470,15 @@ function QueuePanel({ t, model, drilled, crossHover, onPause, onClear, onReorder
  * 与底部动作条的**刻意差异**：不依赖提案选中态（`disabled` 恒无）；仅钻取态挂载
  * （银河态无唯一当前星座 = 无动作目标）。按钮 key 稳定（内容差分守卫：覆盖层刷新
  * 不逐帧重建按钮 DOM）。
+ *
+ * 模板动作（「指定模板」「随机重掷」）自 add-cosmos-template-reassign 返工起**移出本动作条**，
+ * 改由引擎 `.cos-wsbar-tools` 槽位承载（client React portal，见 CosmosSurface）；本组件只渲染
+ * 用户配置的星座按钮。
+ * @param {{t: Function, buttons?: Array<object>, onRun: Function}} props
  */
 function ConstActionBar({ t, buttons, onRun }) {
-  if (!Array.isArray(buttons) || buttons.length === 0) return null;
+  const list = Array.isArray(buttons) ? buttons : [];
+  if (list.length === 0) return null;
   return (
     <div
       className="dsh-cosmos-const-actions"
@@ -2419,7 +2486,7 @@ function ConstActionBar({ t, buttons, onRun }) {
       role="group"
       aria-label={t("cosmos.constActions.aria", "星座动作")}
     >
-      {buttons.map((button, index) => (
+      {list.map((button, index) => (
         <button
           type="button"
           key={button.name + "-" + index}
@@ -2432,6 +2499,133 @@ function ConstActionBar({ t, buttons, onRun }) {
         </button>
       ))}
     </div>
+  );
+}
+
+/* 顶部模板工具图标（add-cosmos-template-reassign 返工 D8）：icon-only 方形按钮——
+   「指定模板」= 铅笔编辑；「随机重掷」= 骰子。取色 currentColor（皮肤令牌族自动跟随）。 */
+const WS_EDIT_ICON_SVG =
+  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20h4L19 9l-4-4L4 16v4z"/><path d="M13.5 6.5l4 4"/></svg>';
+const WS_DICE_ICON_SVG =
+  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="3"/><circle cx="8.6" cy="8.6" r="1.25" fill="currentColor" stroke="none"/><circle cx="15.4" cy="8.6" r="1.25" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.25" fill="currentColor" stroke="none"/><circle cx="8.6" cy="15.4" r="1.25" fill="currentColor" stroke="none"/><circle cx="15.4" cy="15.4" r="1.25" fill="currentColor" stroke="none"/></svg>';
+
+/* ------------------------------------------------------------------ *
+ * 星座模板指定选择器（add-cosmos-template-reassign 3.2/D5）
+ * ------------------------------------------------------------------ */
+
+/**
+ * 模板选择器浮层（整页内 portal 模态；与星座浮窗同款 body 挂载，z 序低于 toast/浮窗）。
+ *
+ * 数据面 = `templatePickerRowsOf(query)`（88 模板 / 中英文名子串过滤 / 大小写不敏感，
+ * 纯函数在 template-assign.mjs，冒烟直测）；模板模块不可用 → 空列表 → 空态文案。
+ * 交互纪律（D5）：
+ *  - 列表顶部「恢复默认（星图分布）」= 删除该星座覆盖条目（回落哈希缺省）；
+ *  - 每行中文名主行 + 拉丁 id 副行，当前 figure 命中行高亮（`data-current` / `aria-selected`）；
+ *  - 选中即回调 → 页面层写盘即生效（无暂存钮）；重掷不经过本面板；
+ *  - 关闭：关闭键（canonical，捕获相位先行消费——MUST NOT 冒泡到关页/退银河分层）、
+ *    背景点击、右上角关闭钮三通道；
+ *  - hint 明示位置与图样解耦：「星座位置由星图分布决定，不随模板变化」。
+ * @param {{t: Function, wsName?: string, currentId?: string|null, query?: string,
+ *          onQuery: Function, onPick: Function, onReset: Function, onClose: Function}} props
+ */
+function TemplatePicker({ t, wsName, currentId, query, onQuery, onPick, onReset, onClose }) {
+  const rows = templatePickerRowsOf(query);
+  const current = typeof currentId === "string" ? currentId : "";
+  useEffect(() => {
+    const onKey = (event) => {
+      /* 关闭键参数化（与外壳分层同源；捕获相位先于页面 keydown 气泡监听）：
+         IME 组字中让位输入法。 */
+      if (event.isComposing === true || event.keyCode === 229) return;
+      if (!shortcutMatches(event, currentShortcuts().closePage)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      onClose();
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [onClose]);
+
+  return createPortal(
+    <div
+      className="dsh-cosmos-tpl-picker"
+      data-cosmos-template-picker="true"
+      role="dialog"
+      aria-modal="true"
+      aria-label={t("cosmos.tplPicker.title", "指定星座模板")}
+      /* 模态事件隔离（React 事件沿组件树冒泡，穿透 portal 到整页根）：点击/起指在
+         选择器内 MUST NOT 触达整页「点击其他区域取消选中」处理器 */
+      onPointerDown={(event) => event.stopPropagation()}
+      onClick={(event) => event.stopPropagation()}
+    >
+      <div className="dsh-cosmos-tpl-picker-backdrop" onClick={onClose} />
+      <div className="dsh-cosmos-tpl-picker-card" onClick={(event) => event.stopPropagation()}>
+        <div className="dsh-cosmos-tpl-picker-head">
+          <span className="dsh-cosmos-tpl-picker-title">{t("cosmos.tplPicker.title", "指定星座模板")}</span>
+          {wsName ? <span className="dsh-cosmos-tpl-picker-target" title={wsName}>{wsName}</span> : null}
+          <button
+            type="button"
+            className="dsh-cosmos-tpl-picker-close"
+            aria-label={t("cosmos.tplPicker.close", "关闭")}
+            title={t("cosmos.tplPicker.close", "关闭")}
+            onClick={onClose}
+          >
+            ×
+          </button>
+        </div>
+        <input
+          type="text"
+          className="dsh-cosmos-tpl-picker-search"
+          value={typeof query === "string" ? query : ""}
+          spellCheck={false}
+          autoComplete="off"
+          autoFocus
+          placeholder={t("cosmos.tplPicker.searchPlaceholder", "搜索模板（中文名 / 英文名）")}
+          aria-label={t("cosmos.tplPicker.searchAria", "搜索模板")}
+          onChange={(event) => onQuery?.(event.target.value)}
+        />
+        <div className="dsh-cosmos-tpl-picker-hint">
+          {t("cosmos.tplPicker.hint", "星座位置由星图分布决定，不随模板变化")}
+        </div>
+        <div className="dsh-cosmos-tpl-picker-list" role="listbox" aria-label={t("cosmos.tplPicker.listAria", "模板列表")}>
+          <button
+            type="button"
+            className="dsh-cosmos-tpl-picker-reset"
+            data-cosmos-template-reset="true"
+            title={t("cosmos.tplPicker.resetHint", "清除该星座的模板指定，回落星图分布（哈希分配）")}
+            onClick={onReset}
+          >
+            {t("cosmos.tplPicker.reset", "恢复默认（星图分布）")}
+          </button>
+          {rows.length === 0 ? (
+            <div className="dsh-cosmos-tpl-picker-empty" role="status">
+              {t("cosmos.tplPicker.empty", "无匹配模板")}
+            </div>
+          ) : (
+            rows.map((template) => {
+              const id = String(template.id);
+              const isCurrent = id === current;
+              return (
+                <button
+                  type="button"
+                  key={id}
+                  role="option"
+                  aria-selected={isCurrent}
+                  className="dsh-cosmos-tpl-picker-row"
+                  data-cosmos-template-row={id}
+                  data-current={isCurrent ? "true" : undefined}
+                  title={typeof template.name === "string" ? template.name : id}
+                  onClick={() => onPick(id)}
+                >
+                  <span className="dsh-cosmos-tpl-picker-zh">{template.zh}</span>
+                  <span className="dsh-cosmos-tpl-picker-id">{id}</span>
+                </button>
+              );
+            })
+          )}
+        </div>
+      </div>
+    </div>,
+    document.body
   );
 }
 
@@ -3824,14 +4018,23 @@ function currentSkinId() {
 
 /**
  * 缩放导航 + 界面尺寸偏好投影（add-cosmos-zoom-focus-nav 3.2；add-cosmos-layout-tuning
- * 2.1 扩尺寸 12 键）：模块级 store——设置页「界面」页签的受控镜像；写入唯一链路 =
+ * 2.1 扩尺寸 13 键）：模块级 store——设置页「界面」页签的受控镜像；写入唯一链路 =
  * 控制器 `saveNav`（saveCosmosSettings → engine.setTuning → 本 store），冷启动值取持久化
  * 偏好（净房已钳制）。与皮肤 store 同构（设置页不依赖整页）；整页根容器订阅本 store
  * 把尺寸投影成 CSS 变量（`cosmosLayoutTokensOf`）→ 改动即时生效。
  */
 const cosmosNavStore = createSnapshotStore(navPrefsOf(loadCosmosSettings()));
 
-/** 完整设置 → 「界面」页签载荷投影（指针聚焦 + 界面尺寸 12 键；最小形）。
+/** 完整设置 → 引擎 `setTuning` 入参（add-cosmos-figure-line-alpha D2）：设置面把图样连线
+    亮度存为百分比整数（`patLineDim` ∈ [5, 100]），引擎消费**因子**（0.05–1）——本函数是
+    两者之间唯一换算点；其余键原样透传（`setTuning` 部分写语义逐键守卫，未知键忽略）。
+    MUST 用于一切以「净房完整设置」为底的 setTuning 调用——直接传 merged 会把 50 当因子
+    夹成 1（真机回归坑）。 */
+function tuningPatchOf(settings) {
+  return { ...settings, patLineDim: settings.patLineDim / 100 };
+}
+
+/** 完整设置 → 「界面」页签载荷投影（指针聚焦 + 界面尺寸 13 键；最小形）。
     缩放进入/返回阈值两键已退场（add-cosmos-zoom-ruler 3.1/D7）：阈值收敛为引擎常量，
     由顶部缩放标尺呈现，设置页不再有对应控件/镜像字段。 */
 function navPrefsOf(settings) {
@@ -3849,7 +4052,9 @@ function navPrefsOf(settings) {
     constActionHeight: settings.constActionHeight,
     searchWidth: settings.searchWidth,
     searchHeight: settings.searchHeight,
-    wsTitleSize: settings.wsTitleSize
+    wsTitleSize: settings.wsTitleSize,
+    /* 顶部模板工具高度（add-cosmos-template-reassign 返工 D8）：与 hudBtnSize 分离。 */
+    wsToolSize: settings.wsToolSize
   };
 }
 
@@ -4138,11 +4343,14 @@ const COSMOS_CHROME_RECTS = [
   [".cos-home-btn", "home"],
   [".cos-dragpan-btn", "dragpan"],
   ['.cos-wsbar-side[data-side="left"]', "wsbar-left"],
-  ['.cos-wsbar-side[data-side="right"]', "wsbar-right"]
+  ['.cos-wsbar-side[data-side="right"]', "wsbar-right"],
+  ['.cos-wsbar-tools[data-side="left"]', "wsbar-tool-left"],
+  ['.cos-wsbar-tools[data-side="right"]', "wsbar-tool-right"],
+  [".cos-badge-cluster", "wstools"]
 ];
 /* 只在钻取态呈现的类别（银河态槽位仍有布局盒但视觉不可见）：未呈现期 MUST NOT 参与
    判定——否则顶部中央会凭空多出一条隐形阻挡带（chip 点不动）。 */
-const COSMOS_CHROME_DRILL_ONLY = new Set(["wsbar-left", "wsbar-right"]);
+const COSMOS_CHROME_DRILL_ONLY = new Set(["wsbar-left", "wsbar-right", "wsbar-tool-left", "wsbar-tool-right", "wstools"]);
 
 /* 顶部缩放标尺 tick 的轨道位置（%，add-cosmos-zoom-ruler 2.1/D6）：与引擎
    `zoomMeterTrackOf` 同源单次计算——窗口 resize 不改变对数刻度，无需重算。 */
@@ -4195,6 +4403,10 @@ function CosmosSurface(props) {
   /* 新增工作区 busy 态（add-cosmos-add-workspace 4.1/4.4）：pick → create 全程按钮
      disabled；服务侧另有控制器 busy 门（双保险，UI 状态滞后也不重入）。 */
   const [adding, setAdding] = useState(false);
+  /* 模板选择器开合态 + 搜索查询（add-cosmos-template-reassign 3.2/D5）：**会话态**——
+     不开页持久化（与搜索查询同纪律）；钻取目标切换/退出时自动关闭（见下方 effect）。 */
+  const [templatePickerOpen, setTemplatePickerOpen] = useState(false);
+  const [templateQuery, setTemplateQuery] = useState("");
   const addWorkspace = async () => {
     if (adding) return;
     setAdding(true);
@@ -4434,6 +4646,93 @@ function CosmosSurface(props) {
     if (!group) return null;
     return { wsId: group.wsId, wsName: group.wsName, wsPath: group.wsPath };
   }, [sceneVersion, drill?.wsId]);
+
+  /* ── 模板指定动作（add-cosmos-template-reassign 3.1–3.3 / D5） ──
+     动作条内置两项；数据可用性 = 当前钻取星座的 figure 命中非 null（模板数据集整体不可用 /
+     命中缺席 → 两项不呈现，选择器不可达；MUST NOT 呈现死入口）。 */
+  useEffect(() => {
+    /* 钻取目标切换 / 退出：选择器自动关闭（目标语义已变，MUST NOT 跨星座残留）。 */
+    setTemplatePickerOpen(false);
+    setTemplateQuery("");
+  }, [drill?.wsId]);
+
+  const closeTemplatePicker = () => {
+    setTemplatePickerOpen(false);
+    setTemplateQuery("");
+  };
+
+  /** 选中 / 恢复默认的唯一写链路：控制器 `assignTemplate`（净房落盘 + 模块态注入 + 重装配）。 */
+  const applyTemplateChoice = (templateId) => {
+    const wsId = drillGroup?.wsId;
+    if (!wsId) return;
+    controllerRef.current?.actions?.assignTemplate?.(wsId, templateId);
+    closeTemplatePicker();
+  };
+
+  /** 随机重掷（3.3）：当前 figure 命中之外等概率取一枚 → 直接指定（无「随机模式」中间态）。 */
+  const rerollTemplate = () => {
+    const wsId = drillGroup?.wsId;
+    if (!wsId) return;
+    const current = templateForFigure(wsId);
+    const nextId = randomTemplateIdOf(current?.id ?? null);
+    if (!nextId) return; // 模板模块不可用：动作条本身已不呈现（防御兜底）
+    controllerRef.current?.actions?.assignTemplate?.(wsId, nextId);
+  };
+
+  /* 当前 figure 命中（选择器高亮 + 重掷排除项的单次查询）。数据集不可用 → null →
+     顶部模板工具与选择器均不可达（MUST NOT 呈现死入口）。 */
+  const drillFigure = drillGroup !== null ? templateForFigure(drillGroup.wsId) : null;
+
+  /* 顶部模板工具 portal 槽（add-cosmos-template-reassign 返工 D8）：引擎在钻取态标牌两侧
+     建 `.cos-wsbar-tools` 空槽（银河态 display:none），React 以 portal 渲染两枚文字按钮。
+     引擎根可能晚于本 effect 挂载（整页 attach 时序）→ MutationObserver 兜住引擎重建/重挂载。 */
+  const [wsToolSlots, setWsToolSlots] = useState({ left: null, right: null });
+  useEffect(() => {
+    const host = hostRef.current;
+    if (!host) return undefined;
+    const resolve = () => {
+      const left = host.querySelector('.cos-wsbar-tools[data-side="left"]');
+      const right = host.querySelector('.cos-wsbar-tools[data-side="right"]');
+      if (!left || !right) return false;
+      setWsToolSlots((prev) => (prev.left === left && prev.right === right ? prev : { left, right }));
+      return true;
+    };
+    resolve();
+    let observer = null;
+    if (typeof MutationObserver !== "undefined") {
+      observer = new MutationObserver(resolve);
+      observer.observe(host, { childList: true });
+    }
+    return () => observer?.disconnect();
+  }, []);
+
+  /** 顶部模板工具按钮（assign 左 / reroll 右；方形 icon，仅钻取态标牌组内呈现）。 */
+  const wsToolButtons = (side) => {
+    if (drillFigure === null) return null;
+    const assign = side === "left";
+    const label = assign
+      ? tr("cosmos.tplActions.assign", "指定模板")
+      : tr("cosmos.tplActions.reroll", "随机重掷");
+    const title = assign
+      ? tr("cosmos.tplActions.assignTitle", "为该星座指定 88 模板之一")
+      : tr("cosmos.tplActions.rerollTitle", "从当前命中之外等概率换一个模板");
+    return (
+      <button
+        type="button"
+        className="dsh-cosmos-ws-tool"
+        data-cosmos-ws-tool={assign ? "assign" : "reroll"}
+        aria-label={label}
+        title={title}
+        onClick={assign ? () => setTemplatePickerOpen(true) : rerollTemplate}
+      >
+        <span
+          className="dsh-cosmos-ws-tool-icon"
+          aria-hidden="true"
+          dangerouslySetInnerHTML={{ __html: assign ? WS_EDIT_ICON_SVG : WS_DICE_ICON_SVG }}
+        />
+      </button>
+    );
+  };
 
   /* 目标消失（归档/工作区注销）→ 立即清除选中（spec「目标消失清除选中」）。 */
   useEffect(() => {
@@ -5085,7 +5384,7 @@ function CosmosSurface(props) {
            --cos-toast-bottom → 引擎 toast 上移到动作条上缘之上（MUST NOT 被遮挡）。 */
         "--cos-actions-h": actionsHeight + "px",
         "--cos-toast-bottom": (actionsHeight > 0 ? actionsHeight + 32 : 24) + "px",
-        /* 界面尺寸令牌（add-cosmos-layout-tuning D1）：12 个 `--cos-*` 变量，含默认
+        /* 界面尺寸令牌（add-cosmos-layout-tuning D1）：13 个 `--cos-*` 变量，含默认
            fallback 双保险（令牌缺席时引擎/整页 CSS 回落现值）。展开在最后 → 尺寸键
            覆盖同名前缀冲突（本组前缀均不与既有令牌重名）。 */
         ...layoutTokens
@@ -5160,7 +5459,9 @@ function CosmosSurface(props) {
            卡容器 mouseenter/leave 单点接线。 */
         crossHover={crossHover}
         onHoverCard={hoverProposalCard}
-        /* 星座动作条（仅钻取态）：目标分组缺失（钻取目标注销）时传空列表 → footer 零布局。 */
+        /* 星座动作条（仅钻取态）：目标分组缺失（钻取目标注销）时传空列表 → footer 零布局。
+           模板指定两项已移至顶部标牌两侧（add-cosmos-template-reassign 返工），本 footer
+           只承载用户配置的星座按钮。 */
         constButtons={drillGroup === null ? [] : constButtons}
         onRunConst={runConstAction}
         closeKey={shortcuts.closePage}
@@ -5275,6 +5576,26 @@ function CosmosSurface(props) {
         onEnqueue={enqueueAction}
         enqueueStateOf={enqueueStateOf}
       />
+      {/* 模板选择器（add-cosmos-template-reassign 3.2/D5）：body portal 模态，仅钻取态
+          + 开合态渲染；`drillFigure` 为当前 figure 命中（高亮行），选中/恢复默认经
+          `applyTemplateChoice` 写盘即生效（无暂存钮）。模板模块不可用 → 选择器列表空态。 */}
+      {templatePickerOpen && drillGroup !== null ? (
+        <TemplatePicker
+          t={tr}
+          wsName={drillGroup.wsName}
+          currentId={drillFigure?.id ?? null}
+          query={templateQuery}
+          onQuery={setTemplateQuery}
+          onPick={applyTemplateChoice}
+          onReset={() => applyTemplateChoice(null)}
+          onClose={closeTemplatePicker}
+        />
+      ) : null}
+      {/* 顶部模板工具（add-cosmos-template-reassign 返工）：portal 到引擎 `.cos-wsbar-tools`
+          左右槽——钻取态星座标牌两翼，银河态由引擎 data-drilled 门控零呈现；数据集不可用
+          （drillFigure null）→ 不渲染。 */}
+      {wsToolSlots.left !== null && drillFigure !== null ? createPortal(wsToolButtons("left"), wsToolSlots.left) : null}
+      {wsToolSlots.right !== null && drillFigure !== null ? createPortal(wsToolButtons("right"), wsToolSlots.right) : null}
     </div>
   );
 }
@@ -6094,6 +6415,69 @@ ${ENGINE_CSS}
   border-color:rgb(var(--cos-accent-rgb,255 210 140) / .85)}
 .dsh-cosmos-const-action:focus-visible{outline:1px solid rgb(var(--cos-accent-rgb,255 210 140) / .85);outline-offset:2px}
 .dsh-cosmos-const-label{min-width:0;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* ── 顶部模板工具（add-cosmos-template-reassign 返工 D8）：钻取态右上角星座标牌旁的
+      「指定模板（铅笔）/ 随机重掷（骰子）」方形 icon 按钮。边长走 --cos-ws-tool-size
+      （缺省 32、设置面可调）；本组只管按钮外观与命中，槽位/显隐由引擎决定。 ── */
+.dsh-cosmos-ws-tool{box-sizing:border-box;display:flex;align-items:center;justify-content:center;
+  width:100%;height:100%;padding:0;font:inherit;line-height:1;
+  color:var(--cos-accent-ink,#ffe3b8);background:var(--cos-chip-bg,rgba(10,10,20,.45));
+  border:1px dashed rgb(var(--cos-accent-rgb,255 210 140) / .4);border-radius:0;cursor:pointer;
+  overflow:hidden}
+.dsh-cosmos-ws-tool:hover{border-color:rgb(var(--cos-accent-rgb,255 210 140) / .85);
+  background:var(--cos-hover,rgba(255,210,140,.12))}
+.dsh-cosmos-ws-tool:focus-visible{outline:1px solid rgb(var(--cos-accent-rgb,255 210 140) / .85);outline-offset:2px}
+.dsh-cosmos-ws-tool-icon{display:flex;align-items:center;justify-content:center;width:100%;height:100%}
+.dsh-cosmos-ws-tool-icon svg{display:block;width:60%;height:60%}
+/* ── 模板选择器（add-cosmos-template-reassign 3.2/D5）：body portal 模态，配色走官方
+      --dsw-alias-* token（theme 自动跟随），暖金描边/角标为 HUD 装饰层；列表内部滚动，
+      触屏目标 ≥40px；当前 figure 命中行高亮（data-current）。 ── */
+.dsh-cosmos-tpl-picker{position:fixed;inset:0;z-index:9997;box-sizing:border-box;display:flex;
+  align-items:center;justify-content:center;padding:24px}
+.dsh-cosmos-tpl-picker-backdrop{position:absolute;inset:0;background:rgba(4,5,12,.55)}
+.dsh-cosmos-tpl-picker-card{position:relative;z-index:1;box-sizing:border-box;display:flex;flex-direction:column;gap:8px;
+  width:min(560px,100%);max-height:min(72vh,640px);padding:12px 14px;
+  color:var(--dsw-alias-label-primary,var(--cos-ink,#ffe9cf));
+  background:var(--dsw-alias-bg-base,var(--cos-panel-strong,rgba(8,8,16,.96)));
+  border:1px solid var(--dsw-alias-border-l2,var(--cos-line,rgba(255,210,140,.4)));border-radius:10px;
+  box-shadow:0 18px 48px rgba(0,0,0,.45)}
+.dsh-cosmos-tpl-picker-card::before,.dsh-cosmos-tpl-picker-card::after{content:'';position:absolute;width:10px;height:10px;pointer-events:none}
+.dsh-cosmos-tpl-picker-card::before{top:-1px;left:-1px;border-top:2px solid var(--cos-line-strong,#ffd28a);border-left:2px solid var(--cos-line-strong,#ffd28a)}
+.dsh-cosmos-tpl-picker-card::after{bottom:-1px;right:-1px;border-bottom:2px solid var(--cos-line-strong,#ffd28a);border-right:2px solid var(--cos-line-strong,#ffd28a)}
+.dsh-cosmos-tpl-picker-head{display:flex;align-items:center;gap:8px}
+.dsh-cosmos-tpl-picker-title{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:14px;font-weight:600;letter-spacing:.5px}
+.dsh-cosmos-tpl-picker-target{flex:none;max-width:40%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:1px 8px;border-radius:999px;
+  font-size:11px;line-height:16px;color:var(--dsw-alias-label-secondary,var(--cos-accent,#ffd28a));
+  border:1px solid var(--dsw-alias-border-l2,rgb(var(--cos-accent-rgb,255 210 140) / .45))}
+.dsh-cosmos-tpl-picker-close{flex:none;display:inline-flex;align-items:center;justify-content:center;width:40px;height:40px;padding:0;cursor:pointer;
+  font:inherit;font-size:18px;line-height:1;border-radius:8px;color:var(--dsw-alias-label-tertiary,var(--cos-accent-ink,#ffe3b8));
+  background:transparent;border:1px solid transparent}
+.dsh-cosmos-tpl-picker-close:hover{background:var(--dsw-alias-interactive-bg-hover,rgb(var(--cos-accent-rgb,255 210 140) / .14));
+  color:var(--dsw-alias-label-primary,var(--cos-title-ink,#fff3dd))}
+.dsh-cosmos-tpl-picker-search{box-sizing:border-box;width:100%;min-height:40px;padding:8px 10px;border-radius:8px;font:inherit;font-size:13px;outline:none;
+  color:var(--dsw-alias-label-primary,var(--cos-ink,#ffe9cf));
+  background:var(--dsw-alias-bg-base,var(--cos-panel-strong,rgba(10,10,20,.9)));
+  border:1px solid var(--dsw-alias-border-l2,var(--cos-line,rgba(255,210,140,.35)))}
+.dsh-cosmos-tpl-picker-search:focus{border-color:var(--dsw-alias-border-inverted,rgb(var(--cos-accent-rgb,255 210 140) / .85))}
+.dsh-cosmos-tpl-picker-hint{font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary,var(--cos-ink-dim,#cbb89a))}
+.dsh-cosmos-tpl-picker-list{flex:1 1 auto;min-height:0;overflow-y:auto;display:flex;flex-direction:column;gap:4px;padding-right:2px}
+.dsh-cosmos-tpl-picker-reset{box-sizing:border-box;min-height:40px;padding:8px 10px;display:flex;align-items:center;justify-content:center;cursor:pointer;
+  font:inherit;font-size:12px;letter-spacing:.5px;border-radius:6px;
+  color:var(--dsw-alias-label-secondary,var(--cos-accent,#ffd28a));
+  background:var(--dsw-alias-interactive-bg-hover,rgb(var(--cos-accent-rgb,255 210 140) / .08));
+  border:1px dashed rgb(var(--cos-accent-rgb,255 210 140) / .45)}
+.dsh-cosmos-tpl-picker-reset:hover{border-color:rgb(var(--cos-accent-rgb,255 210 140) / .8);
+  background:var(--dsw-alias-interactive-bg-hover-solid,rgb(var(--cos-accent-rgb,255 210 140) / .18))}
+.dsh-cosmos-tpl-picker-row{box-sizing:border-box;min-height:40px;padding:6px 10px;display:flex;align-items:baseline;gap:8px;cursor:pointer;text-align:left;
+  font:inherit;border-radius:6px;color:var(--dsw-alias-label-primary,var(--cos-accent-ink,#ffe3b8));
+  background:transparent;border:1px solid transparent}
+.dsh-cosmos-tpl-picker-row:hover{background:var(--dsw-alias-interactive-bg-hover,rgb(var(--cos-accent-rgb,255 210 140) / .12));
+  border-color:rgb(var(--cos-accent-rgb,255 210 140) / .35)}
+.dsh-cosmos-tpl-picker-row[data-current=true]{border-color:rgb(var(--cos-accent-rgb,255 210 140) / .85);
+  background:var(--dsw-alias-interactive-bg-hover-solid,rgb(var(--cos-accent-rgb,255 210 140) / .18))}
+.dsh-cosmos-tpl-picker-row:focus-visible{outline:1px solid rgb(var(--cos-accent-rgb,255 210 140) / .85);outline-offset:2px}
+.dsh-cosmos-tpl-picker-zh{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}
+.dsh-cosmos-tpl-picker-id{flex:none;font-size:11px;letter-spacing:.5px;color:var(--dsw-alias-label-tertiary,var(--cos-ink-dim,#cbb89a))}
+.dsh-cosmos-tpl-picker-empty{padding:16px 8px;text-align:center;font-size:12px;color:var(--dsw-alias-label-tertiary,var(--cos-ink-dim,#cbb89a))}
 /* ── 星座浮窗输入器（add-cosmos-constellation-actions 4.2）：body portal，z 序高于
       Cosmos 覆盖层（页面 toast 9999 之下，toast 仍可见）；配色走官方 --dsw-alias-*
       token（theme 插件换肤自动跟随，明暗主题无需刷新），暖金描边/角标为 HUD 装饰层；
@@ -6458,20 +6842,23 @@ export function apply(ctx) {
   const t = ctx.locale.bind(NS);
   const sectionT = ctx.locale.bind(NS);
 
-  /* ── 设置跨窗口桥（add-cosmos-rightbar-dock 4.1；add-cosmos-template-name-toggle 1.2 扩展）：
-     同源 localStorage 是全部窗口共享的唯一设置面——他窗写入 `launchMode` / `templateNames`
-     后经 `storage` 事件同步进受控镜像（入口文案/设置页单选与开关即时跟随）；入口按钮点击
-     另现读持久值（双保险）。整页在本窗存活时，模板名开关另经 `engine.setTuning` 热更
-     （值变才换串，见引擎 3.1）。与本面无关的 storage 键 → `settingsFromStorageEvent`
-     返回 null，静默忽略。 */
+  /* ── 设置跨窗口桥（add-cosmos-rightbar-dock 4.1；add-cosmos-template-name-toggle 1.2 /
+     add-cosmos-figure-line-alpha 3.2 扩展）：
+     同源 localStorage 是全部窗口共享的唯一设置面——他窗写入 `launchMode` /
+     `templateNames` / `patLineDim` 后经 `storage` 事件同步进受控镜像（入口文案/设置页
+     单选/开关/滑杆即时跟随）；入口按钮点击另现读持久值（双保险）。整页在本窗存活时，
+     模板名开关与图样连线亮度另经 `engine.setTuning` 热更（值变才动作，见引擎分支）。
+     与本面无关的 storage 键 → `settingsFromStorageEvent` 返回 null，静默忽略。 */
   ctx.effect(() => {
     if (typeof window === "undefined" || typeof window.addEventListener !== "function") return () => {};
     const onStorage = (event) => {
       const next = settingsFromStorageEvent(event);
       if (next === null) return;
       const prevTemplateNames = cosmosTemplateNamesStore.getSnapshot()?.templateNames === true;
+      const prevPatLineDim = cosmosPatLineDimStore.getSnapshot()?.patLineDim;
       cosmosLaunchStore.set({ launchMode: next.launchMode });
       cosmosTemplateNamesStore.set({ templateNames: next.templateNames });
+      cosmosPatLineDimStore.set({ patLineDim: next.patLineDim });
       /* 已打开的整页热更（add-cosmos-template-name-toggle 1.2/D4）：仅本键真实翻转时才触达
          引擎——MUST NOT 借同源桥顺带热更其它调参键（那属本提案范围外的行为变更）。 */
       if (prevTemplateNames !== (next.templateNames === true)) {
@@ -6480,6 +6867,15 @@ export function apply(ctx) {
         } catch (error) {
           /* 他窗写入的模板名开关热更失败不阻断镜像同步（下次开页构造读持久值兜底）。 */
           console.warn("[dsh-v-cosmos] template names hot update failed:", error);
+        }
+      }
+      /* 图样连线亮度跨窗热更（add-cosmos-figure-line-alpha 3.2/D2）：同样仅本键真实值变时
+         触达引擎（净房百分比 → 因子）；失败不阻断镜像同步（下次开页构造读持久值兜底）。 */
+      if (prevPatLineDim !== next.patLineDim) {
+        try {
+          controllerRef.current?.getEngine?.()?.setTuning?.({ patLineDim: next.patLineDim / 100 });
+        } catch (error) {
+          console.warn("[dsh-v-cosmos] pattern line brightness hot update failed:", error);
         }
       }
     };
@@ -6492,6 +6888,34 @@ export function apply(ctx) {
       }
     };
   }, "dsh-v-cosmos: settings storage bridge");
+
+  /* ── 模板指定覆盖跨窗口桥（add-cosmos-template-reassign 3.4/D6）：
+     同源 localStorage 是全部窗口共享的唯一覆盖真相——他窗指定 / 重掷 / 恢复默认写入
+     `dsh-v-cosmos:tplOverrides` 后，本窗经 `storage` 事件**净房投影** → 控制器重新注入
+     merge 模块态 → 场景差分自动换图样/名称（位置恒哈希、不动）。与本面无关的键 →
+     `templateOverridesFromStorageEvent` 返回 null，静默忽略（与设置面桥同构）。
+     控制器缺席（插件初始化早期）时静默跳过：控制器构造即重新装载持久值，无需旁路。 */
+  ctx.effect(() => {
+    if (typeof window === "undefined" || typeof window.addEventListener !== "function") return () => {};
+    const onStorage = (event) => {
+      const next = templateOverridesFromStorageEvent(event);
+      if (next === null) return;
+      try {
+        controllerRef.current?.actions?.applyTemplateOverrides?.(next);
+      } catch (error) {
+        /* 跨窗注入失败不阻断页面（他窗写入仍持久化，重开整页由构造装载兜底）。 */
+        console.warn("[dsh-v-cosmos] template overrides sync failed:", error);
+      }
+    };
+    window.addEventListener("storage", onStorage);
+    return () => {
+      try {
+        window.removeEventListener("storage", onStorage);
+      } catch {
+        /* 卸载期窗口已销毁 → 忽略 */
+      }
+    };
+  }, "dsh-v-cosmos: template overrides storage bridge");
 
   /* ── 动作按钮配置通道 + 动作条数据面（add-cosmos-proposal-actions 2.4/5.x） ──
      三通道归一：自营 API（首选，apply 内同步 attach）→ settingsScope / configForms
@@ -6910,6 +7334,24 @@ export function apply(ctx) {
       return merged;
     }
   };
+  /* 「通用」页签·图样连线亮度滑杆 face（add-cosmos-figure-line-alpha 3.1/D2）：受控镜像 =
+     模块级 `cosmosPatLineDimStore`；整页存活 → 控制器 `savePatLineDim`（净房持久化 +
+     引擎 setTuning 因子热更 + 镜像同步）；整页未打开 → 仍即时持久化并同步镜像（无引擎可
+     热更，下次开页构造读持久值）。与 templateNamesFace 同款「即时保存、无暂存钮」纪律。 */
+  const patLineDimFace = {
+    getSnapshot: () => cosmosPatLineDimStore.getSnapshot(),
+    subscribe: (listener) => cosmosPatLineDimStore.subscribe(listener),
+    set: (value) => {
+      const controller = controllerRef.current;
+      if (controller != null && typeof controller.savePatLineDim === "function") {
+        const merged = controller.savePatLineDim(value);
+        return merged != null ? merged : cosmosPatLineDimStore.getSnapshot();
+      }
+      const merged = saveCosmosSettings({ patLineDim: value });
+      cosmosPatLineDimStore.set({ patLineDim: merged.patLineDim });
+      return merged;
+    }
+  };
   ctx.slots.inject(SETTINGS_TAB_SLOT, () =>
     ctx.slots.register(
       {
@@ -6918,7 +7360,7 @@ export function apply(ctx) {
         order: -1,
         label: () => sectionT("cosmos.settings.tabGeneral"),
         locale: NS,
-        inject: () => ({ launch: launchFace, paths: pathsSettings, templateNames: templateNamesFace })
+        inject: () => ({ launch: launchFace, paths: pathsSettings, templateNames: templateNamesFace, patLineDim: patLineDimFace })
       },
       CosmosGeneralPanel
     )
@@ -7145,7 +7587,7 @@ export function apply(ctx) {
 
 /* 冒烟测试观测面（hive exports 先例）：只读镜像 + 纯函数引用，供 bundle 级冒烟
    直测导出面与推导口径；运行时行为不受影响。 */
-export { cosmosOpenStore, cosmosLaunchStore, cosmosDockStore, cosmosTemplateNamesStore, applyLaunchMode, currentLaunchMode, launchCosmosEntry, CosmosDockBody, dockEntryPlanOf, findDockTabOf, dockPresenceOf, pageCloseActionOf, dockFallbackNoticeKeyOf, COSMOS_DOCK_TAB_ID, COSMOS_DOCK_TAB_KIND, CosmosGeneralPanel, CosmosPathsSection, createPathsSettingsController, sceneVersionStore, filterStore, drillStore, engineSelectStore, engineHoverStore, cosmosButtonsFace, cosmosConstButtonsFace, cosmosSkinStore, cosmosNavStore, cosmosShortcutsStore, cosmosButtonDraftsStore, cosmosSessionPanelStore, cosmosQueueStore, refreshQueue, cosmosSelectHealthOf, currentShortcuts, buttonDraftsOf, floatOpenOf, COSMOS_SKINS, COSMOS_SKIN_IDS, COSMOS_DEFAULT_SKIN, createSkin, applySkinTokens, mergeScene, sceneDiffLevel, planetStateOf, relativeTime, matchWorkspaces, filteredPositions, findRegisteredWorkspace, normalizeWorkspacePath, isWindowsPlatform, isEmptyConstellation, projectPanel, projectQueuePanel, queueScopeOf, queuePendingKeysOf, queueEnqueuedKeyOf, projectSessionPanel, sessionKeyOf, findCard, proposalKeyOf, assembleMessage, assembleEmbryoMessage, actionButtonVisible, draftMatches, isBlankDraft, pendingReadinessOf, createActionGate, createPendingActionStore, createActionExecutor, createEmbryoActionExecutor, consumePendingAction, explorationTargetOf, createModelBridge, ProposalPanel, SessionPanel, QueuePanel, ActionBar, ConstActionBar, ActionHeroDock, ConstellationFloatDock, EmbryoActionDock, CosmosSettingsSection, CosmosActionsPanel, CosmosSkinPanel, CosmosNavPanel, CosmosShortcutsPanel, SKIN_D_PALETTE, createSkinD, createCosmosEngine, isUiChromeTarget, fetchScene, subscribeCosmosEvents, bindSession, fetchQueue, queueAction, loadCosmosSettings, saveCosmosSettings, COSMOS_SETTINGS_DEFAULTS, COSMOS_SETTINGS_BOUNDS, PENDING_DIVE_WAIT_MS, normalizeConstButtons, constButtonsSectionOf, constellationMessageOf, createFloatMarkerStore, createConstellationExecutor, floatPresentationOf, floatTextareaHeightOf, createButtonSettingsController, constButtonDraftOf, constButtonIssue, CONSTELLATION_PROFILE, isSessionArchiveOutcome, activitySummaryOf, archiveNoticeOf, archiveRequestFailureNotice, SHORTCUT_DEFAULTS, SHORTCUT_FIELDS, SHORTCUT_UI_ORDER, SHORTCUT_GLOBAL_KEYS, SHORTCUT_BUTTON_KEYS, shortcutLabelOf, shortcutMatches, shortcutsOf, shortcutConflictOf, shortcutsIssue, currentSessionIdOf, wsIdBySessionId, createHostSessionFollow, FLOAT_IMAGE_TYPES, FLOAT_IMAGE_ACCEPT, FLOAT_ATTACH_WATCH_MS, clipboardFilesOf, createAttachFace, floatSendPlanOf, floatWatchOutcomeOf, floatAttachmentsPendingOf, intakeFloatImages, removeFloatAttachment };
+export { cosmosOpenStore, cosmosLaunchStore, cosmosDockStore, cosmosTemplateNamesStore, cosmosPatLineDimStore, applyLaunchMode, currentLaunchMode, launchCosmosEntry, CosmosDockBody, dockEntryPlanOf, findDockTabOf, dockPresenceOf, pageCloseActionOf, dockFallbackNoticeKeyOf, COSMOS_DOCK_TAB_ID, COSMOS_DOCK_TAB_KIND, CosmosGeneralPanel, CosmosPathsSection, createPathsSettingsController, sceneVersionStore, filterStore, drillStore, engineSelectStore, engineHoverStore, cosmosButtonsFace, cosmosConstButtonsFace, cosmosSkinStore, cosmosNavStore, cosmosShortcutsStore, cosmosButtonDraftsStore, cosmosSessionPanelStore, cosmosQueueStore, refreshQueue, cosmosSelectHealthOf, currentShortcuts, buttonDraftsOf, floatOpenOf, COSMOS_SKINS, COSMOS_SKIN_IDS, COSMOS_DEFAULT_SKIN, createSkin, applySkinTokens, mergeScene, sceneDiffLevel, planetStateOf, relativeTime, matchWorkspaces, filteredPositions, findRegisteredWorkspace, normalizeWorkspacePath, isWindowsPlatform, isEmptyConstellation, projectPanel, projectQueuePanel, queueScopeOf, queuePendingKeysOf, queueEnqueuedKeyOf, projectSessionPanel, sessionKeyOf, findCard, proposalKeyOf, assembleMessage, assembleEmbryoMessage, actionButtonVisible, draftMatches, isBlankDraft, pendingReadinessOf, createActionGate, createPendingActionStore, createActionExecutor, createEmbryoActionExecutor, consumePendingAction, explorationTargetOf, createModelBridge, ProposalPanel, SessionPanel, QueuePanel, ActionBar, ConstActionBar, TemplatePicker, ActionHeroDock, ConstellationFloatDock, EmbryoActionDock, CosmosSettingsSection, CosmosActionsPanel, CosmosSkinPanel, CosmosNavPanel, CosmosShortcutsPanel, SKIN_D_PALETTE, createSkinD, createCosmosEngine, isUiChromeTarget, fetchScene, subscribeCosmosEvents, bindSession, fetchQueue, queueAction, loadCosmosSettings, saveCosmosSettings, COSMOS_SETTINGS_DEFAULTS, COSMOS_SETTINGS_BOUNDS, PENDING_DIVE_WAIT_MS, normalizeConstButtons, constButtonsSectionOf, constellationMessageOf, createFloatMarkerStore, createConstellationExecutor, floatPresentationOf, floatTextareaHeightOf, createButtonSettingsController, constButtonDraftOf, constButtonIssue, CONSTELLATION_PROFILE, isSessionArchiveOutcome, activitySummaryOf, archiveNoticeOf, archiveRequestFailureNotice, SHORTCUT_DEFAULTS, SHORTCUT_FIELDS, SHORTCUT_UI_ORDER, SHORTCUT_GLOBAL_KEYS, SHORTCUT_BUTTON_KEYS, shortcutLabelOf, shortcutMatches, shortcutsOf, shortcutConflictOf, shortcutsIssue, currentSessionIdOf, wsIdBySessionId, createHostSessionFollow, FLOAT_IMAGE_TYPES, FLOAT_IMAGE_ACCEPT, FLOAT_ATTACH_WATCH_MS, clipboardFilesOf, createAttachFace, floatSendPlanOf, floatWatchOutcomeOf, floatAttachmentsPendingOf, intakeFloatImages, removeFloatAttachment };
 
 /* 文案（zh/en 成对；引擎内嵌中文提示为 demo 语言的既定呈现）。 */
 const DICT = {
@@ -7275,6 +7717,21 @@ const DICT = {
     "cosmos.actions.enqueue": "加入自动队列",
     "cosmos.actions.enqueueLabel": "＋ 入队",
     "cosmos.constActions.aria": "星座动作",
+    /* 模板指定（add-cosmos-template-reassign 3.5/D5）：动作条两项 + 选择器全量文案。
+       提示行明示「位置与图样解耦」（星座位置由星图分布决定，不随模板变化）。 */
+    "cosmos.tplActions.assign": "指定模板",
+    "cosmos.tplActions.assignTitle": "为该星座指定 88 模板之一",
+    "cosmos.tplActions.reroll": "随机重掷",
+    "cosmos.tplActions.rerollTitle": "从当前命中之外等概率换一个模板",
+    "cosmos.tplPicker.title": "指定星座模板",
+    "cosmos.tplPicker.close": "关闭",
+    "cosmos.tplPicker.searchPlaceholder": "搜索模板（中文名 / 英文名）",
+    "cosmos.tplPicker.searchAria": "搜索模板",
+    "cosmos.tplPicker.listAria": "模板列表",
+    "cosmos.tplPicker.hint": "星座位置由星图分布决定，不随模板变化",
+    "cosmos.tplPicker.reset": "恢复默认（星图分布）",
+    "cosmos.tplPicker.resetHint": "清除该星座的模板指定，回落星图分布（哈希分配）",
+    "cosmos.tplPicker.empty": "无匹配模板",
     "cosmos.constFloat.title": "星座动作",
     "cosmos.constFloat.inputAria": "消息内容",
     "cosmos.constFloat.placeholder": "补写或修改消息，发送后进入当前星座工作区的会话…",
@@ -7321,6 +7778,12 @@ const DICT = {
     "cosmos.settings.templateNamesLabel": "星座模板名显示",
     "cosmos.settings.templateNamesHint": "在银河星座标签与钻取标牌上追加该星座命中模板的中文名（如「猎户座」）；纯装饰文本，不影响布局与交互。",
     "cosmos.settings.templateNamesAria": "星座模板名显示开关",
+    /* 图样连线亮度（add-cosmos-figure-line-alpha 3.4）：滑杆 label / hint（含辨识度代价提示）/
+       aria + 分组图例（「星座装饰」；与模板名开关同组，图例键为新共享键）。 */
+    "cosmos.settings.patLineDimLegend": "星座装饰",
+    "cosmos.settings.patLineDimLabel": "图样连线亮度",
+    "cosmos.settings.patLineDimHint": "调低会弱化星座图样的辨识度（连线更淡、空槽装饰点同比变暗）；纯装饰层，不影响恒星、行星与拾取。",
+    "cosmos.settings.patLineDimAria": "图样连线亮度百分比",
     "cosmos.settings.pathsLabel": "路径",
     "cosmos.settings.pathsHint": "openspec 路径令牌 OPENSPEC_PATH 的解析值与 cosmos-spec 技能目录：保存后写入本机共享配置并即时生效（无需重启插件或会话）。未配置留空。",
     "cosmos.settings.pathsLoading": "正在加载路径设置…",
@@ -7431,6 +7894,7 @@ const DICT = {
     "cosmos.settings.sizeSearchW": "搜索框宽",
     "cosmos.settings.sizeSearchH": "搜索框高",
     "cosmos.settings.sizeWsTitle": "星座标题字号",
+    "cosmos.settings.sizeWsTool": "顶部工具按钮边长",
     "cosmos.settings.sizeAuto": "0 = 自适应",
     "cosmos.settings.skinUnavailable": "皮肤选择暂不可用：插件整页未就绪（刷新页面后重试）。",
     "cosmos.settings.navUnavailable": "界面设置暂不可用：插件整页未就绪（刷新页面后重试）。",
@@ -7610,6 +8074,20 @@ const DICT = {
     "cosmos.actions.enqueue": "Add to auto queue",
     "cosmos.actions.enqueueLabel": "＋ Queue",
     "cosmos.constActions.aria": "Constellation actions",
+    /* Template assignment (add-cosmos-template-reassign 3.5/D5). */
+    "cosmos.tplActions.assign": "Assign template",
+    "cosmos.tplActions.assignTitle": "Pick one of the 88 templates for this constellation",
+    "cosmos.tplActions.reroll": "Reroll",
+    "cosmos.tplActions.rerollTitle": "Pick another template uniformly at random, excluding the current one",
+    "cosmos.tplPicker.title": "Constellation template",
+    "cosmos.tplPicker.close": "Close",
+    "cosmos.tplPicker.searchPlaceholder": "Search templates (Chinese or Latin name)",
+    "cosmos.tplPicker.searchAria": "Search templates",
+    "cosmos.tplPicker.listAria": "Template list",
+    "cosmos.tplPicker.hint": "Constellation positions follow the sky map and do not change with templates.",
+    "cosmos.tplPicker.reset": "Restore default (sky map)",
+    "cosmos.tplPicker.resetHint": "Clear this constellation's template override and fall back to the sky-map hash",
+    "cosmos.tplPicker.empty": "No matching templates",
     "cosmos.constFloat.title": "Constellation action",
     "cosmos.constFloat.inputAria": "Message",
     "cosmos.constFloat.placeholder": "Extend or edit the message; sending starts the session in the current constellation's workspace…",
@@ -7650,6 +8128,10 @@ const DICT = {
     "cosmos.settings.templateNamesLabel": "Show constellation template names",
     "cosmos.settings.templateNamesHint": "Append the matched template's Chinese name (for example 猎户座 / Orion) beneath the galaxy constellation labels and on the drilled-down badge; decorative text only, with no layout or interaction impact.",
     "cosmos.settings.templateNamesAria": "Toggle constellation template names",
+    "cosmos.settings.patLineDimLegend": "Constellation decoration",
+    "cosmos.settings.patLineDimLabel": "Figure line brightness",
+    "cosmos.settings.patLineDimHint": "Lowering it weakens the constellation figure's legibility (fainter lines and proportionally dimmer empty-slot dots); decorative only, with no effect on stars, planets, or picking.",
+    "cosmos.settings.patLineDimAria": "Figure line brightness percentage",
     "cosmos.settings.pathsLabel": "Paths",
     "cosmos.settings.pathsHint": "Resolution value of the openspec path token OPENSPEC_PATH and the cosmos-spec skill directory: saved into this machine's shared config and applied immediately (no plugin or session restart). Leave blank for unset.",
     "cosmos.settings.pathsLoading": "Loading path settings…",
@@ -7760,6 +8242,7 @@ const DICT = {
     "cosmos.settings.sizeSearchW": "Search box width",
     "cosmos.settings.sizeSearchH": "Search box height",
     "cosmos.settings.sizeWsTitle": "Constellation title size",
+    "cosmos.settings.sizeWsTool": "Top tool button size",
     "cosmos.settings.sizeAuto": "0 = auto",
     "cosmos.settings.skinUnavailable": "Skin selection is unavailable: the plugin page is not ready (reload the page and retry).",
     "cosmos.settings.navUnavailable": "Interface settings are unavailable: the plugin page is not ready (reload the page and retry).",

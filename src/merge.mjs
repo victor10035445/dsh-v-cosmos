@@ -29,10 +29,15 @@
  *    交付门控 = 本星座 `stars` 非空（正式提案 ∪ 星胚 proto）；无恒星不装配、无图样。
  *    与骨架 `ws.links`（提案关联数据面）相互独立；
  *  - 模板中文名 = 命中模板条目的 `zh`（add-cosmos-template-name-toggle 2.1/D2）随场景
- *    装配为 `ws.tplZh`（单一出处 = 本层模板分配；命中缺席 / 缺 `zh` / 非字符串归一 null）。
+ *    装配为 `ws.tplZh`（单一出处 = 本层模板分配；命中缺席 / 缺 `zh` / 非字符串归一 null）；
+ *  - per-星座模板指定覆盖（add-cosmos-template-reassign 2.x / design D1/D3）：装配拆双口径——
+ *    **位置**恒走哈希分配（`templateForPosition`，MUST NOT 感知覆盖）；**图样 / 内核槽位 /
+ *    `tplZh`** 走 `templateForFigure`（覆盖命中优先、哈希缺省兜底）。未指定星座与引入覆盖前
+ *    逐字节一致；覆盖表经 `setTemplateOverrides` 净房后注入模块态。
  */
 
 import { allTemplates, TEMPLATE_COUNT } from "./cosmos/templates.mjs";
+import { sanitizeTemplateOverrides } from "./template-assign.mjs";
 
 /** 生命周期枚举（含 merge 层星胚 `proto`；磁盘枚举只有 created/reviewed/executed）。 */
 const LIFECYCLE_STATES = new Set(["proto", "created", "reviewed", "executed"]);
@@ -147,6 +152,9 @@ export function skyPositionOf(template, spread) {
  * 不影响既有命中）。查询经防御包裹：模块态异常/条目缺席 → null（调用方按「命中缺席」
  * 逐座回退：sky 层回退 Fibonacci，恒星层回退 starOffset 散布），MUST NOT 抛错。
  * 导出面 = two 的冒烟直测（任务 4.x）；three 内部继续调用同一实现。
+ * **add-cosmos-template-reassign 起**：本函数语义固定为**哈希缺省分配**——`templateForPosition`
+ * 天球位置口径沿用之（MUST NOT 感知覆盖）；图样/名称口径见 `templateForFigure`
+ * （覆盖命中优先、哈希兜底）。
  * @param {string} wsId 工作区 id
  * @returns {object|null} 模板条目（冻结快照）或 null
  */
@@ -160,11 +168,69 @@ export function templateForWorkspace(wsId) {
   }
 }
 
+/* ------------------------------------------------------------------ *
+ * 模板指定覆盖注入面（add-cosmos-template-reassign 2.1/2.2 / design D1/D3）
+ * ------------------------------------------------------------------ */
+
+/** 模块级覆盖表（净房后映射；缺省空表 = 全部星座走哈希缺省，默认渲染零变化）。 */
+let templateOverrides = {};
+
+/**
+ * 覆盖表注入（design D3）：`null` / 非对象 → 清空；其余经 `sanitizeTemplateOverrides`
+ * 净房（值域 = 88 模板 id 全集；未知 / 空串 / 非字符串 / 危险键剔除）。恒写模块态并返回
+ * 净房结果。调用方 = client 控制器（启动装载 / 指定 / 重掷 / 恢复默认 / storage 桥重新注入）。
+ * @param {unknown} map 覆盖表（`{ [wsId]: templateId }`）
+ * @returns {Record<string, string>} 净房后的覆盖表（= 模块态当前值）
+ */
+export function setTemplateOverrides(map) {
+  templateOverrides = sanitizeTemplateOverrides(map);
+  return templateOverrides;
+}
+
+/**
+ * 天球位置查询口径（add-cosmos-template-reassign 2.1 / design D1）：**哈希原语义**，
+ * MUST NOT 感知覆盖表——星座位置 = `hash32(ws.id) % 88` 命中模板的球面投影位，用户指定
+ * 图样 MUST NOT 重排星空（`cosmos-sky-layout`「指定覆盖不改变位置」）。降级/防御与
+ * `templateForWorkspace` 逐字一致（模板模块异常 → null → 调用方按命中缺席回退）。
+ * @param {string} wsId 工作区 id
+ * @returns {object|null} 模板条目（冻结快照）或 null
+ */
+export function templateForPosition(wsId) {
+  return templateForWorkspace(wsId);
+}
+
+/**
+ * 图样 / 内核槽位 / 模板中文名查询口径（add-cosmos-template-reassign 2.1 / design D1/D3）：
+ * **覆盖命中优先、哈希缺省兜底**。覆盖条目经净房保证 ∈ 88 数据集；此处再按数据集实际清单
+ * 复核一次 id（防模块态漂移 / 外部直写绕过净房）——命中缺席 / 条目非法 → 回落
+ * `templateForWorkspace`。防御包裹同款：查询异常 → null（SHALL NOT 抛错）。
+ * @param {string} wsId 工作区 id
+ * @returns {object|null} 模板条目（冻结快照）或 null
+ */
+export function templateForFigure(wsId) {
+  try {
+    const id = String(wsId);
+    const overrideId = Object.prototype.hasOwnProperty.call(templateOverrides, id)
+      ? templateOverrides[id]
+      : undefined;
+    if (typeof overrideId === "string" && overrideId) {
+      const list = allTemplates();
+      if (Array.isArray(list) && list.length === TEMPLATE_COUNT) {
+        const hit = list.find((template) => template && template.id === overrideId) ?? null;
+        if (hit) return hit;
+      }
+    }
+    return templateForWorkspace(id);
+  } catch {
+    return null;
+  }
+}
+
 /**
  * 模板中文名（add-cosmos-template-name-toggle 2.1/D2）：命中条目的 `zh` 为**非空字符串**
  * 才交付，命中缺席（防御性）/ 缺 `zh` / 非字符串一律归一为 null（呈现端按无名称处理，
  * SHALL NOT 抛错）。
- * @param {object|null} template `templateForWorkspace` 命中产物
+ * @param {object|null} template `templateForFigure` 命中产物
  * @returns {string|null} 中文名（如「猎户座」）或 null
  */
 export function templateZhOf(template) {
@@ -198,8 +264,9 @@ function skyLayerReady() {
  *    （|S| ≥ 2；平移不改变成对几何，与松弛先后等价）——`filteredPositions` 专用；
  *  - 三维最小间距松弛（迭代推挤防碰撞）原样沿用，承接黄道带投影拥挤（design D3）；
  *  - 输入先按 id 规范排序——位置只依赖工作区 id 集合，与传入顺序无关。
- * `options.templateFor`（测试注入面）：模板查询函数替换——生产恒缺省（走真实
- * 模板分配），仅供冒烟防御性注入「命中缺席 / 整层缺席」的降级路径。
+ * `options.templateFor`（测试注入面）：**位置口径**模板查询函数替换——生产恒缺省
+ * （走 `templateForPosition` = 哈希分配，MUST NOT 感知模板指定覆盖），仅供冒烟防御性注入
+ * 「命中缺席 / 整层缺席」的降级路径；注入优先级 > 哈希（add-cosmos-template-reassign 2.3）。
  * @param {Array<{id: string}>} workspaces
  * @param {{ spread?: number, minDist?: number, relaxRounds?: number, center?: boolean, templateFor?: (id: string) => object|null }} [options]
  * @returns {Map<string, [number, number, number]>} id → pos
@@ -208,7 +275,7 @@ export function constellationPositions(workspaces, options = {}) {
   const spread = Number.isFinite(options.spread) ? options.spread : 150;
   const minDist = Number.isFinite(options.minDist) ? options.minDist : 240;
   const rounds = Number.isFinite(options.relaxRounds) ? options.relaxRounds : 24;
-  const lookup = typeof options.templateFor === "function" ? options.templateFor : templateForWorkspace;
+  const lookup = typeof options.templateFor === "function" ? options.templateFor : templateForPosition;
   const list = (Array.isArray(workspaces) ? workspaces : [])
     .map((ws, index) => ({ id: ws?.id ?? String(index) }))
     .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
@@ -528,7 +595,7 @@ export const PATTERN_SLOT_GAP = 12;
  *  - **降级**（D5）：template 为 null / 图样数据损坏（坐标非有限、stars 缺失）→
  *    返回 null（调用方按星座粒度回退 `starOffset(id, 26)`），MUST NOT 抛错。
  *
- * @param {object|null} template 模板条目（`templateForWorkspace` 命中产物；可为 null）
+ * @param {object|null} template 模板条目（`templateForFigure` 命中产物；可为 null）
  * @param {Array<{id: unknown, at?: unknown}>} stars 星座恒星清单（场景最终数组序，
  *        正式提案 ∪ 星胚 proto，元素多余字段被忽略）
  * @returns {{offs: Map<string, [number, number, number]>,
@@ -641,9 +708,14 @@ export function dustCountOf(archives) {
  * @param {Map|object} [input.statuses] ctx.uiSession.sessionStatus 快照
  *        （sessionId → {running, pendingInteraction{kind}, completionUnread}；不可达 → null/undefined 降级）
  * @param {number} [input.now] 相对时间基准
+ * @param {object} [options] 装配选项
+ * @param {(id: string) => object|null} [options.templateFor] 图样 / 名称口径的测试注入手柄
+ *        （add-cosmos-template-reassign 2.3）：给定时**替换** `templateForFigure`——优先级
+ *        恒为「防御注入 > 覆盖 > 哈希」；缺省走真实覆盖注入 + 哈希兜底。位置口径不受本项影响
+ *        （位置恒哈希，见 `constellationPositions`）。
  * @returns {object} scene（{ workspaces: [...] }）
  */
-export function mergeScene({ skeleton, sessions, workspaces, statuses = null, now = Date.now() }) {
+export function mergeScene({ skeleton, sessions, workspaces, statuses = null, now = Date.now() }, options = {}) {
   const byId = sessions?.byId ?? {};
   const sessionIds = Array.isArray(sessions?.ids) ? sessions.ids : [];
   const wsItems = Array.isArray(workspaces?.items) ? workspaces.items : [];
@@ -748,6 +820,11 @@ export function mergeScene({ skeleton, sessions, workspaces, statuses = null, no
       : 0;
   };
 
+  /* 图样/名称口径查询（add-cosmos-template-reassign 2.2/2.3）：缺省 = 覆盖优先 + 哈希兜底；
+     `options.templateFor` 测试注入手柄优先于覆盖（防御注入 > 覆盖 > 哈希）。
+     位置口径独立：`constellationPositions` 恒走 `templateForPosition`（哈希，不感知覆盖）。 */
+  const figureLookup = typeof options.templateFor === "function" ? options.templateFor : templateForFigure;
+
   const positions = constellationPositions(skeletonWorkspaces.map((ws) => ({ id: ws.id })));
 
   const outWorkspaces = skeletonWorkspaces.map((ws) => {
@@ -760,16 +837,41 @@ export function mergeScene({ skeleton, sessions, workspaces, statuses = null, no
        已在 scan 层完成；此处空值归一为 null）——画布渲染不读该字段（逐字不变），
        面板投影据此把同一探索会话的锚点归并为一张星胚卡片；同时纳入
        `starPropertySignature`（重分组触发 patch 而非误判 none）。 */
-    const stars = (Array.isArray(ws.stars) ? ws.stars : []).map((star) => ({
-      id: star.id,
-      name: star.name,
-      lifecycle: LIFECYCLE_STATES.has(star.lifecycle) ? star.lifecycle : "created",
-      setBy: typeof star.setBy === "string" && star.setBy ? star.setBy : null,
-      at: Number(star.at) || null,
-      tasks: [Number(star.tasks?.[0]) || 0, Number(star.tasks?.[1]) || 0],
-      age: relativeTime(star.birthMs, now),
-      act: 0
-    }));
+    /* 点燃谱系回查表（add-cosmos-panel-birthline-sort 3.1 / design D3）：骨架
+       `ws.lineages = [{slug, embryoAt, embryoSessionId, ignitedMs}]` 按 slug 建 Map
+       （O(1) 回查）；台账缺席 / 空清单 → 空表（面板全量走 birthMs 兜底口径）。 */
+    const lineageBySlug = new Map();
+    for (const row of Array.isArray(ws.lineages) ? ws.lineages : []) {
+      const slug = typeof row?.slug === "string" && row.slug ? row.slug : "";
+      if (!slug) continue;
+      lineageBySlug.set(slug, row);
+    }
+    const stars = (Array.isArray(ws.stars) ? ws.stars : []).map((star) => {
+      const lineage = lineageBySlug.get(star.id) ?? null;
+      const embryoAt = Number(lineage?.embryoAt);
+      const ignitedMs = Number(lineage?.ignitedMs);
+      return {
+        id: star.id,
+        name: star.name,
+        lifecycle: LIFECYCLE_STATES.has(star.lifecycle) ? star.lifecycle : "created",
+        setBy: typeof star.setBy === "string" && star.setBy ? star.setBy : null,
+        at: Number(star.at) || null,
+        tasks: [Number(star.tasks?.[0]) || 0, Number(star.tasks?.[1]) || 0],
+        age: relativeTime(star.birthMs, now),
+        act: 0,
+        /* 数值出生时刻透传（3.1）：`age` 文本之外的**数值**（scanProposal.birthMs），
+           供面板孕育时间线排序作兜底位消费；取不到 → null（该块殿后、id 码点序兜底）。 */
+        birthMs: Number(star.birthMs) > 0 ? Number(star.birthMs) : null,
+        /* 点燃谱系三字段（3.1）：台账命中则带谱系，未命中 → null（历史存量 / 手工
+           创建提案 → 面板按 birthMs 兜底插入时间线，不加任何视觉标注）。 */
+        embryoAt: Number.isFinite(embryoAt) && embryoAt > 0 ? embryoAt : null,
+        embryoSessionId: typeof lineage?.embryoSessionId === "string" && lineage.embryoSessionId
+          ? lineage.embryoSessionId
+          : null,
+        /* 台账点燃时刻（3.1 扩展，scope ③）：块内同刻 birthMs 的次序兜底输入。 */
+        ignitedMs: Number.isFinite(ignitedMs) && ignitedMs > 0 ? ignitedMs : null
+      };
+    });
     const starIds = new Set(stars.map((star) => star.id));
     for (const anchor of Array.isArray(ws.pending) ? ws.pending : []) {
       if (!anchor || typeof anchor.name !== "string" || !anchor.name || starIds.has(anchor.name)) continue;
@@ -794,8 +896,11 @@ export function mergeScene({ skeleton, sessions, workspaces, statuses = null, no
        模板命中缺席 → 该星座整体回退旧 starOffset 散布（D5 降级路径，按星座粒度、
        不抛错、不中断装配；正常路径不可达）→ 无图样。
        **命中结果复用**（add-cosmos-template-name-toggle D2）：下方 `tplZh` 消费同一次
-       查询结果，使「模板分配契约单一出处」在装配内字面成立（MUST NOT 二次查询）。 */
-    const template = templateForWorkspace(ws.id);
+       查询结果，使「模板分配契约单一出处」在装配内字面成立（MUST NOT 二次查询）。
+       **口径**（add-cosmos-template-reassign 2.2/D1）：本查询 = 图样/名称口径
+       `templateForFigure`（覆盖命中优先、哈希兜底）；星座位置在 `constellationPositions`
+       内独立走哈希口径，二者解耦。 */
+    const template = figureLookup(ws.id);
     const layout = starPatternLayout(template, stars);
     let pattern = null;
     if (layout) {
@@ -1073,8 +1178,25 @@ function starPropertySignature(star) {
   if (!star) return "";
   /* `sessionId`（add-cosmos-embryo-cards 2.2）：星胚归并分组的唯一输入——手工编辑某
      锚点的 sessionId（锚点集合不变）必须判为属性级 patch，MUST NOT 被差分守卫误判
-     none（否则客户端早退、星胚卡片停留旧分组）。 */
-  return [star.name, star.lifecycle, star.setBy ?? "", star.at ?? "", star.sessionId ?? "", star.tasks?.[0], star.tasks?.[1], star.act, star.age ?? ""].join("|");
+     none（否则客户端早退、星胚卡片停留旧分组）。
+     `birthMs` / `embryoAt` / `embryoSessionId` / `ignitedMs`（add-cosmos-panel-birthline-sort
+     3.2）：面板孕育时间线的排序输入——谱系写入（null → 有值）或时间线数值变化 MUST
+     判属性级 patch，MUST NOT 被差分守卫误判 none（面板停留兜底块旧序）。 */
+  return [
+    star.name,
+    star.lifecycle,
+    star.setBy ?? "",
+    star.at ?? "",
+    star.sessionId ?? "",
+    star.tasks?.[0],
+    star.tasks?.[1],
+    star.act,
+    star.age ?? "",
+    star.birthMs ?? "",
+    star.embryoAt ?? "",
+    star.embryoSessionId ?? "",
+    star.ignitedMs ?? ""
+  ].join("|");
 }
 
 function planetPropertySignature(planet) {

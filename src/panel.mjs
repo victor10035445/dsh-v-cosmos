@@ -7,13 +7,17 @@
  *
  * 口径（spec）：
  *  - 数据源 = 既有场景骨架（恒星 + 工作区 path），零新增宿主接口；
- *  - 银河态 = 全部在册工作区的活跃提案，按工作区分组（组标题 = 星座名），组内按名称
- *    **字典序**（码点序，确定性，与骨架传入顺序解耦）；**无活跃提案且无星胚锚点的工作区
- *    不生成分组**（自动隐藏，不占位）；
+ *  - 银河态 = 全部在册工作区的活跃提案，按工作区分组（组标题 = 星座名）；**组内按
+ *    孕育时间线排列**（add-cosmos-panel-birthline-sort 4.1/4.2，修订语义）：组内按
+ *    **谱系块**排序——块按星胚出生时间升序（活锚点组内最早 `at` → 台账 `embryoAt`
+ *    → 兜底目录出生 `birthMs`，全缺的块殿后、块键码点序兜底）；块内星胚合并卡
+ *    （仍在册时）恒打头、其点燃提案按创建顺序（`birthMs` 升序 → 台账 `ignitedMs`
+ *    升序 → id 码点序）。无台账谱系的提案各自按 id 成块、以 `birthMs` 插入时间线
+ *    （**不加任何视觉标注**）；**无活跃提案且无星胚锚点的工作区不生成分组**；
  *  - 钻取态 = 仅当前星座（分组标题保留；无提案时仍渲染空态）；
  *  - 待创建星胚（`lifecycle === "proto"`，即 pending 锚点）**以星胚合并卡片进入列表**：
  *    同工作区内按锚点 `sessionId` 归并为一张卡（缺失 `sessionId` 的旧锚点各自成卡），
- *    排于该组全部正式提案之后（组间按首 slug 字典序，MUST NOT 与正式提案字典序混排）；
+ *    作为其谱系**块头**呈现（MUST NOT 再强制排于组内全部正式提案之后）；
  *    **星胚锚点同样触发分组**（add-cosmos-galaxy-embryo-cards D1：银河态分组条件 =
  *    活跃提案 ∨ 星胚锚点——仅星胚的工作区照常生成分组、组内仅星胚合并卡片）；星胚卡
  *    不携带 `dir`（动作链路按无目标守卫降级）；
@@ -106,6 +110,150 @@ export function embryoKeyOf(wsId, groupKey) {
   return "proto" + "\u0000" + String(wsId ?? "") + "\u0000" + String(groupKey ?? "");
 }
 
+/* ------------------------------------------------------------------ *
+ * 谱系块装配（add-cosmos-panel-birthline-sort 4.1 / design D4）
+ * ------------------------------------------------------------------ */
+
+/** 谱系块键命名空间前缀（四族隔离，杜绝裸值跨域串块；沿用 `embryoGroupsOf` 的 NUL 分桶纪律）。 */
+const BLOCK_SESSION = "session\u0000"; // 活锚点组 / 已点燃谱系组共用（同会话必须归同一块）
+const BLOCK_SOLO = "solo\u0000"; // 无 sessionId 的 solo 锚点 / solo 台账行（按 slug 自立）
+const BLOCK_STAR = "star\u0000"; // 无台账谱系的提案（各自成块、按 birthMs 插入时间线）
+
+/** 正数毫秒取值（非有限 / ≤0 → null；排序兜底位的唯一取值口径）。 */
+function positiveMs(value) {
+  const num = Number(value);
+  return Number.isFinite(num) && num > 0 ? num : null;
+}
+
+/**
+ * 提案星 → 谱系块键（纯函数）：
+ *  - 台账 `embryoSessionId` 非空 → 会话族（与同会话活锚点组归同一块）；
+ *  - 有台账行但 sessionId 为 null（solo 台账）→ 自律族（按 slug 自立）；
+ *  - 无台账谱系 → 恒星族（各自成块，按 `birthMs` 插入时间线）。
+ * @param {object} star 场景恒星（正式提案）
+ * @returns {string} 命名空间化块键
+ */
+function blockKeyOfStar(star) {
+  const id = typeof star?.id === "string" ? star.id : "";
+  const sessionId = typeof star?.embryoSessionId === "string" && star.embryoSessionId ? star.embryoSessionId : null;
+  if (sessionId) return BLOCK_SESSION + sessionId;
+  if (positiveMs(star?.embryoAt) !== null) return BLOCK_SOLO + id;
+  return BLOCK_STAR + id;
+}
+
+/**
+ * 星胚合并组 → 谱系块键（纯函数）：会话族（同 `sessionId`）或自律族（solo slug）。
+ * @param {{key: string, sessionId: string|null}} group `embryoGroupsOf` 产物
+ * @returns {string} 命名空间化块键
+ */
+function blockKeyOfEmbryo(group) {
+  const sessionId = typeof group?.sessionId === "string" && group.sessionId ? group.sessionId : null;
+  if (sessionId) return BLOCK_SESSION + sessionId;
+  return BLOCK_SOLO + String(group?.key ?? group?.slugs?.[0] ?? "");
+}
+
+/** 块内提案次序（纯函数）：`birthMs` 升序 → 台账 `ignitedMs` 升序 → id 码点序（缺失值殿后）。 */
+function compareBlockStars(a, b) {
+  const birthA = positiveMs(a?.birthMs);
+  const birthB = positiveMs(b?.birthMs);
+  if (birthA !== birthB) {
+    if (birthA === null) return 1;
+    if (birthB === null) return -1;
+    return birthA - birthB;
+  }
+  const ignitedA = positiveMs(a?.ignitedMs);
+  const ignitedB = positiveMs(b?.ignitedMs);
+  if (ignitedA !== ignitedB) {
+    if (ignitedA === null) return 1;
+    if (ignitedB === null) return -1;
+    return ignitedA - ignitedB;
+  }
+  return compareText(a?.id, b?.id);
+}
+
+/**
+ * 块时间取值链（纯函数，design D4）：活锚点组内最早锚点 `at` → 台账 `embryoAt`
+ * （块内最早）→ 兜底提案目录出生 `birthMs`（块内最早）→ 全缺 `null`（块殿后）。
+ * @param {{embryo: object|null, stars: Array<object>}} block 谱系块
+ * @returns {number|null}
+ */
+function blockTimeOf(block) {
+  const anchorAt = positiveMs(block?.embryo?.at);
+  if (anchorAt !== null) return anchorAt;
+  let lineageAt = null;
+  for (const star of Array.isArray(block?.stars) ? block.stars : []) {
+    const at = positiveMs(star?.embryoAt);
+    if (at !== null && (lineageAt === null || at < lineageAt)) lineageAt = at;
+  }
+  if (lineageAt !== null) return lineageAt;
+  let birth = null;
+  for (const star of Array.isArray(block?.stars) ? block.stars : []) {
+    const ms = positiveMs(star?.birthMs);
+    if (ms !== null && (birth === null || ms < birth)) birth = ms;
+  }
+  return birth;
+}
+
+/** 块间次序（纯函数）：块时间升序（null 殿后）→ 块键码点序兜底（确定性）。 */
+function compareBlocks(a, b) {
+  const timeA = a?.time ?? null;
+  const timeB = b?.time ?? null;
+  if (timeA !== timeB) {
+    if (timeA === null) return 1;
+    if (timeB === null) return -1;
+    return timeA - timeB;
+  }
+  return compareText(a?.key, b?.key);
+}
+
+/**
+ * 谱系块装配（纯函数，add-cosmos-panel-birthline-sort 4.1；独立导出供冒烟直测）。
+ *
+ * 把单工作区恒星集合按**孕育时间线**归块：
+ *  - 块键空间 = 活锚点组 `sessionId` / solo slug → 台账 `embryoSessionId` / solo slug
+ *    → 无谱系提案按 `id` 各自成块（会话族共用前缀：同一 `sessionId` 的活锚点与其点燃
+ *    提案 MUST 归同一块）；
+ *  - 块时间 = 活锚点组内最早 `at` → 块内最早 `embryoAt` → 块内最早 `birthMs` → null；
+ *  - 块间 = 块时间升序（null 殿后）→ 块键码点序；
+ *  - 块内 = 星胚合并组打头（若有）+ 提案按 `birthMs` → `ignitedMs` → id。
+ *
+ * 输入容错：非数组 → 空清单；无 id 的畸形恒星 / 非正式提案生命周期（proto 走星胚
+ * 分组）不产块成员，SHALL NOT 抛错。
+ *
+ * @param {Array<object>} stars 单工作区 scene 恒星
+ * @returns {Array<{key: string, embryo: object|null, stars: Array<object>, time: number|null}>}
+ *          块序即呈现序；`embryo` = 该块的星胚合并组（无则 null）
+ */
+export function birthlineBlocksOf(stars) {
+  const list = Array.isArray(stars) ? stars : [];
+  const buckets = new Map(); // 块键 → { key, embryo, stars }
+  const bucketOf = (key) => {
+    let bucket = buckets.get(key);
+    if (!bucket) {
+      bucket = { key, embryo: null, stars: [] };
+      buckets.set(key, bucket);
+    }
+    return bucket;
+  };
+  /* 星胚合并组归块（活锚点组 → 块头卡片；组数据自 proto 星现算）。 */
+  for (const group of embryoGroupsOf(list)) {
+    bucketOf(blockKeyOfEmbryo(group)).embryo = group;
+  }
+  /* 正式提案归块（`proto` 走星胚卡片路径；非法 lifecycle 仍按 created 出卡，与投影同口径）。 */
+  for (const star of list) {
+    if (!star || star.lifecycle === "proto") continue;
+    const id = typeof star.id === "string" && star.id ? star.id : "";
+    if (!id) continue;
+    bucketOf(blockKeyOfStar(star)).stars.push(star);
+  }
+  const blocks = [];
+  for (const bucket of buckets.values()) {
+    bucket.stars.sort(compareBlockStars);
+    blocks.push({ key: bucket.key, embryo: bucket.embryo, stars: bucket.stars, time: blockTimeOf(bucket) });
+  }
+  return blocks.sort(compareBlocks);
+}
+
 /**
  * 面板投影。
  * @param {object|null} scene mergeScene 产物（`{ workspaces: [...] }`）
@@ -149,10 +297,14 @@ export function projectPanel(scene, options = {}) {
       drillName = wsName;
     }
     /* 全量卡片（**不受钻取/搜索影响**）：选中校验与 @路径查表的唯一来源——
-       钻取到别的星座时选中态仍归该提案（spec「选中跨视图保留」）。 */
+       钻取到别的星座时选中态仍归该提案（spec「选中跨视图保留」）。
+       卡片装配与**呈现序**分离（add-cosmos-panel-birthline-sort 4.2）：下方谱系块
+       装配决定组内次序；本循环只负责逐星建卡（键 = 提案键）。 */
     const cards = [];
+    const cardOfStar = new Map(); // 恒星对象 → 提案卡片（对象身份，防同名/重复 id 串卡）
     for (const star of Array.isArray(ws?.stars) ? ws.stars : []) {
       if (star?.lifecycle === "proto") continue; // 星胚走下方合并卡片路径
+      if (cardOfStar.has(star)) continue; // 同一恒星对象重复入列 → 只建一张卡（计数一致）
       const id = typeof star?.id === "string" && star.id ? star.id : "";
       if (!id) continue;
       /* tasks 数字对（`.state.json` 的完成/总数）→ 卡片进度数据（1.2）：投影层只给真实
@@ -178,57 +330,76 @@ export function projectPanel(scene, options = {}) {
         act: Number(star?.act) || 0,
         dir: proposalDirOf(wsPath, id)
       };
-      cards.push(card);
-      allCards.push(card);
+      cardOfStar.set(star, card);
       total++;
     }
-    /* 组内正式提案字典序（星胚 MUST NOT 参与该混排）。 */
-    cards.sort((a, b) => compareText(a.name, b.name) || compareText(a.id, b.id));
-    const formalCount = cards.length;
-    /* 星胚合并卡片（add-cosmos-embryo-cards 3.1）：同工作区内按锚点 `sessionId` 归并
-       （缺失各成组，组间按首 slug 字典序），追加于全部正式提案之后。组数据自 proto 星
-       现算——零新增 scene 字段（merge.mjs `embryoGroupsOf`）。 */
-    for (const group of embryoGroupsOf(ws?.stars)) {
-      const slug = group.slugs[0] ?? group.key;
-      const card = {
-        key: embryoKeyOf(wsId, group.key),
-        /* id/name 取首 slug：DOM 钩子与 title 兜底都可读（真正的分组身份在 key 与
-           `slugs`；会话归并组暴露 `sessionId` 供星胚动作链路解析目标）。 */
-        id: slug,
-        name: slug,
-        wsId,
-        wsName,
-        wsPath,
-        lifecycle: "proto",
-        isEmbryo: true,
-        sessionId: group.sessionId,
-        slugs: group.slugs,
-        setBy: null,
-        at: group.at,
-        tasks: [0, 0],
-        /* 星胚合并卡 progress 恒 null（1.2）：spec 已锁星胚卡 MUST 无任务进度行（含进度条），
-           组件侧按 null 自然跳过——此处显式落值，杜绝「星胚也被分母为 0 的进度条命中」。 */
-        progress: null,
-        /* act 透传（keep-embryo-active-while-exploring 2.2 / design D4）：组内 proto 星
-           act 最大值（= 锚点探索会话是否活跃，值域 {0,1}），缺省 0 保持沉睡语义。
-           动作条门控（`actionButtonVisible`）直接消费本字段：探索会话进行中
-           （busy ∨ waiting ∨ 委托忙碌）→ act=1 → `preState:"proto"` 按钮不渲染。 */
-        act: Number(group.act) || 0
-        /* MUST NOT 携带 `dir`：星胚无提案目录，动作链路按「目标目录缺失」守卫
-           拒绝执行（add-cosmos-action-prestate-gate 承接正式星胚动作）。 */
-      };
+    /* 组内装配切为**谱系块**（add-cosmos-panel-birthline-sort 4.2）：块按孕育时间线
+       升序；块内星胚合并卡打头、其点燃提案按创建顺序。星胚合并卡片（add-cosmos-embryo-cards
+       3.1）仍同工作区内按锚点 `sessionId` 归并（缺失各成组），但其呈现位置由所属谱系块
+       决定（MUST NOT 再强制排于组内全部正式提案之后）。 */
+    const formalCount = cardOfStar.size;
+    let embryoCount = 0;
+    const placed = new Set();
+    for (const block of birthlineBlocksOf(ws?.stars)) {
+      const group = block.embryo;
+      if (group) {
+        const slug = group.slugs[0] ?? group.key;
+        const card = {
+          key: embryoKeyOf(wsId, group.key),
+          /* id/name 取首 slug：DOM 钩子与 title 兜底都可读（真正的分组身份在 key 与
+             `slugs`；会话归并组暴露 `sessionId` 供星胚动作链路解析目标）。 */
+          id: slug,
+          name: slug,
+          wsId,
+          wsName,
+          wsPath,
+          lifecycle: "proto",
+          isEmbryo: true,
+          sessionId: group.sessionId,
+          slugs: group.slugs,
+          setBy: null,
+          at: group.at,
+          tasks: [0, 0],
+          /* 星胚合并卡 progress 恒 null（1.2）：spec 已锁星胚卡 MUST 无任务进度行（含进度条），
+             组件侧按 null 自然跳过——此处显式落值，杜绝「星胚也被分母为 0 的进度条命中」。 */
+          progress: null,
+          /* act 透传（keep-embryo-active-while-exploring 2.2 / design D4）：组内 proto 星
+             act 最大值（= 锚点探索会话是否活跃，值域 {0,1}），缺省 0 保持沉睡语义。
+             动作条门控（`actionButtonVisible`）直接消费本字段：探索会话进行中
+             （busy ∨ waiting ∨ 委托忙碌）→ act=1 → `preState:"proto"` 按钮不渲染。 */
+          act: Number(group.act) || 0
+          /* MUST NOT 携带 `dir`：星胚无提案目录，动作链路按「目标目录缺失」守卫
+             拒绝执行（add-cosmos-action-prestate-gate 承接正式星胚动作）。 */
+        };
+        cards.push(card);
+        allCards.push(card);
+        embryoTotal++;
+        embryoCount++;
+      }
+      for (const star of block.stars) {
+        const card = cardOfStar.get(star);
+        if (!card || placed.has(star)) continue;
+        placed.add(star);
+        cards.push(card);
+        allCards.push(card);
+      }
+    }
+    /* 防御补位（正常路径零触发）：块装配未覆盖的正式卡（重复 id / 畸形对象等极端输入）
+       仍按骨架原序入列——MUST NOT 因排序装配丢卡（计数与选中目标一致性优先）。 */
+    for (const star of Array.isArray(ws?.stars) ? ws.stars : []) {
+      const card = cardOfStar.get(star);
+      if (!card || placed.has(star)) continue;
+      placed.add(star);
       cards.push(card);
       allCards.push(card);
-      embryoTotal++;
     }
     if (drillWsId !== null && wsId !== drillWsId) continue;
     /* 银河态：**无活跃提案且无星胚锚点的工作区不生成分组**（自动隐藏，避免空标题
        占位）；分组条件 = 活跃提案 ∨ 星胚锚点（add-cosmos-galaxy-embryo-cards D1：仅星胚
        的工作区照常生成分组、组内仅星胚合并卡片）。星胚计数复用上面**已装配的卡片数**
-       （`cards.length - formalCount`），MUST NOT 二次调用 `embryoGroupsOf`；无 slug 的
-       畸形锚点不产卡 → 与「无锚点」同口径维持隐藏。钻取态例外——当前星座既无提案也无
-       锚点时仍渲染该分组（「该星座暂无提案」空态），两种口径可区分。 */
-    const embryoCount = cards.length - formalCount;
+       （MUST NOT 二次调用 `embryoGroupsOf`）；无 slug 的畸形锚点不产卡 → 与「无锚点」
+       同口径维持隐藏。钻取态例外——当前星座既无提案也无锚点时仍渲染该分组
+       （「该星座暂无提案」空态），两种口径可区分。 */
     if (drillWsId === null && formalCount === 0 && embryoCount === 0) continue;
     const matched = matchedIds === null || matchedIds.has(wsId);
     groups.push({ wsId, wsName, wsPath, cards, matched });

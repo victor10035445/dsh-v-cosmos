@@ -312,8 +312,8 @@ export function createGalaxySkin(cfg) {
 
       if (it.kind === 'patdot') {
         /* 空槽装饰点（add-cosmos-template-figure-display 3.2）：图样线顶点微点——
-           取色/基线与本皮肤 constline 同源（lineColor × line.alpha），点弱化因子由引擎
-           下发（pt.a < 图样线段 PAT_LINE_DIM）⇒ 恒弱于图样线；纯装饰不参与拾取。 */
+           取色/基线与本皮肤 constline 同源（lineColor × line.alpha），派生点 α 由引擎
+           下发（pt.a < 图样线段 E.patLineDim）⇒ 恒弱于图样线；纯装饰不参与拾取。 */
         patDotDraw(ctx, it, lineColor, line.alpha);
         return;
       }

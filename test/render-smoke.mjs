@@ -402,15 +402,19 @@ rafQueue.length = 0; // 清掉已停引擎的陈旧帧回调（新增块从确�
   const containerWidth = (pageW) => Math.max(floor, Math.min(cap, pageW - reserve));
   assert.equal(containerWidth(480), floor, "页宽 480（侧栏在场退化档）：min() 为负 → 下限兜底，容器不塌为 0");
   assert.equal(containerWidth(2000), cap, "超宽页：容器封顶 844（标牌上限 480 不被百分比二次折减）");
-  assert.ok(badgeM[1].includes("max-width: 480px") && !badgeM[1].includes("calc(100% - 470px)"),
-    "标牌收敛为单一上限 480px（百分比限宽基准 MUST NOT 原样带入）");
+  assert.ok(badgeM[1].includes("max-width: min(480px, 40vw)") && !badgeM[1].includes("calc(100% - 470px)"),
+    "标牌上限收敛为 min(480px, 40vw)（右上角组不压中心切换条目）");
+  assert.ok(/\.cos-badge \{[^}]*text-align: right/.test(ENGINE_CSS), "标牌随右上角组右对齐");
+  assert.ok(/\.cos-badge-cluster \{[^}]*position: absolute; top: 14px; right: 16px/.test(ENGINE_CSS), "标牌 + 两枚模板工具整组右上角");
+  assert.ok(ENGINE_CSS.includes('.cos-badge-cluster[data-drilled="true"] { display: flex; }'), "右上标牌组仅钻取态呈现（银河态零呈现）");
+  assert.ok(ENGINE_CSS.includes(".cos-page-dock .cos-badge-cluster { top: 6px; }"), "dock 形态标牌组上移贴顶（不侵入面板 top:52）");
   assert.ok(/\.cos-badge b \{[^}]*font-size: var\(--cos-ws-title-size, 13px\)/.test(ENGINE_CSS), "标牌名称视觉样式不变（字号令牌保留）");
   assert.ok(/\.cos-badge span \{[^}]*display: block/.test(ENGINE_CSS), "标牌计数行视觉样式不变");
   assert.ok(badgeM[1].includes("pointer-events: none"), "标牌仍 pointer-events:none（纯信息元素，不形成点击死区）");
 
   /* ④ 断点：<520px 改挂容器（放宽 + 隐藏条目槽），标牌旧媒体查询 MUST 已退役。 */
-  assert.ok(ENGINE_CSS.includes("@media (max-width: 520px) { .cos-wsbar { max-width: calc(100% - 40px); } .cos-wsbar-side { display: none; } }"),
-    "窄视口断点改挂行容器：放宽 calc(100% - 40px) + 隐藏条目槽（仅留标牌）");
+  assert.ok(ENGINE_CSS.includes("@media (max-width: 520px) { .cos-wsbar { max-width: calc(100% - 40px); }") && ENGINE_CSS.includes(".cos-wsbar-side { display: none; }"),
+    "窄视口断点改挂行容器：放宽 calc(100% - 40px) + 隐藏条目槽");
   assert.ok(!ENGINE_CSS.includes("@media (max-width: 520px) { .cos-badge"), "标牌旧媒体查询已移除（断点不双写）");
 
   /* ⑤ 条目纪律：≥40px 触屏点击目标 / 暖金描边 HUD 语言 / 皮肤 CSS 变量取色 / 显隐两态指针语义。 */
@@ -440,9 +444,17 @@ rafQueue.length = 0; // 清掉已停引擎的陈旧帧回调（新增块从确�
     assert.equal(rightSlot.children.length, 1, "右槽常驻一个条目节点");
     const markup = String(root.innerHTML);
     assert.ok(markup.includes("cos-wsbar") && markup.includes('data-side="left"') && markup.includes('data-side="right"'),
-      "ensureDom 产物含行容器与左右条目槽");
-    const order = ['data-side="left"', "cos-badge", 'data-side="right"'].map((token) => markup.indexOf(token));
-    assert.ok(order[0] >= 0 && order[0] < order[1] && order[1] < order[2], "DOM 顺序 [左槽][标牌][右槽]");
+      "ensureDom 产物含切换条目容器与左右条目槽");
+    const order = [
+      'class="cos-wsbar-side" data-side="left"',
+      'class="cos-wsbar-side" data-side="right"',
+      "cos-badge-cluster",
+      'class="cos-badge"',
+      'cos-wsbar-tools" data-side="left"',
+      'cos-wsbar-tools" data-side="right"'
+    ].map((token) => markup.indexOf(token));
+    assert.ok(order.every((at, i) => at >= 0 && (i === 0 || order[i - 1] < at)),
+      "DOM 顺序 [左槽][右槽] + 右上组 [标牌][指定模板][随机重掷]");
     const starOf = (id) => ({ id, name: id, lifecycle: "created", setBy: null, at: null, tasks: [1, 1], age: "刚刚", act: 0, off: [0, 0, 0] });
     const wsOf = (id, name, pos) => ({ id, name, pos, stars: [starOf(id + "-s")], links: [], planets: [], comets: [], archives: 0, satelliteCount: 0 });
     switcher.setScene({

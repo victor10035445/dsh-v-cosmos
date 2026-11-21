@@ -5,7 +5,7 @@
  * add-cosmos-zoom-focus-nav 3.1–3.3 新增「导航」标签页——缩放阈值与指针聚焦的轻量偏好
  * （两个数字输入 + 一个开关，即时生效，无保存钮）；
  * add-cosmos-layout-tuning 5.1–5.2：「导航」页签更名为「界面」（导航阈值 + 界面尺寸
- * 两组控件，slot/face id 仍为 `nav`）；尺寸组 12 个像素输入经同一 face 即时保存，
+ * 两组控件，slot/face id 仍为 `nav`）；尺寸组 13 个像素输入经同一 face 即时保存，
  * 整页根容器的 CSS 变量随之热更新。
  * fix-cosmos-const-float-send-close 4.3：「快捷动作」按钮行增「执行后跳转」勾选框
  * （每按钮独立，缺省勾选；参与暂存-保存）——与固定语义的行内锁定「新增会话」是两个
@@ -27,6 +27,8 @@
  * step2-cosmos-openspec-path-setting 3.1–3.3：「通用」页签新增「路径」区（CosmosPathsSection，
  * 独立 face：openspecPath / cosmosSpecDir 输入 + CAS 保存 + 非阻断存在性警示 +
  * 端点不可达仅本区禁用降级）。
+ * add-cosmos-figure-line-alpha 3.3：「通用」页签「星座装饰」组新增图样连线亮度滑杆
+ * （range 5–100 step 5，独立 face `patLineDim`，拖拽即提交 + 数值回显）。
  *
  * 由 client.jsx 注册为 `settings.section`（id `v-cosmos`，order 6——「技能管理」之后）+
  * 六条标签页「通用」（order -1）/「快捷动作」（order 0）/
@@ -267,7 +269,8 @@ export const COSMOS_SETTINGS_CSS = `
 .cs-navToggle:focus-within{outline:2px solid var(--dsw-alias-border-inverted);outline-offset:2px}
 .cs-navToggle input{margin:2px 0 0;cursor:pointer;accent-color:var(--dsw-alias-border-inverted)}
 .cs-navToggleText{display:flex;flex-direction:column;gap:2px;min-width:0}
-/* ── 「界面尺寸」组（add-cosmos-layout-tuning 5.2）：「界面」页签内 12 个像素值输入
+/* ── 「界面尺寸」组（add-cosmos-layout-tuning 5.2；add-cosmos-template-reassign 返工扩第
+      13 键 wsToolSize）：「界面」页签内 13 个像素值输入
       （面板宽/高、按钮尺寸、动作条、搜索框、星座标题字号）。与导航组同款即时生效，
       数字输入触控目标 ≥44px，label[htmlFor] 原生可达；高度类键标注「0 = 自适应」。 ── */
 .cs-sizeGroup{display:flex;flex-direction:column;gap:6px;margin-top:8px;padding-top:10px;
@@ -313,6 +316,16 @@ export const COSMOS_SETTINGS_CSS = `
 .cs-launchRow input{margin:2px 0 0;cursor:pointer;accent-color:var(--dsw-alias-border-inverted)}
 .cs-launchText{display:flex;flex-direction:column;gap:2px;min-width:0}
 .cs-launchHint{font-size:12px;line-height:16px;color:var(--dsw-alias-label-tertiary)}
+/* ── 「通用」页签·星座装饰组·图样连线亮度滑杆（add-cosmos-figure-line-alpha 3.3/D4）：
+      仓库首个 range 控件——行式布局（label + 滑杆 + 数值回显），拖拽即提交（无草稿态）；
+      行高 ≥44px 保触控目标，数值列等宽防回显抖动。 ── */
+.cs-rangeRow{display:flex;align-items:center;gap:10px;box-sizing:border-box;min-height:44px;padding:6px 0;
+  color:var(--dsw-alias-label-primary);font-size:13px;line-height:18px}
+.cs-rangeLabel{flex:none;min-width:0;max-width:42%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cs-rangeInput{flex:1;min-width:96px;height:44px;margin:0;cursor:pointer;accent-color:var(--dsw-alias-border-inverted)}
+.cs-rangeInput:focus-visible{outline:2px solid var(--dsw-alias-border-inverted);outline-offset:2px}
+.cs-rangeValue{flex:none;width:44px;text-align:right;font-size:12px;line-height:16px;
+  color:var(--dsw-alias-label-secondary);font-variant-numeric:tabular-nums}
 /* ── 「通用」页签·路径区（step2-cosmos-openspec-path-setting 3.1–3.3）：openspecPath /
       cosmosSpecDir 两个文本输入 + 保存（CAS 草稿-保存模式）；端点不可达整组禁用 +
       提示（不影响页面其余设置）；存在性警示为非阻断提示。触控目标 ≥44px。 ── */
@@ -499,9 +512,12 @@ export function CosmosPathsSection(props) {
  *  - 「星座模板名显示」复选框（缺省关）：独立 face（`templateNames`），改动立即持久化 +
  *    已打开整页 `setTuning` 热更（同一「即时保存、无暂存钮」纪律，与 launchMode 同款）；
  *    装饰用途提示走 title + 行内 hint 双通道。
+ *  - 「图样连线亮度」滑杆（5–100，step 5；缺省 50）：独立 face（`patLineDim`），拖拽即
+ *    提交（无草稿态）、数值回显 + aria；与模板名开关同组「星座装饰」（add-cosmos-figure-
+ *    line-alpha 3.3/D4）。仓库首个 range 控件——行式样式类 `cs-range*`（cs-sizeRow 同族）。
  *  - 两档在 web 与桌面形态同效，无任何形态禁用或降级说明（独立窗口的协议判据随能力退役）。
  *  - face 缺失（旧宿主未注入）→ 降级占位（不渲染可点却永不生效的控件，与其它页签同纪律）。
- * @param {{t: Function, launch?: object, paths?: object|null, templateNames?: object|null}} props
+ * @param {{t: Function, launch?: object, paths?: object|null, templateNames?: object|null, patLineDim?: object|null}} props
  */
 export function CosmosGeneralPanel(props) {
   const t = props.t;
@@ -520,6 +536,16 @@ export function CosmosGeneralPanel(props) {
   const templateNamesOn = namesSnapshot !== null && typeof namesSnapshot === "object"
     ? namesSnapshot.templateNames === true
     : false;
+  /* 图样连线亮度 face（add-cosmos-figure-line-alpha 3.3）：独立受控镜像（与 templateNames
+     同款读面）；快照缺键/非法 → 回显缺省 50（净房兜底，不抛错）。 */
+  const lineFace = props.patLineDim ?? null;
+  const lineSnapshot = useSyncExternalStore(
+    lineFace ? lineFace.subscribe : noopSubscribe,
+    lineFace ? lineFace.getSnapshot : noopSnapshot
+  );
+  const patLineDimValue = lineSnapshot !== null && typeof lineSnapshot === "object" && Number.isFinite(Number(lineSnapshot.patLineDim))
+    ? Math.min(100, Math.max(5, Math.round(Number(lineSnapshot.patLineDim))))
+    : 50;
   const current = snapshot !== null && typeof snapshot === "object" && COSMOS_LAUNCH_MODES.includes(snapshot.launchMode)
     ? snapshot.launchMode
     : "embedded";
@@ -541,6 +567,18 @@ export function CosmosGeneralPanel(props) {
     t,
     "cosmos.settings.templateNamesHint",
     "在银河星座标签与钻取标牌上追加该星座命中模板的中文名（如「猎户座」）；纯装饰文本，不影响布局与交互。"
+  );
+  const setPatLineDim = (value) => {
+    try {
+      lineFace?.set?.(value);
+    } catch (error) {
+      console.error("[dsh-v-cosmos] pattern line brightness setting failed:", error);
+    }
+  };
+  const patLineDimHint = tr(
+    t,
+    "cosmos.settings.patLineDimHint",
+    "调低会弱化星座图样的辨识度（连线更淡、空槽装饰点同比变暗）；纯装饰层，不影响恒星、行星与拾取。"
   );
   if (face === null) {
     return (
@@ -570,24 +608,47 @@ export function CosmosGeneralPanel(props) {
           </label>
         ))}
       </fieldset>
-      {/* 星座模板名显示（add-cosmos-template-name-toggle 1.2/D1/D3）：独立 face + 即时保存；
-          title 与行内 hint 双通道说明「纯装饰」用途（不新增读屏噪音——aria-label 只给开关名）。
-          face 缺席（旧宿主未注入）→ 整行不渲染（同其它页签纪律：不渲染可点却永不生效的控件）。 */}
-      {namesFace !== null ? (
+      {/* 星座装饰组（add-cosmos-template-name-toggle 1.2/D1/D3 + add-cosmos-figure-line-alpha
+          3.3/D4）：图例「星座装饰」下两行——模板名开关（独立 face + 即时保存；title 与行内
+          hint 双通道说明「纯装饰」用途）与图样连线亮度滑杆（range 5–100 step 5，拖拽即提交、
+          数值回显）。face 缺席（旧宿主未注入）→ 对应行不渲染（同其它页签纪律：不渲染可点
+          却永不生效的控件）；两组 face 都缺席时整组不渲染。 */}
+      {namesFace !== null || lineFace !== null ? (
         <fieldset className="cs-launch">
-          <legend className="cs-launchLegend">{tr(t, "cosmos.settings.templateNamesLegend", "星座装饰")}</legend>
-          <label className="cs-launchRow" title={templateNamesHint} data-setting="templateNames">
-            <input
-              type="checkbox"
-              checked={templateNamesOn}
-              aria-label={tr(t, "cosmos.settings.templateNamesAria", "星座模板名显示开关")}
-              onChange={(event) => setTemplateNames(event.target.checked)}
-            />
-            <span className="cs-launchText">
-              <span>{tr(t, "cosmos.settings.templateNamesLabel", "星座模板名显示")}</span>
-              <span className="cs-launchHint">{templateNamesHint}</span>
-            </span>
-          </label>
+          <legend className="cs-launchLegend">{tr(t, "cosmos.settings.patLineDimLegend", "星座装饰")}</legend>
+          {namesFace !== null ? (
+            <label className="cs-launchRow" title={templateNamesHint} data-setting="templateNames">
+              <input
+                type="checkbox"
+                checked={templateNamesOn}
+                aria-label={tr(t, "cosmos.settings.templateNamesAria", "星座模板名显示开关")}
+                onChange={(event) => setTemplateNames(event.target.checked)}
+              />
+              <span className="cs-launchText">
+                <span>{tr(t, "cosmos.settings.templateNamesLabel", "星座模板名显示")}</span>
+                <span className="cs-launchHint">{templateNamesHint}</span>
+              </span>
+            </label>
+          ) : null}
+          {lineFace !== null ? (
+            <>
+              <div className="cs-rangeRow" title={patLineDimHint} data-setting="patLineDim">
+                <span className="cs-rangeLabel">{tr(t, "cosmos.settings.patLineDimLabel", "图样连线亮度")}</span>
+                <input
+                  className="cs-rangeInput"
+                  type="range"
+                  min={5}
+                  max={100}
+                  step={5}
+                  value={patLineDimValue}
+                  aria-label={tr(t, "cosmos.settings.patLineDimAria", "图样连线亮度百分比")}
+                  onChange={(event) => setPatLineDim(Number(event.target.value))}
+                />
+                <span className="cs-rangeValue">{patLineDimValue}%</span>
+              </div>
+              <span className="cs-launchHint">{patLineDimHint}</span>
+            </>
+          ) : null}
         </fieldset>
       ) : null}
       <div className="cs-meta">{tr(t, "cosmos.settings.launchModeInstant", "改动立即生效并保存")}</div>
@@ -1084,7 +1145,10 @@ const COSMOS_SIZE_FIELDS = Object.freeze([
   { key: "constActionHeight", id: "cosmos-size-const-action-h", label: "sizeConstActionH", min: 40, max: 72, step: 2, fallback: 40 },
   { key: "searchWidth", id: "cosmos-size-search-w", label: "sizeSearchW", min: 180, max: 640, step: 20, fallback: 320 },
   { key: "searchHeight", id: "cosmos-size-search-h", label: "sizeSearchH", min: 0, max: 64, step: 2, fallback: 0, auto: true },
-  { key: "wsTitleSize", id: "cosmos-size-ws-title", label: "sizeWsTitle", min: 10, max: 24, step: 1, fallback: 13 }
+  { key: "wsTitleSize", id: "cosmos-size-ws-title", label: "sizeWsTitle", min: 10, max: 24, step: 1, fallback: 13 },
+  /* 顶部模板工具高度（add-cosmos-template-reassign 返工 D8）：钻取态标牌两侧文字按钮，
+     允许低于图标按钮的 40px 下限（横向热区由文本宽度保证）。 */
+  { key: "wsToolSize", id: "cosmos-size-ws-tool", label: "sizeWsTool", min: 28, max: 48, step: 2, fallback: 32 }
 ]);
 
 /**
@@ -1135,7 +1199,7 @@ function CosmosSizeField(props) {
  * add-cosmos-zoom-ruler 3.2；spec「缩放导航设置页签」→「界面」页签）：
  *  - 导航组：仅「指针聚焦缩放」开关（默认开）；缩放进入/返回阈值已收敛为引擎常量并
  *    由 Cosmos 整页顶部缩放标尺呈现，本组 MUST NOT 提供阈值数字输入；
- *  - 界面尺寸组：`COSMOS_SIZE_FIELDS` 12 个像素输入（面板宽高 / 按钮边长 / 动作条 /
+ *  - 界面尺寸组：`COSMOS_SIZE_FIELDS` 13 个像素输入（面板宽高 / 按钮边长 / 动作条 /
  *    搜索框 / 星座标题字号；高度类 0 = 自适应）。
  * **即时生效**（无草稿-保存模式）：改动即 `face.set` → 写持久化偏好 × 已打开整页
  * 引擎 `setTuning` 热更 + 页根 CSS 令牌重渲染；数字输入用本地文本草稿承接键入
@@ -1197,7 +1261,7 @@ export function CosmosNavPanel(props) {
           </span>
         </label>
       </div>
-      {/* 界面尺寸组（add-cosmos-layout-tuning 5.2）：12 个像素输入，即时生效并持久化；
+      {/* 界面尺寸组（add-cosmos-layout-tuning 5.2）：13 个像素输入，即时生效并持久化；
           高度类字段 0 = 自适应页面高度（max-height 语义），见 design D2/D3。 */}
       <div className="cs-sizeGroup">
         <div className="cs-sizeTitle">{tr(t, "cosmos.settings.sizeGroup", "界面尺寸")}</div>

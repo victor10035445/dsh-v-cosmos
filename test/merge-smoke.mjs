@@ -10,7 +10,7 @@
  * 运行：node test/merge-smoke.mjs
  */
 import assert from "node:assert/strict";
-import { mergeScene, sceneDiffLevel, planetStateOf, relativeTime, constellationPositions, skyPositionOf, starOffset, dustCountOf, hash32, matchWorkspaces, embryoGroupsOf, filteredPositions, normalizeWorkspacePath, findRegisteredWorkspace, isWindowsPlatform, starPlanetIdsOf, templateForWorkspace, templateZhOf, starPatternLayout, PATTERN_SCALE, PATTERN_RING_RATIO, PATTERN_SLOT_GAP } from "../src/merge.mjs";
+import { mergeScene, sceneDiffLevel, planetStateOf, relativeTime, constellationPositions, skyPositionOf, starOffset, dustCountOf, hash32, matchWorkspaces, embryoGroupsOf, filteredPositions, normalizeWorkspacePath, findRegisteredWorkspace, isWindowsPlatform, starPlanetIdsOf, templateForWorkspace, templateForPosition, templateForFigure, setTemplateOverrides, templateZhOf, starPatternLayout, PATTERN_SCALE, PATTERN_RING_RATIO, PATTERN_SLOT_GAP } from "../src/merge.mjs";
 import { TEMPLATE_COUNT, allTemplates, templateOf } from "../src/cosmos/templates.mjs";
 
 const NOW = 1_000_000_000_000;
@@ -1258,6 +1258,179 @@ assert.equal(sceneDiffLevel(sceneA, wsPathMoved), "patch", "工作区路径变�
   const renamed = JSON.parse(JSON.stringify(sceneA));
   renamed.workspaces[0].name = renamed.workspaces[0].name + "-renamed";
   assert.equal(sceneDiffLevel(sceneA, renamed), "patch", "仅名称变化仍判 patch（tplZh 不进 patch 属性签名）");
+}
+
+/* ── 模板指定覆盖注入面（add-cosmos-template-reassign 2.1–2.3/4.2 / design D1/D3）：
+   位置口径恒哈希（MUST NOT 感知覆盖）；图样/名称口径覆盖优先、哈希兜底；注入手柄
+   优先级 = 防御注入 > 覆盖 > 哈希；覆盖变化经 tplZh 差分判 rebuild，同模板零差分；
+   非法/空/危险覆盖回落哈希；复位后逐字节回到基线。 ── */
+{
+  const ori = templateOf("ori");
+  const uma = templateOf("uma");
+  assert.ok(ori && uma, "测试模板存在（ori / uma）");
+
+  const fixture = () => ({
+    workspaces: [{
+      id: "ws-ori",
+      name: "ori-ws",
+      path: "C:/ori",
+      stars: [
+        { id: "prop-x", name: "prop-x", lifecycle: "created", setBy: null, at: NOW, tasks: [1, 2] },
+        { id: "prop-y", name: "prop-y", lifecycle: "created", setBy: null, at: NOW + MIN, tasks: [0, 1] }
+      ],
+      pending: [],
+      archives: 0,
+      links: [[0, 1]],
+      associations: []
+    }]
+  });
+  const build = (options) => mergeScene({
+    skeleton: fixture(),
+    sessions: { ids: [], byId: {} },
+    workspaces: { items: [] },
+    now: NOW
+  }, options);
+
+  setTemplateOverrides({});
+  const base = build();
+  const hashHit = templateForWorkspace("ws-ori");
+  assert.ok(hashHit, "基线哈希命中存在");
+  assert.equal(base.workspaces[0].tplZh, hashHit.zh, "无覆盖：tplZh = 哈希命中 zh（默认零变化）");
+
+  /* ① 分流基线：无覆盖时 position 与 figure 命中同一条目（锁定口径漂移风险）。 */
+  assert.equal(templateForPosition("ws-ori"), templateForFigure("ws-ori"), "无覆盖：position 与 figure 命中同一条目");
+
+  /* ② 有覆盖：position 恒哈希、figure 随覆盖；场景位置不变、图样/名称换条目。 */
+  const injectedMap = setTemplateOverrides({ "ws-ori": "ori" });
+  assert.equal(injectedMap["ws-ori"], "ori", "注入返回净房结果（可读回）");
+  assert.equal(templateForPosition("ws-ori"), hashHit, "有覆盖：position 恒哈希（MUST NOT 感知覆盖）");
+  assert.equal(templateForFigure("ws-ori"), ori, "有覆盖：figure = 指定模板");
+
+  const overridden = build();
+  const basePos = base.workspaces[0].pos;
+  assert.deepEqual(overridden.workspaces[0].pos, basePos, "指定覆盖不改变星座位置（天球地理承诺不因装饰重排）");
+  assert.equal(overridden.workspaces[0].tplZh, ori.zh, "指定覆盖后 tplZh = 指定模板 zh");
+  const oriLayout = starPatternLayout(ori, overridden.workspaces[0].stars);
+  assert.ok(oriLayout, "指定模板图样布局可用");
+  assert.deepEqual(overridden.workspaces[0].pattern.slots, oriLayout.slots, "指定覆盖后 pattern.slots 来自指定模板");
+  assert.deepEqual(overridden.workspaces[0].pattern.lines, ori.lines, "指定覆盖后 pattern.lines = 指定模板 lines");
+  for (const star of overridden.workspaces[0].stars) {
+    assert.deepEqual(star.off, oriLayout.offs.get(star.id), `指定覆盖后恒星 off 来自指定模板（${star.id}）`);
+  }
+
+  /* ③ 差分判级：指定不同模板 → rebuild（tplZh/图样变）；同覆盖重复装配 → none；
+     指定值 = 哈希缺省 → 场景逐字节恒等 + none（用户显式操作但零跳变）。 */
+  assert.equal(sceneDiffLevel(base, overridden), "rebuild", "指定不同模板 → rebuild 判级");
+  assert.equal(sceneDiffLevel(overridden, build()), "none", "同覆盖重复装配 → none（确定性）");
+  setTemplateOverrides({ "ws-ori": hashHit.id });
+  const sameAsHash = build();
+  assert.deepEqual(sameAsHash, base, "指定值 = 哈希缺省 → 场景逐字节恒等");
+  assert.equal(sceneDiffLevel(base, sameAsHash), "none", "指定同模板 → 零差分（无 rebuild、无呈现跳变）");
+
+  /* ④ 撤销指定 → 回落哈希；位置恒不变。 */
+  setTemplateOverrides({});
+  const reset = build();
+  assert.deepEqual(reset, base, "恢复默认（清覆盖）→ 逐字节回到基线");
+  assert.deepEqual(reset.workspaces[0].pos, basePos, "撤销指定位置不变");
+
+  /* ⑤ 注入手柄优先级：防御注入 > 覆盖 > 哈希（位置口径不受注入影响）。 */
+  const injected = build({ templateFor: () => uma });
+  assert.equal(injected.workspaces[0].tplZh, uma.zh, "注入手柄压过哈希（无覆盖时）");
+  setTemplateOverrides({ "ws-ori": "ori" });
+  const injectedOver = build({ templateFor: () => uma });
+  assert.equal(injectedOver.workspaces[0].tplZh, uma.zh, "注入手柄压过覆盖（防御注入 > 覆盖 > 哈希）");
+  assert.deepEqual(injectedOver.workspaces[0].pos, basePos, "注入手柄不影响位置口径（位置恒哈希）");
+
+  /* ⑥ 非法 / 空 / 危险覆盖 → 回落哈希（SHALL NOT 抛错）。 */
+  setTemplateOverrides({ "ws-ori": "not-a-template" });
+  assert.deepEqual(build(), base, "非法覆盖条目经净房剔除 → 回落哈希");
+  setTemplateOverrides("junk");
+  assert.deepEqual(build(), base, "非对象注入 → 清空覆盖");
+  setTemplateOverrides([["ws-ori", "ori"]]);
+  assert.deepEqual(build(), base, "数组注入 → 清空覆盖");
+  setTemplateOverrides(JSON.parse('{"__proto__":"ori"}'));
+  assert.deepEqual(build(), base, "危险键注入 → 净房清空（不污染原型）");
+  const degraded = build({ templateFor: () => null });
+  assert.ok(degraded.workspaces[0].stars.every((star) => Array.isArray(star.off)), "注入命中缺席 → 恒星回退 starOffset 散布");
+  assert.equal(degraded.workspaces[0].tplZh, null, "注入命中缺席 → tplZh 归一 null");
+
+  /* ⑦ 图样存在性门控不受覆盖影响：空星座（无恒星）仍零图样交付，但名称层随 figure 口径。 */
+  setTemplateOverrides({ "ws-ori": "ori" });
+  const empty = mergeScene({
+    skeleton: { workspaces: [{ id: "ws-ori", name: "ori-empty", path: "C:/ori", stars: [], pending: [], archives: 0, links: [], associations: [] }] },
+    sessions: { ids: [], byId: {} },
+    workspaces: { items: [] },
+    now: NOW
+  });
+  assert.ok(!("pattern" in empty.workspaces[0]), "空星座 + 覆盖 → 仍不装配 pattern（门控 = stars 非空）");
+  assert.equal(empty.workspaces[0].tplZh, ori.zh, "空星座 + 覆盖 → tplZh 仍随 figure 口径（名称层独立于图样门控）");
+  assert.equal(sceneDiffLevel(empty, overridden), "rebuild", "图样存在性翻转（首星装配）+ tplZh → 既有 rebuild 判级");
+
+  /* 复位模块态：后续断言不受本块覆盖污染。 */
+  setTemplateOverrides({});
+  assert.deepEqual(build(), base, "模块态复位 → 基线逐字节复现");
+}
+
+/* ── 点燃谱系透传（add-cosmos-panel-birthline-sort 3.1/3.2 / spec cosmos-proposal-panel
+   「点燃谱系写入即时刷新」）：恒星投影增 `birthMs` 数值 + 台账三字段（`embryoAt` /
+   `embryoSessionId` / `ignitedMs`）；谱系写入 MUST 判属性级 patch（MUST NOT 误判 none）。 */
+{
+  const anchorAt = NOW - 5 * 60 * MIN;
+  const buildLedgerScene = (lineages) => mergeScene({
+    skeleton: {
+      workspaces: [{
+        id: "wsL",
+        name: "ledger",
+        path: "/proj/ledger",
+        archives: 0,
+        pending: [],
+        lineages,
+        links: [],
+        associations: [],
+        stars: [
+          { id: "add-lit", name: "add-lit", lifecycle: "reviewed", setBy: "cosmos-review", at: null, tasks: [1, 2], birthMs: NOW - 2 * MIN },
+          { id: "add-plain", name: "add-plain", lifecycle: "created", setBy: null, at: null, tasks: [0, 0], birthMs: null }
+        ]
+      }]
+    },
+    sessions: { ids: [], byId: {} },
+    workspaces: { items: [], archivedSessionIds: [] },
+    now: NOW
+  });
+
+  const withoutLedger = buildLedgerScene([]);
+  const [litPlain] = withoutLedger.workspaces[0].stars;
+  assert.equal(litPlain.birthMs, NOW - 2 * MIN, "birthMs 数值透传（age 文本之外的排序兜底位）");
+  assert.equal(litPlain.embryoAt, null, "台账未命中 → embryoAt null（面板走 birthMs 兜底）");
+  assert.equal(litPlain.embryoSessionId, null, "台账未命中 → embryoSessionId null");
+  assert.equal(litPlain.ignitedMs, null, "台账未命中 → ignitedMs null");
+  assert.equal(withoutLedger.workspaces[0].stars[1].birthMs, null, "birthMs 缺失 → null（块殿后）");
+
+  const withLedger = buildLedgerScene([
+    { slug: "add-lit", embryoAt: anchorAt, embryoSessionId: "sess-ledger", ignitedMs: NOW - MIN }
+  ]);
+  const lit = withLedger.workspaces[0].stars[0];
+  assert.equal(lit.embryoAt, anchorAt, "台账 embryoAt 按 slug 回查透传");
+  assert.equal(lit.embryoSessionId, "sess-ledger", "台账 embryoSessionId 透传（块键来源）");
+  assert.equal(lit.ignitedMs, NOW - MIN, "台账 ignitedMs 透传（块内同刻次序兜底）");
+  assert.equal(withLedger.workspaces[0].stars[1].embryoAt, null, "未命中 slug → null（无谱系提案各自成块）");
+
+  /* 差分守卫：谱系写入（null → 有值）MUST 判 patch（MUST NOT 误判 none 而面板停留旧序） */
+  assert.equal(sceneDiffLevel(withoutLedger, withLedger), "patch", "谱系写入 → 属性级 patch（点燃谱系写入即时刷新）");
+  assert.equal(
+    sceneDiffLevel(withLedger, buildLedgerScene([{ slug: "add-lit", embryoAt: anchorAt, embryoSessionId: "sess-ledger", ignitedMs: NOW - MIN }])),
+    "none",
+    "同台账重复装配 → none（零抖动）"
+  );
+  /* 台账时间线数值变化（embryoAt / ignitedMs）同判 patch */
+  const retimed = buildLedgerScene([
+    { slug: "add-lit", embryoAt: anchorAt + MIN, embryoSessionId: "sess-ledger", ignitedMs: NOW }
+  ]);
+  assert.equal(sceneDiffLevel(withLedger, retimed), "patch", "embryoAt / ignitedMs 变化 → patch");
+  /* 非法台账行（已在 birthline 层归一）缺席此处也 SHALL NOT 抛错：空/畸形 lineages 走兜底 */
+  const malformed = buildLedgerScene([{ slug: "" }, null, { slug: "add-lit", embryoAt: 0, ignitedMs: 0 }]);
+  assert.equal(malformed.workspaces[0].stars[0].embryoAt, null, "畸形台账行 → 按无谱系兜底（不抛错）");
+  assert.equal(sceneDiffLevel(withoutLedger, malformed), "none", "畸形行不产生幽灵 patch");
 }
 
 console.log("merge-smoke: all assertions passed");

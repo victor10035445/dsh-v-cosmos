@@ -154,6 +154,7 @@ const filePath = join(dir, "custom.config.json");
 try {
   const store = createConfigStore({ filePath, logger: { warn() {} } });
   assert.equal(store.refresh(), null, "存储缺席 → null");
+  assert.equal(store.loadOutcome(), "absent", "装载结局只读暴露：存储缺席 → absent（纯内存）");
 
   /* 缺席快照：revision 0 / user null / value = base */
   {
@@ -174,6 +175,7 @@ try {
     assert.equal(doc.migratedFrom, "entry-config");
     assert.ok(!("buttons" in doc), "空视图不写节");
     assert.equal(store.revision(), 1);
+    assert.equal(store.loadOutcome(), "ok", "播种成功 → 装载结局 ok");
 
     const again = await store.ensureSeeded({ buttons: BUTTONS }, { source: "entry-config" });
     assert.equal(again.action, "upgraded", "空存储 + 非空组合层 → 一次性升级");
@@ -301,15 +303,25 @@ try {
     const recovered = store.refresh();
     assert.ok(recovered, "损坏 → 恢复链读回");
     assert.equal(recovered.revision, 12, "恢复最近完好版本（.bak.1 = r12）");
+    assert.equal(store.loadOutcome(), "ok", "备份链恢复成功 → 装载结局 ok");
 
     /* 三份备份也损坏 → 按存储缺席回落（revision 0、value = base） */
     for (const suffix of [".bak.1", ".bak.2", ".bak.3"]) {
       if (existsSync(filePath + suffix)) writeFileSync(filePath + suffix, "nope", "utf8");
     }
     assert.equal(store.refresh(), null, "全损 → 存储缺席");
+    assert.equal(
+      store.loadOutcome(),
+      "damaged",
+      "正式文件与备份链全不可用 → 装载结局 damaged（「配置存在但读取失败」信号）"
+    );
     const degraded = store.snapshot({ buttons: BUTTONS });
     assert.equal(degraded.revision, 0);
     assert.deepEqual(degraded.value.buttons, NORMALIZED, "回落组合层");
+    /* 成功写入后自然恢复 ok（warn-once 闩随成功装载清除） */
+    const healed = await store.writeSections({ baseRevision: 0, sections: { buttons: [{ name: "healed", prompt: "p" }] } });
+    assert.equal(healed.revision, 1, "损坏后写入重建存储");
+    assert.equal(store.loadOutcome(), "ok", "成功写入 → 装载结局恢复 ok");
   }
 } finally {
   rmSync(dir, { recursive: true, force: true });

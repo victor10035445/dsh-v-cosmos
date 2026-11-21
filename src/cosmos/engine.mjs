@@ -67,7 +67,8 @@
  *  - 目标过滤与捕获策略（D2）：覆盖元素起指不 `setPointerCapture`、抬指不拾取——
  *    保护 chip click（dive 只由自身 click 触发一次）；
  *  - HUD 精简（D5）：删面包屑与右上操作提示；钻取态星座标牌 `.cos-badge` 居顶部中央
- *    （星座名 + 全量计数仪表，沿用旧 crumb 的 `dataset.html` 内容差分守卫）；
+ *    （add-cosmos-template-reassign 返工：整组移到右上角，与两枚方形模板工具同行；
+ *    `dataset.html` 内容差分守卫沿用）；
  *    polish-cosmos-drilled-hud：标牌自左上移居顶部中央（钻取态搜索框已隐藏，顶部中央
  *    单一视觉锚点；避让对象改为左面板 + 右缘）；
  *  - 右下常驻「回到银河」`.cos-home-btn`（D3）：钻取态 = flyOut()，银河根级 = 仅清选中。
@@ -181,9 +182,10 @@
  *    出生高亮 `cos-chip-new` 与沉睡态可共存（animation 声明优先级在前 ~2s 压过沉睡描边）。
  *
  * step2-add-constellation-switcher（钻取态可切换星座快速切换）：
- *  - 顶部中央标牌升级为行容器 `.cos-wsbar`：`[左条目槽] [标牌中央格] [右条目槽]`，两侧条目槽
- *    **固定对称宽度**（`--cos-wsbar-side-w`，缺省 170px）→ 任意 0/1/≥2 条目组合下标牌页面
- *    水平居中自动成立（「星座计数仪表分级呈现」既有承诺不变）；定位/限宽职责自标牌移交容器
+ *  - 顶部中央标牌升级为行容器 `.cos-wsbar`：`[左条目槽] [右条目槽]`，两侧条目槽 **固定
+ *    对称宽度**（`--cos-wsbar-side-w`，缺省 170px）→ 切换条目以页面中心为支点成对；星座
+ *    标牌与两枚方形模板工具自 add-cosmos-template-reassign 返工起整组移到**右上角**
+ *    （`.cos-badge-cluster`，银河态零呈现），不再占用顶部中央；定位/限宽职责自标牌移交容器
  *    （`max(160px, min(844px, calc(100% - 470px)))`，844 = 480 + 2×(170+12)），标牌收敛为单一
  *    上限 480px；<520px 断点改挂容器并隐藏条目槽（标牌旧媒体查询同步移除）；
  *  - `wsSwitcherItemsOf(scene, focusWsId)` 纯函数：**可切换星座判据 = `stars` 非空**
@@ -203,13 +205,14 @@
  *    落位仍由 merge 层以 `star.off` 交付（含星胚槽位），批量 off 变化走 patch + 补间；
  *  - **图样全量呈现**：merge 交付 `ws.pattern = { slots, lines }`（全部内核槽位世界坐标 +
  *    模板 lines 原样索引对，端点可为空槽位）→ buildItems 逐对投影为段，独立 constline
- *    条目（`pat` 标记、z 在提案/关系线层之下 = 背景层）——段 α 恒 = `PAT_LINE_DIM`
- *    （**统一口径**：有星段与空槽段同一亮度，无双轨分层），各皮肤缺省 constline 呈现即
- *    天然弱化（弱于恒星本体与轨道环，未适配皮肤零改动即「缺省线渲染回退」）；
+ *    条目（`pat` 标记、z 在提案/关系线层之下 = 背景层）——段 α 恒 = 设置面图样连线
+ *    因子 `E.patLineDim`（缺省 `PAT_LINE_DIM` = 0.5；**统一口径**：有星段与空槽段同一
+ *    亮度，无双轨分层），各皮肤缺省 constline 呈现即天然弱化（弱于恒星本体与轨道环，
+ *    未适配皮肤零改动即「缺省线渲染回退」）；
  *    **静态几何**：端点恒等槽位坐标（非恒星落位投影）、不携带星 id 键——per-segment
  *    linkMix 淡入路径与幽灵渐熄层整体退役，段随 `ws.alpha` 星座级淡入淡出；
- *  - **空槽装饰点**：未被恒星占用的内核槽位渲染微小低 α 点（`patdot` 条目、α 恒低于
- *    图样线），线段顶点可见；被占槽位不叠加（恒星本体覆盖）；
+ *  - **空槽装饰点**：未被恒星占用的内核槽位渲染微小低 α 点（`patdot` 条目、α 派生式
+ *    `min(0.22, 线 × 0.44)`，恒低于图样线），线段顶点可见；被占槽位不叠加（恒星本体覆盖）；
  *  - 纯装饰层：不进 picks、不参与拾取/命中、无 hover/名牌；观测面
  *    `inspectPatternLines()` / `inspectPatternDots()` 供冒烟直测；
  *  - **星↔星提案关联连线解除**（dsh-cosmos MODIFIED / cosmos-relation-focus MODIFIED）：
@@ -248,24 +251,36 @@ export const ENGINE_CSS = `
    470 = 2 ×（187 面板 + 48 安全边距）；844 = 标牌上限 480 + 2 ×（条目槽 170 + 间隙 12）。
    外侧 max(160px, …) 是**页面宽度不足时的下限兜底**：Cosmos 整页左缘跟踪 DSH 侧栏
    （页面宽 = 视口 - 侧栏），侧栏在场且窗口窄时 100% - 470px 会为负 → max-width 被钳到 0、
-   标牌文本不可见，违反 spec「钻取态页面顶部中央 MUST 呈现标牌」；下限 160px 保证计数行仍可读
+   标牌文本不可见，违反 spec「钻取态页面右上 MUST 呈现标牌」；下限 160px 保证计数行仍可读
    （此时允许与面板横向重叠，纵向由面板钻取态下移 top:64px 隔离）。层级 20 = canvas 之上、
    与「回到银河」同层。容器纯承载 → pointer-events: none（不形成点击死区；仅条目可见时可点）。
    超长名称截断策略与既有标牌一致。 ── */
 .cos-wsbar { position: absolute; top: 14px; left: 50%; transform: translateX(-50%); z-index: 20;
   display: flex; align-items: flex-start; justify-content: center; gap: 12px;
   max-width: max(160px, min(844px, calc(100% - 470px))); pointer-events: none; }
-/* 两侧条目槽（D1 支点）：**固定对称宽度**（同一 flex 基准 → 等量收缩）——无论槽内有 0/1 条目，
-   标牌页面水平居中都自动保持（2 个其他可切换星座去重后单条目落右槽、左槽留空也不产生偏移）。
-   min-width:0 允许容器收窄时条目文本先行省略；槽自身不接收指针（条目可见时才可点）。 */
+/* 钻取态星座标牌 + 顶部模板工具（add-cosmos-template-reassign 返工 D8）：整组移到**右上角**
+   ——「星座标牌」「指定模板图标」「随机重掷图标」一行贴右缘；标牌右对齐、图标方形。
+   标牌与工具同 data-drilled 门控（银河态 cluster 整体 display:none，零呈现/零命中）。 */
+.cos-badge-cluster { position: absolute; top: 14px; right: 16px; z-index: 20; display: none;
+  align-items: flex-start; justify-content: flex-end; gap: 8px;
+  max-width: calc(100% - 32px); pointer-events: none; }
+.cos-badge-cluster[data-drilled="true"] { display: flex; }
+/* 右栏 dock 形态：提案面板自 top:52px 起排 → 标牌组上移贴顶（bottom ≤ 52，MUST NOT 被面板压住）。 */
+.cos-page-dock .cos-badge-cluster { top: 6px; }
+/* 顶部模板工具槽（左 = 指定模板 / 右 = 随机重掷）：方形 icon 按钮，边长 = wsToolSize
+   （缺省 32、界 28–48）；工具本体由 client React portal 渲染（图标 + aria/title 文案）。 */
+.cos-wsbar-tools { flex: none; display: flex; width: var(--cos-ws-tool-size, 32px);
+  height: var(--cos-ws-tool-size, 32px); pointer-events: auto; }
+/* 两侧条目槽（D1 支点）：**固定对称宽度**——标牌移右上后，切换条目仍以页面中心为支点
+   左右成对；min-width:0 允许容器收窄时条目文本先行省略；槽自身不接收指针（条目可见时才可点）。 */
 .cos-wsbar-side { flex: 0 1 var(--cos-wsbar-side-w, 170px); width: var(--cos-wsbar-side-w, 170px); min-width: 0;
   display: flex; pointer-events: none; }
 .cos-wsbar-side[data-side="left"] { justify-content: flex-end; }
 .cos-wsbar-side[data-side="right"] { justify-content: flex-start; }
-/* 窄视口（<520px，与标牌旧降级断点同源）：容器放宽限宽（允许与面板横向重叠降级）+ 整行隐藏
-   条目槽只留标牌（触屏用户仍有 chip + 搜索路径）。本规则 MUST 置于槽基础规则**之后**
-   （同特异性下后者生效，否则 display:flex 会覆盖 display:none）。 */
-@media (max-width: 520px) { .cos-wsbar { max-width: calc(100% - 40px); } .cos-wsbar-side { display: none; } }
+/* 窄视口（<520px，与标牌旧降级断点同源）：容器放宽限宽 + 整行隐藏条目槽（触屏用户仍有
+   chip + 搜索路径）；标牌组贴右缘收窄。本规则 MUST 置于槽基础规则**之后**。 */
+@media (max-width: 520px) { .cos-wsbar { max-width: calc(100% - 40px); } .cos-wsbar-side { display: none; }
+  .cos-badge-cluster { right: 12px; max-width: calc(100% - 24px); } }
 /* 切换条目（D2/D6）：星座名（超长省略）+ 活跃状态点，暖金描边 HUD 语言、皮肤 CSS 变量取色；
    触屏点击目标 min-height 40px ≥ 40；显隐走 .25s opacity 过渡（chip 的 .on 同款语言，不播位移）。
    未 .on（未挂载 / 淡出中）= 透明且不可点；.on = 可见可点。 */
@@ -281,11 +296,11 @@ export const ENGINE_CSS = `
 .cos-wsbar-item b { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cos-wsbar-item i { flex: 0 0 auto; width: 5px; height: 5px; border-radius: 50%; background: currentColor;
   color: var(--dsw-alias-state-warn-primary, var(--cos-waiting, #ffaa4a)); box-shadow: 0 0 6px currentColor; }
-/* ── 钻取态星座标牌（行容器中央格；step2-add-constellation-switcher D1 起不再承担定位/限宽）：
-   钻取态显示星座名 + 全量计数仪表，文本居中排版（名称 + 计数两行）。中央格随 flex 收缩，
+/* ── 钻取态星座标牌（右上角标牌组；step2-add-constellation-switcher D1 起不再承担定位/限宽）：
+ *  钻取态显示星座名 + 全量计数仪表，文本右对齐排版（名称 + 计数两行）。标牌组随 flex 收缩，
    max-width 收敛为单一上限 480px——百分比式限宽的基准已随结构迁移，MUST NOT 原样带入
    （会相对行容器双重折减到 160px 下限）。纯信息元素 → pointer-events: none。 ── */
-.cos-badge { flex: 0 1 auto; min-width: 0; max-width: 480px; text-align: center;
+.cos-badge { flex: 0 1 auto; min-width: 0; max-width: min(480px, 40vw); text-align: right;
   font-size: 13px; color: var(--cos-accent-ink, #ffe3b8); letter-spacing: .5px; pointer-events: none;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .cos-badge b { display: block; font-size: var(--cos-ws-title-size, 13px); font-weight: 600; letter-spacing: 1px; text-shadow: 0 0 8px var(--cos-glow, rgba(255,210,140,.55)); }
@@ -976,16 +991,33 @@ const WS_GHOST_DUR = 1.5;
 export const BOOT_DUR = 1.2;
 const BOOT_WS_STAGGER = 0.1;
 const BOOT_WS_RAMP = 0.5;
-/** 图样连线弱化因子（two-use-cosmos-template-star-layout 3.1 / add-cosmos-template-figure-
-    display 2.1）：段 α 自缩系数——各皮肤缺省 constline 基线（≈0.28α）× 本值 ≈0.14α，
-    弱于轨道环 0.20 与恒星本体（背景层定位）。**统一口径**（本提案裁决）：有星段与空槽段
-    同一亮度，MUST NOT 双轨分层；皮肤未适配 `seg.pat` 标记时同式生效（缺省线渲染回退，
-    无破图路径）。 */
+/** 图样连线弱化因子缺省值（two-use-cosmos-template-star-layout 3.1 / add-cosmos-template-
+    figure-display 2.1 / add-cosmos-figure-line-alpha D2）：设置面缺键或非法时回落的
+    **单一出处**；运行期 α 来源 = `E.patLineDim`（设置面 `patLineDim / 100` 的热更镜像，
+    `setTuning` 更新），本常量不再被消费点直接读取。各皮肤缺省 constline 基线
+    （≈0.28α）× 缺省 0.5 ≈ 0.14α，弱于轨道环 0.20 与恒星本体（背景层定位）。**统一口径**：
+    有星段与空槽段同一亮度，MUST NOT 双轨分层；皮肤未适配 `seg.pat` 标记时同式生效
+    （缺省线渲染回退，无破图路径）。 */
 const PAT_LINE_DIM = 0.5;
-/** 空槽装饰点弱化因子（add-cosmos-template-figure-display 3.2 / D3）：点 α 自缩系数——
-    MUST 低于 `PAT_LINE_DIM`（装饰点弱于图样线；同一皮肤基线口径下相对关系恒成立），
-    视觉上 = 「线段顶点可见」的微点，不被误读为可交互天体。 */
+/** 图样连线因子的合法域（add-cosmos-figure-line-alpha D2）：设置面百分比界 [5, 100]
+    换算后的闭区间（构造期净房与 `setTuning` 防御夹取同源）。 */
+const PAT_LINE_DIM_MIN = 0.05;
+const PAT_LINE_DIM_MAX = 1;
+/** 空槽装饰点 α 上限（add-cosmos-template-figure-display 3.2 / add-cosmos-figure-line-alpha
+    2.3）：点 α = min(本上限, `E.patLineDim` × `PAT_DOT_LINE_RATIO`)——MUST 低于图样线 α
+    （装饰点弱于图样线；任意用户取值下相对层级恒成立），视觉上 = 「线段顶点可见」的微点，
+    不被误读为可交互天体。线 = 0.5 → 点 = 0.22（现状逐字节一致）。 */
 const PAT_DOT_DIM = 0.22;
+/** 装饰点 / 图样线 α 比例（≈44%）：缺省线 0.5 × 0.44 = 0.22（与旧点常量逐字节一致），
+    线调低时点同比收缩（层级不翻转）。 */
+const PAT_DOT_LINE_RATIO = 0.44;
+/** 设置面百分比（5..100）→ 引擎因子（0.05..1）：缺键 / 非有限 / 非正值回落
+    `PAT_LINE_DIM`（缺省渲染零变化）；越界夹到合法域端点（净房兜底，防御坏注入）。 */
+function patLineDimOf(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return PAT_LINE_DIM;
+  return clamp(n / 100, PAT_LINE_DIM_MIN, PAT_LINE_DIM_MAX);
+}
 /** 空槽装饰点屏显半径基准（像素；按投影缩放 clamp 到 [下限, 上限]——银河态自然缩小、
     钻取态可辨，与图样线的屏幕厚度同阶）。 */
 const PAT_DOT_R_BASE = 1.1;
@@ -2427,11 +2459,13 @@ function zOf(cam, p) {
  *        浮窗打开态探针（add-cosmos-shortcuts 4.2/D13 模态让位）：浮窗（星座补写卡片）
  *        打开时 `goHome` / `togglePan` MUST NOT 分发——浮窗是模态上下文（backdrop 挡住
  *        星空），补写途中误触切换星空状态无意义。未注入 → 恒按未打开（引擎侧零拦截）。
- * @param {{dragPan?: boolean, templateNames?: boolean, shortcuts?: {closePage?: string, goHome?: string,
+ * @param {{dragPan?: boolean, templateNames?: boolean, patLineDim?: number, shortcuts?: {closePage?: string, goHome?: string,
  *        togglePan?: string, voiceToggle?: string}}} [opts.settings]
  *        设置面初值（settings.mjs 净房产物）：`dragPan` 为拖拽平移开关缺省态
  *        （非显式 `true` 一律按关闭 = 默认关闭）；`templateNames` 为星座模板名显示缺省态
  *        （`add-cosmos-template-name-toggle`：非显式 `true` 一律按关闭 = 默认渲染零变化）；
+ *        `patLineDim` 为图样连线亮度百分比（`add-cosmos-figure-line-alpha`：构造期换算为
+ *        因子 0.05–1，非有限回落缺省 0.5；热更走 `setTuning` 的因子入参）；
  *        `shortcuts` 为全局快捷键表
  *        （add-cosmos-shortcuts D11，净房由 `shortcutsOf` 二次兜底；改绑走
  *        `setShortcuts` 热更，无需重开整页）。
@@ -2502,6 +2536,11 @@ export function createCosmosEngine(opts) {
        **不进 `E.tuning` / `getTuning()`**；初始化读持久化设置——非显式 true 一律关闭
        （默认渲染零变化），热翻转走 `setTuning`（置位后显式刷新 chip 文本）。 */
     templateNames: opts.settings?.templateNames === true,
+    /* 图样连线亮度镜像（add-cosmos-figure-line-alpha 2.1/D2）：设置面百分比 / 100 的引擎
+       因子，**不进 `E.tuning` / `getTuning()`**（不属于平移调参面）；初始化读持久化设置
+       （缺键 / 非法回落 0.5 = 缺省渲染零变化），`setTuning` 数值入参独立夹取 [0.05, 1]
+       后热更——下一帧 `patSegs` 与 `E.patLast` 同帧同值。 */
+    patLineDim: patLineDimOf(opts.settings?.patLineDim),
     /* 全局快捷键表（add-cosmos-shortcuts 4.1/D11）：引擎侧只消费 `goHome` / `togglePan`；
        构造经 `shortcutsOf` 二次净房（池校验 + 读面冲突回落 → 表恒无重复），热更走
        `setShortcuts`（守卫形态对齐 `setTuning`：部分写、非法忽略、幂等）。 */
@@ -3446,6 +3485,10 @@ export function createCosmosEngine(opts) {
     E.relLast = { focusKey: E.relFocusKey, orbits: [], segs: [] };
     E.patLast = [];
     E.patDotLast = [];
+    /* 图样连线 / 空槽装饰点 α 因子（add-cosmos-figure-line-alpha 2.2/2.3）：帧内取一次
+       镜像，段 α 与两观测面同帧一致；点 α 为派生式 `min(0.22, 线 × 0.44)`（恒低于线）。 */
+    const patLineAlpha = E.patLineDim;
+    const patDotAlpha = Math.min(PAT_DOT_DIM, patLineAlpha * PAT_DOT_LINE_RATIO);
 
     /* 预算前置（D1）：先算本帧参与尘埃渲染的星座数 n——α 三因子（过滤 × focus ×
        点亮序曲）与可见性在此一次算好，主循环只读。均摊上限 = dustPerWsOf(n)：
@@ -3517,8 +3560,9 @@ export function createCosmosEngine(opts) {
       /* 图样全量呈现（add-cosmos-template-figure-display 2.1–2.3 / D3）：引擎消费 merge
          交付的 `ws.pattern = { slots, lines }`——模板 lines 逐对投影 slots 端点为段；
          端点恒等槽位坐标（模板派生静态几何、不随恒星落位变动）。**统一弱化 α**：
-         seg.alpha 恒 = PAT_LINE_DIM（有星段与空槽段同一亮度，无双轨分层），各皮肤
-         缺省 constline 呈现（基线 ≈0.28α）× 本值 ≈0.14α，弱于恒星本体与轨道环；独立
+         seg.alpha 恒 = 设置面图样连线因子 `E.patLineDim`（add-cosmos-figure-line-alpha：
+         缺省 0.5；有星段与空槽段同一亮度，无双轨分层），各皮肤缺省 constline 呈现
+         （基线 ≈0.28α）× 本值 ≈0.14α（缺省），弱于恒星本体与轨道环；独立
          constline 条目定位背景层（z 在提案/关系线层之下）。
          **星座级淡入淡出**（2.2/2.3）：段不携带星 id 键、不再按键控坡道——图样随
          ws.alpha 呈现（首星 → 门控装配 → 随星座淡入；末星 → 门控关闭图样消失，无独立
@@ -3540,14 +3584,14 @@ export function createCosmosEngine(opts) {
           const pa = project(cam, [ax, ay, az], W, H);
           const pb = project(cam, [bx, by, bz], W, H);
           if (!pa || !pb) continue;
-          patSegs.push({ a: pa, b: pb, alpha: PAT_LINE_DIM, pat: true });
-          E.patLast.push({ wsId: ws.id, segIndex: si, alpha: PAT_LINE_DIM });
+          patSegs.push({ a: pa, b: pb, alpha: patLineAlpha, pat: true });
+          E.patLast.push({ wsId: ws.id, segIndex: si, alpha: patLineAlpha });
         }
       }
       if (patSegs.length) items.push({ kind: 'constline', z: zOf(cam, center) - 5, segs: patSegs, ws: ws, alpha: ws.alpha, pat: true });
       /* 空槽装饰点（3.1–3.3 / D3）：未被恒星占用的内核槽位 → 微小低 α 点（`patdot`
-         装饰层条目、`pat` 标记）。α = PAT_DOT_DIM（MUST 低于图样线），随 ws.alpha 与
-         图样线同帧淡入淡出（门控同源）；被占槽位不叠加（恒星本体覆盖）。
+         装饰层条目、`pat` 标记）。α = 派生式 min(0.22, 线 × 0.44)（MUST 低于图样线），
+         随 ws.alpha 与图样线同帧淡入淡出（门控同源）；被占槽位不叠加（恒星本体覆盖）。
          判定走纯函数 `patEmptySlotsOf`（规范序推得，与装配顺序无关）。 */
       if (pattern && ws.stars.length) {
         const emptySlots = patEmptySlotsOf(pattern, ws.stars.length);
@@ -3565,10 +3609,10 @@ export function createCosmosEngine(opts) {
             dot.x = P_PAT_DOT.x;
             dot.y = P_PAT_DOT.y;
             dot.r = clamp(P_PAT_DOT.s * PAT_DOT_R_BASE, PAT_DOT_R_MIN, PAT_DOT_R_MAX);
-            dot.a = PAT_DOT_DIM;
+            dot.a = patDotAlpha;
             dots[dc] = dot;
             dc += 1;
-            E.patDotLast.push({ wsId: ws.id, slotIndex: emptySlots[di], alpha: PAT_DOT_DIM });
+            E.patDotLast.push({ wsId: ws.id, slotIndex: emptySlots[di], alpha: patDotAlpha });
           }
           dots.length = dc;
           if (dc) items.push({ kind: 'patdot', z: zOf(cam, center) - 5, pts: dots, ws: ws, alpha: ws.alpha, pat: true });
@@ -4139,8 +4183,10 @@ export function createCosmosEngine(opts) {
     root.className = 'cos-root';
     /* HUD 精简（D5/2.1–2.2）：面包屑与右上操作提示已移除——返回银河由 Esc（桌面）与
        右下常驻「回到银河」按钮（触屏）两条等价路径承担；顶部中央位置改由钻取态行容器
-       `.cos-wsbar` 占用（step2-add-constellation-switcher D1：中央格 = 星座标牌 `.cos-badge`，
-       两侧 = 可切换星座切换条目槽）。标牌、行容器与条目均在此建一次，MUST NOT 逐帧重建（吞 click）。 */
+       `.cos-wsbar` 占用（step2-add-constellation-switcher D1：两侧 = 可切换星座切换条目槽；
+       add-cosmos-template-reassign 返工：星座标牌与两枚方形模板工具整组移到右上角
+       `.cos-badge-cluster`，仅 `data-drilled="true"` 呈现）。标牌、标牌组、工具槽与条目
+       均在此建一次，MUST NOT 逐帧重建（吞 click）。 */
     root.innerHTML =
       '<canvas class="cos-canvas"></canvas>' +
       '<div class="cos-scanlines"></div>' +
@@ -4151,8 +4197,12 @@ export function createCosmosEngine(opts) {
       '  <canvas class="cos-tiplines"></canvas>' +
       '  <div class="cos-wsbar">' +
       '    <div class="cos-wsbar-side" data-side="left"></div>' +
-      '    <div class="cos-badge"></div>' +
       '    <div class="cos-wsbar-side" data-side="right"></div>' +
+      '  </div>' +
+      '  <div class="cos-badge-cluster" data-drilled="false">' +
+      '    <div class="cos-badge"></div>' +
+      '    <div class="cos-wsbar-tools" data-side="left"></div>' +
+      '    <div class="cos-wsbar-tools" data-side="right"></div>' +
       '  </div>' +
       '  <div class="cos-card"></div>' +
       '  <div class="cos-empty" style="display:none"><b>COSMOS</b></div>' +
@@ -4164,6 +4214,14 @@ export function createCosmosEngine(opts) {
     E.el.overlay = root.querySelector('.cos-overlay');
     E.el.tipCanvas = root.querySelector('.cos-tiplines');
     E.el.wsbar = root.querySelector('.cos-wsbar');
+    /* 右上星座标牌组（add-cosmos-template-reassign 返工 D8）：badge + 两枚方形工具。 */
+    E.el.badgeCluster = root.querySelector('.cos-badge-cluster');
+    /* 顶部模板工具槽（add-cosmos-template-reassign 返工）：client 以 querySelector 取同一
+       节点做 React portal 挂载；引擎只负责左右槽位、显隐与尺寸令牌消费。 */
+    E.el.wsbarTools = {
+      left: root.querySelector('.cos-wsbar-tools[data-side="left"]'),
+      right: root.querySelector('.cos-wsbar-tools[data-side="right"]')
+    };
     E.el.wsbarSides = {
       left: root.querySelector('.cos-wsbar-side[data-side="left"]'),
       right: root.querySelector('.cos-wsbar-side[data-side="right"]')
@@ -4490,7 +4548,7 @@ export function createCosmosEngine(opts) {
   }
 
   /** chip 文本（patch 路径下就地更新，不重建 DOM）：银河态只显示星座名 + 星座级活力
-      状态点——计数仪表迁移至钻取态顶部中央标牌（D4/3.3）。沿用 `dataset.html` 内容差分
+      状态点——计数仪表迁移至钻取态右上星座标牌（D4/3.3；add-cosmos-template-reassign 返工）。沿用 `dataset.html` 内容差分
       守卫：名字几乎恒定，逐帧重写 innerHTML 是无谓开销，且会让 chip 内部元素活不过一帧；
       活力翻转（step1-add-constellation-vitality D2）即换串重写、不变零重写。
       `cos-chip-new` 出生高亮关键帧只作用于 border/box-shadow/b 的 text-shadow，无额外
@@ -4741,14 +4799,20 @@ export function createCosmosEngine(opts) {
       E.el.empty.innerHTML = '<b>COSMOS</b>暂无在册工作区 —— 在 DSH 中登记工作区后，星座将在此点亮';
     }
 
-    // 顶部中央星座标牌（D4/3.1–3.2；polish-cosmos-drilled-hud 自左上移居）：
+    // 右上星座标牌组（D4/3.1–3.2；返工后与模板工具整组贴右上）：
     // 钻取态显示「星座名 + 全量计数仪表」（水平居中 + 文本居中）。沿用旧 crumb 的
     // 内容差分守卫（dataset.html 模式同信息卡 data-sig）：每帧
     // innerHTML 重写会让内部元素活不过一帧——旧面包屑「点击银河无响应」的根因
     // （add-comet-states-and-star-death 5.1）；内容不变零重写。
     // 显示阈值沿用旧 crumb 的 focusMix > 0.4（与钻取镜头推进同步，不闪）。
     let badge = '';
-    if (E.focusWs && E.focusMix > 0.4) {
+    /* 钻取态判定单点（add-cosmos-template-reassign 返工）：标牌与顶部模板工具同阈值；
+       `data-drilled` 同时门控工具槽 display（银河态零呈现，MUST NOT 留点击死区）。 */
+    const wsbarDrilled = !!(E.focusWs && E.focusMix > 0.4);
+    if (E.el.badgeCluster.dataset.drilled !== (wsbarDrilled ? "true" : "false")) {
+      E.el.badgeCluster.dataset.drilled = wsbarDrilled ? "true" : "false";
+    }
+    if (wsbarDrilled) {
       /* 星座级活力标识（step1-add-constellation-vitality D2/D3）：名称行 `<b>` 内名称后附
          两态点 + 文案（复用 `E.labels.vitality` 同源标签组）；计数行 `<span>` 不变。
          与恒星级名牌标识可区分：星座级铬件在此（页顶标牌）、恒星级在天体浮签，位置即
@@ -4771,7 +4835,7 @@ export function createCosmosEngine(opts) {
        flyOut 时切换器随钻取态整体退场）。显隐与标牌同一阈值（focusMix > 0.4）；银河态 / 阈值
        下传空清单 → 条目淡出退场（零布局呈现）。内容差分与 `.on` 过渡由 syncWsbarItems 单点维护。 */
     syncWsbarItems(uiChromeSafeItemsOf(
-      E.focusWs && E.focusMix > 0.4 ? wsSwitcherItemsOf(E.scene, E.focusWs.id) : []
+      wsbarDrilled ? wsSwitcherItemsOf(E.scene, E.focusWs.id) : []
     ));
 
     /* 引擎自建 HUD 兜底（polish-cosmos-tip-ui-avoidance D3「回到银河 / 拖拽开关」）：
@@ -6542,13 +6606,15 @@ export function createCosmosEngine(opts) {
     /** 图样连线观测面（add-cosmos-template-figure-display 2.4 冒烟直测，只读快照）：
         最近一帧渲染的图样连线段 —— `{ wsId, segIndex, alpha }`（`segIndex` = 该段在
         `ws.pattern.lines` 中的序号；槽位段无星 id 键，静态几何不携带恒星标识）。
+        α = 设置面因子 `E.patLineDim`（add-cosmos-figure-line-alpha；缺省 0.5）。
         星↔星提案关联段（ws.links）不在此面——该通道已解除呈现，段集合恒等图样 lines 投影。 */
     inspectPatternLines() {
       return (E.patLast ?? []).map(function (r) { return { wsId: r.wsId, segIndex: r.segIndex, alpha: r.alpha }; });
     },
     /** 空槽装饰点观测面（3.2/3.3 冒烟直测，只读快照）：最近一帧渲染的装饰点 ——
         `{ wsId, slotIndex, alpha }`（`slotIndex` = 空槽在 `ws.pattern.slots` 中的序号）。
-        纯装饰层：不进 picks、不参与拾取/命中。 */
+        α = 派生式 min(0.22, `E.patLineDim` × 0.44)（add-cosmos-figure-line-alpha 2.3，
+        恒低于同帧图样线 α）。纯装饰层：不进 picks、不参与拾取/命中。 */
     inspectPatternDots() {
       return (E.patDotLast ?? []).map(function (r) { return { wsId: r.wsId, slotIndex: r.slotIndex, alpha: r.alpha }; });
     },
@@ -6714,11 +6780,11 @@ export function createCosmosEngine(opts) {
       return found ? found.wp.slice() : null;
     },
     toast,
-    /** 平移调参 + 指针聚焦热更新（设置面持久化后调用，无需重开整页）：
-        `{ panSpeed, panShiftBoost, zoomPointerFocus, dragPan, templateNames }`
-        （部分写语义：非法/缺席键保持原值）。缩放阈值已常量化
-        （add-cosmos-zoom-ruler D3），旧 `zoomDiveRatio` / `zoomFlyOutRatio` 入参
-        被忽略、SHALL NOT 报错。 */
+    /** 平移调参 + 指针聚焦 + 装饰偏好热更新（设置面持久化后调用，无需重开整页）：
+        `{ panSpeed, panShiftBoost, zoomPointerFocus, dragPan, templateNames, patLineDim }`
+        （部分写语义：非法/缺席键保持原值；`patLineDim` 为**因子**入参，独立夹取
+        [0.05, 1]）。缩放阈值已常量化（add-cosmos-zoom-ruler D3），旧 `zoomDiveRatio` /
+        `zoomFlyOutRatio` 入参被忽略、SHALL NOT 报错。 */
     setTuning(settings) {
       if (Number(settings?.panSpeed) > 0) E.tuning.speed = settings.panSpeed;
       if (Number(settings?.panShiftBoost) > 0) E.tuning.boost = settings.panShiftBoost;
@@ -6738,6 +6804,13 @@ export function createCosmosEngine(opts) {
       if (typeof settings?.templateNames === "boolean" && settings.templateNames !== E.templateNames) {
         E.templateNames = settings.templateNames;
         if (E.scene && Array.isArray(E.scene.ws)) updateChipText();
+      }
+      /* 图样连线亮度镜像（add-cosmos-figure-line-alpha 2.1/D2）：数值入参才更新（部分写
+         语义，非数值 / NaN / Infinity 忽略）、独立夹取 [0.05, 1]（界外落端点）、值变才写
+         镜像；下一帧 `patSegs` / `patLast` / `patDotLast` 同源生效（无 DOM 触达，幂等）。 */
+      if (typeof settings?.patLineDim === "number" && Number.isFinite(settings.patLineDim)) {
+        const nextPatLineDim = clamp(settings.patLineDim, PAT_LINE_DIM_MIN, PAT_LINE_DIM_MAX);
+        if (nextPatLineDim !== E.patLineDim) E.patLineDim = nextPatLineDim;
       }
     },
     getTuning() {

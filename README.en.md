@@ -109,8 +109,9 @@ Button config example:
   across devices. Contract definition: [cosmos-spec/CONTRACT.md](cosmos-spec/CONTRACT.md).
 - **Session↔proposal association**: stored in `$DSH_HOME/storages/dsh-v-cosmos.json`;
   explicit binding wins (declared by skills and the button pipeline), heuristics
-  (slug mentioned in context / unique active session within ±30min of the directory)
-  fall back; archiving a session prunes its edges, archiving a proposal keeps them.
+  (`@<proposal directory>` assignment reference in user-side messages / unique idle
+  active session within ±30min of the directory) fall back; archiving a session prunes
+  its edges, archiving a proposal keeps them.
 
 Host endpoints live under `/api/dsh-v-cosmos/` (loopback, same port as the UI):
 
@@ -122,7 +123,49 @@ Host endpoints live under `/api/dsh-v-cosmos/` (loopback, same port as the UI):
 | `POST /archive-sessions` | Batch archive sessions (skip running work, per-session outcomes) |
 | `POST /rename-session` | Prefix rename (session sweep) |
 | `POST /bind-session` | Explicit session↔proposal binding (replace semantics, idempotent) |
+| `POST /render-skill-text` | Skill-text path-token render service (for external loaders; no persistence) |
 | `POST /dismiss-embryo` | Dismiss a pending anchor (guarded, user-click only) |
+
+### Render service endpoint (skill-text path tokens)
+
+External skill-loading mechanisms (for example a plugin that reads skill files directly
+from a mapped directory and injects them into a session) can submit the **whole** text to
+be injected before injection, and get it back after the path tokens are rendered per
+[cosmos-spec/CONTRACT.md](cosmos-spec/CONTRACT.md) §9 — same single source as the skill
+provider (same pure function, same config read surface), so no second implementation exists:
+
+`POST /api/dsh-v-cosmos/render-skill-text` (UTF-8 JSON):
+
+```json
+// request
+{ "text": "<whole skill text to inject>" }
+// response 200
+{ "content": "<rendered text>", "rendered": true, "configured": true,
+  "containsToken": true, "warning": null }
+```
+
+- `content`: the whole rendered text (inject it as-is);
+- `rendered`: whether a token replacement happened this time. The unresolved fallback shape
+  prepends a warning line, so `content` differs from the source while `rendered` is `false` —
+  **do not use `rendered` to decide whether `content` changed**;
+- `configured`: whether a resolved value is available; `containsToken`: whether the text
+  contains a token occurrence (whole-word; a bare token-name mention does not count);
+  `warning`: the warning line only when the text contains an occurrence **and** no resolved
+  value is available (same source as the provider fallback, distinguishing "unset" from
+  "read error"), otherwise `null`;
+- missing `text` or wrong type → `400 { "error": "invalid" }`; config is read live per request.
+
+Caller degradation matrix (an absent / unreachable endpoint **is** the negotiation
+mechanism; no version probing needed):
+
+| Case | Caller behaviour |
+|---|---|
+| `200` | Inject `content` (rendered; or the "warning line + original" fallback shape when unset) |
+| `404` (older plugin) / connection failure / timeout | Inject the original text plus one degradation note (e.g. "render service unreachable, paths kept as-is"); MUST NOT block injection |
+
+Zero intrusion: the endpoint has no config and no persistence, writes no files and never
+touches `openspec/` artifacts — rendering only affects the response text (same exposure as
+the provider injection surface; the response never contains config values).
 
 ## Development
 

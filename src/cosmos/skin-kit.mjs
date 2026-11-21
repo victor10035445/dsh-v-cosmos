@@ -124,7 +124,7 @@ export function satBornKOf(it) {
  *
  * 引擎 `patdot` 条目：`{ pts: [{x, y, r, a}], alpha, ws, pat: true }`——
  *  - `pts[i].x/y` 屏幕坐标、`pts[i].r` 屏显半径（引擎按投影缩放 clamp）、
- *  - `pts[i].a` 点弱化因子（引擎 `PAT_DOT_DIM`，恒 < 图样线段的 `PAT_LINE_DIM`）、
+ *  - `pts[i].a` 派生点 α（引擎 `min(0.22, E.patLineDim × 0.44)`，恒 < 图样线段 α）、
  *  - `it.alpha` 星座级 α（与图样线同帧淡入淡出）。
  *
  * 皮肤只决定「用什么颜色画」（`hex` 与母语线基线 `base`）：点 α = `base × it.alpha ×

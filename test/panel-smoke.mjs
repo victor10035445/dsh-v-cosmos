@@ -1,9 +1,11 @@
 /**
  * 提案列表面板投影冒烟（add-cosmos-proposal-actions 3.1/3.6 / cosmos-proposal-panel；
- * add-cosmos-embryo-cards 3.1/3.2/3.5；add-cosmos-galaxy-embryo-cards 3.1–3.4）：分组与
- * 组内排序、星胚合并卡片（归并/排序/银河态触发分组/不携带 dir）、钻取过滤、搜索过滤联动
- * （工作区名 ∪ 星胚 slug，含仅星胚工作区命中呈现）、选中保留语义、空态可见性（活跃提案 ∨
- * 星胚锚点）、确定性；mergeScene `ws.path` 透传（D1 勘误）；以及
+ * add-cosmos-embryo-cards 3.1/3.2/3.5；add-cosmos-galaxy-embryo-cards 3.1–3.4；
+ * add-cosmos-panel-birthline-sort 4.3）：分组与**组内孕育时间线**排序（谱系块装配 /
+ * 星胚卡块头 / 点燃提案创建顺序 / ignitedMs 次序兜底 / birthMs 兜底块 / 台账缺席回落 /
+ * 旧锚点 solo 块 / 确定性）、星胚合并卡片（归并/银河态触发分组/不携带 dir）、钻取过滤、
+ * 搜索过滤联动（工作区名 ∪ 星胚 slug，含仅星胚工作区命中呈现）、选中保留语义、空态可见性
+ * （活跃提案 ∨ 星胚锚点）、确定性；mergeScene `ws.path` 透传（D1 勘误）；以及
  * p1-add-cosmos-card-progress-bars 4.1 的进度数字对派生（会话行 todos 解析 / 提案卡 tasks
  * 直取 / 星胚恒 null）。
  * 运行：node test/panel-smoke.mjs
@@ -11,6 +13,7 @@
 import assert from "node:assert/strict";
 import {
   SELECTION_SURFACE_SELECTOR,
+  birthlineBlocksOf,
   cardIsLinkedOf,
   crossHoverTargets,
   embryoKeyOf,
@@ -145,7 +148,11 @@ const scene = {
     null,
     "缺 sessionId 的旧锚点 → null（无关联，独立成卡）"
   );
-  assert.equal(alpha.cards[0].dir, "C:/proj/alpha/openspec/changes/add-alpha", "卡片携带 @目录（正斜杠）");
+  assert.equal(
+    alpha.cards.find((card) => card.id === "add-alpha").dir,
+    "C:/proj/alpha/openspec/changes/add-alpha",
+    "卡片携带 @目录（正斜杠）"
+  );
   assert.equal(model.groups[1].cards[0].dir, "C:/proj/beta/openspec/changes/add-z", "他工作区路径同源归一");
   assert.deepEqual(model.groups.map((group) => group.wsId), ["ws1", "ws2", "ws3"], "分组条件 = 活跃提案 ∨ 星胚锚点（仅星胚的 gamma 亦生成分组）");
   const gammaGroup = model.groups.find((group) => group.wsId === "ws3");
@@ -544,12 +551,12 @@ const scene = {
   assert.deepEqual(
     cards.map((card) => (card.isEmbryo ? "embryo:" + card.key : card.name)),
     [
-      "zzz-last",
-      "embryo:" + embryoKeyOf("wsA", "sess-1"),
       "embryo:" + embryoKeyOf("wsA", "old-a"),
-      "embryo:" + embryoKeyOf("wsA", "old-b")
+      "embryo:" + embryoKeyOf("wsA", "sess-1"),
+      "embryo:" + embryoKeyOf("wsA", "old-b"),
+      "zzz-last"
     ],
-    "排序：正式提案（字典序）在前，星胚卡按组间首 slug 字典序追加于后（'zzz-last' 仍先于星胚 → 不参与混排）"
+    "组内孕育时间线排序：old-a（at 50）→ sess-1（at 100）→ 无时间块（old-b solo / zzz-last 恒星族，块键码点序）；星胚卡为其谱系块头"
   );
   const merged = cards[1];
   assert.deepEqual(merged.slugs, ["add-x", "add-y", "add-z"], "同会话 3 锚点归并为 1 张卡（slug 逐行清单字典序）");
@@ -559,8 +566,8 @@ const scene = {
   assert.equal(merged.lifecycle, "proto");
   assert.ok(!("dir" in merged), "星胚卡不携带 dir");
   assert.equal(cards[2].sessionId, null, "旧锚点各自成卡（无关联）");
-  assert.equal(cards[2].at, 50, "旧锚点 at 照常");
-  assert.equal(cards[3].at, null, "at 全缺 → null（UI 省略时间徽标）");
+  assert.equal(cards[2].at, null, "at 全缺 → null（UI 省略时间徽标）");
+  assert.equal(cards[0].at, 50, "旧锚点 at 照常（solo 块时间 = 锚点 at）");
   /* 星胚卡 act 透传（keep-embryo-active-while-exploring 2.2/3.2）：组 act = 组内 proto 星
      act 最大值（锚点探索会话活跃度），panel 纯加法透传 → 动作条门控直接消费。 */
   {
@@ -828,6 +835,133 @@ const scene = {
   assert.equal(hoverSourceAlive(hoverScene, { source: "embryo", wsId: "wh", kind: "proto", id: "gone", slugs: ["gone"] }), false, "星胚 slug 被摘除 → 清理");
   assert.equal(hoverSourceAlive({ workspaces: [] }, { source: "row", wsId: "wh", kind: "planet", id: "s1" }), false, "工作区注销 → 清理");
   assert.equal(hoverSourceAlive(hoverScene, null), false, "无悬停描述 → false");
+}
+
+/* ── 组内孕育时间线排序（add-cosmos-panel-birthline-sort 4.3 / spec cosmos-proposal-panel
+   「组内孕育时间线排序」「谱系块内星胚卡打头、点燃提案按创建顺序」「星胚合并卡作为谱系
+   块头」「无谱系提案按 birthMs 兜底成块」「同刻点燃 ignitedMs 次序兜底」「台账缺席回落
+   birthMs 口径」「旧锚点各自成卡」） ──
+   谱系块装配纯逻辑（`birthlineBlocksOf`）独立直测 + 面板投影端到端断言。 */
+{
+  const T1 = 1000, T2 = 2000, T3 = 3000, T4 = 4000, T5 = 5000;
+  const birthlineStars = [
+    { id: "anchor-a", name: "anchor-a", lifecycle: "proto", sessionId: "sess-A", at: T1, tasks: [0, 0] },
+    { id: "anchor-b", name: "anchor-b", lifecycle: "proto", sessionId: "sess-B", at: T3, tasks: [0, 0] },
+    { id: "prop-c", name: "prop-c", lifecycle: "created", tasks: [0, 1], birthMs: T2 },
+    { id: "ign-a1", name: "ign-a1", lifecycle: "reviewed", tasks: [1, 2], birthMs: T4, embryoAt: T1, embryoSessionId: "sess-A", ignitedMs: 6000 },
+    { id: "ign-a2", name: "ign-a2", lifecycle: "created", tasks: [0, 2], birthMs: T5, embryoAt: T1, embryoSessionId: "sess-A", ignitedMs: 7000 }
+  ];
+  const birthlineWs = { id: "wsT", name: "timeline", path: "C:/proj/timeline", stars: birthlineStars };
+  const orderOf = (cards) => cards.map((card) => (card.isEmbryo ? "embryo:" + card.sessionId : card.id));
+
+  /* 组内孕育时间线（spec 场景：星胚 A / 无谱系 C / 星胚 B，T₁ < T₂ < T₃） */
+  const timeline = projectPanel({ workspaces: [birthlineWs] });
+  assert.deepEqual(
+    orderOf(timeline.groups[0].cards),
+    ["embryo:sess-A", "ign-a1", "ign-a2", "prop-c", "embryo:sess-B"],
+    "组内谱系块按星胚出生时间升序：A 块（星胚卡 + 点燃提案）→ C 块（birthMs 兜底）→ B 块"
+  );
+  assert.equal(timeline.total, 3, "正式提案计数 3（ign-a1 / ign-a2 / prop-c）");
+  assert.equal(timeline.embryoTotal, 2, "星胚合并卡 2 张（sess-A / sess-B）");
+  /* 块内：星胚卡打头 + 点燃提案创建顺序（birthMs 升序） */
+  assert.deepEqual(timeline.groups[0].cards[0].slugs, ["anchor-a"], "A 块头 = 星胚合并卡（仅剩在册 slug）");
+  assert.deepEqual(
+    timeline.groups[0].cards.slice(1, 3).map((card) => card.id),
+    ["ign-a1", "ign-a2"],
+    "块内点燃提案按创建顺序（birthMs T₄ < T₅，与点燃先后一致）"
+  );
+  /* 无谱系提案不自带标注（零视觉变化） */
+  const propC = timeline.groups[0].cards.find((card) => card.id === "prop-c");
+  assert.equal(propC.isEmbryo, undefined, "无谱系提案走正式卡路径（不加任何标注字段）");
+  assert.deepEqual(Object.keys(propC).sort(), Object.keys(timeline.groups[0].cards.find((card) => card.id === "ign-a1")).sort(), "有/无谱系正式卡字段集相同（MUST NOT 呈现无谱系视觉标注）");
+
+  /* `birthlineBlocksOf` 纯逻辑直测：块键 / 块时间 / 块内序 / 块间序 */
+  const blocks = birthlineBlocksOf(birthlineStars);
+  assert.deepEqual(blocks.map((block) => block.key), ["session\u0000sess-A", "star\u0000prop-c", "session\u0000sess-B"], "块键命名空间（会话族 / 恒星族）+ 块间块键序");
+  assert.deepEqual(blocks.map((block) => block.time), [T1, T2, T3], "块时间取值链：活锚点 at → birthMs");
+  assert.deepEqual(blocks[0].stars.map((star) => star.id), ["ign-a1", "ign-a2"], "块内星序（birthMs 升序）");
+  assert.equal(blocks[1].embryo, null, "无谱系提案块无星胚组");
+  assert.deepEqual(birthlineBlocksOf([...birthlineStars].reverse()).map((block) => block.key), blocks.map((block) => block.key), "块装配与传入顺序解耦（确定性）");
+  assert.deepEqual(birthlineBlocksOf(null), [], "非数组输入 → 空块清单（不抛错）");
+  assert.deepEqual(birthlineBlocksOf([{ id: "", lifecycle: "created" }, { id: "x", lifecycle: "proto" }]).map((block) => block.stars), [[]], "无 id 恒星不产块成员；proto 恒星只进星胚组（不占正式卡成员位）");
+  /* 块时间全缺 → null 殿后；同刻块键码点序兜底 */
+  const nullTime = birthlineBlocksOf([
+    { id: "zzz", lifecycle: "created" },
+    { id: "aaa", lifecycle: "created" },
+    { id: "timed", lifecycle: "created", birthMs: T2 }
+  ]);
+  assert.deepEqual(nullTime.map((block) => block.key), ["star\u0000timed", "star\u0000aaa", "star\u0000zzz"], "有 birthMs 的块在前、全缺块殿后按 id 码点序");
+
+  /* 同刻点燃 ignitedMs 次序兜底（spec 场景）：birthMs 同刻 → ignitedMs 升序（压过 id 序） */
+  {
+    const sameMs = projectPanel({
+      workspaces: [{
+        id: "wsS",
+        name: "same",
+        path: "C:/proj/same",
+        stars: [
+          { id: "z-early", lifecycle: "created", tasks: [0, 1], birthMs: 9000, embryoAt: 500, embryoSessionId: "sess-S", ignitedMs: 9200 },
+          { id: "a-late", lifecycle: "created", tasks: [0, 1], birthMs: 9000, embryoAt: 500, embryoSessionId: "sess-S", ignitedMs: 9500 },
+          { id: "m-tie", lifecycle: "created", tasks: [0, 1], birthMs: 9000, embryoAt: 500, embryoSessionId: "sess-S", ignitedMs: 9500 }
+        ]
+      }]
+    });
+    assert.deepEqual(
+      sameMs.groups[0].cards.map((card) => card.id),
+      ["z-early", "a-late", "m-tie"],
+      "同刻 birthMs → ignitedMs 升序（9200 先于 9500）；ignitedMs 亦同刻 → id 码点序兜底"
+    );
+  }
+
+  /* 台账缺席全量回落 birthMs 口径（spec「台账缺席回落 birthMs 口径」）：各提案自成块、升序 */
+  {
+    const noLedger = projectPanel({
+      workspaces: [{
+        id: "wsN",
+        name: "noledger",
+        path: "C:/proj/noledger",
+        stars: [
+          { id: "late", lifecycle: "created", tasks: [0, 1], birthMs: 9000 },
+          { id: "early", lifecycle: "created", tasks: [0, 1], birthMs: 1000 },
+          { id: "middle", lifecycle: "created", tasks: [0, 1], birthMs: 5000 },
+          { id: "no-birth", lifecycle: "created", tasks: [0, 1] }
+        ]
+      }]
+    });
+    assert.deepEqual(
+      noLedger.groups[0].cards.map((card) => card.id),
+      ["early", "middle", "late", "no-birth"],
+      "台账缺席 → 全量回落 birthMs 升序（birthMs 亦缺者殿后）"
+    );
+  }
+
+  /* 旧锚点 solo 块同序纪律（spec「旧锚点各自成卡」）：无 sessionId 各成 solo 块、按块时间排序 */
+  {
+    const solos = projectPanel({
+      workspaces: [{
+        id: "wsO",
+        name: "solos",
+        path: "C:/proj/solos",
+        stars: [
+          { id: "old-b", lifecycle: "proto", at: 300, tasks: [0, 0] },
+          { id: "old-a", lifecycle: "proto", at: 100, tasks: [0, 0] },
+          { id: "old-none", lifecycle: "proto", at: null, tasks: [0, 0] }
+        ]
+      }]
+    });
+    assert.deepEqual(
+      solos.groups[0].cards.map((card) => card.slugs[0]),
+      ["old-a", "old-b", "old-none"],
+      "旧锚点各自成 solo 谱系块：at 升序 → null 殿后（同序纪律适用）"
+    );
+    assert.equal(solos.embryoTotal, 3, "3 张独立星胚卡（不归并）");
+  }
+
+  /* 重复投影顺序一致（确定性）：同集合 + 同台账 → 相同顺序；传入顺序无关 */
+  const again = projectPanel({ workspaces: [birthlineWs] });
+  assert.deepEqual(orderOf(again.groups[0].cards), orderOf(timeline.groups[0].cards), "相同输入重复投影 → 相同顺序");
+  const reversed = projectPanel({ workspaces: [{ ...birthlineWs, stars: [...birthlineStars].reverse() }] });
+  assert.deepEqual(orderOf(reversed.groups[0].cards), orderOf(timeline.groups[0].cards), "骨架传入顺序不影响孕育时间线顺序");
 }
 
 console.log("panel-smoke: all assertions passed");

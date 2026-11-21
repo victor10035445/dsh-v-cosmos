@@ -196,6 +196,152 @@ function makeController(options = {}) {
   assert.equal(new Set(ids).size, 2, "每条投递各自铸造 requestId");
 }
 
+/* ── 2b. 显式关联绑定注入（bind-queue-sessions-to-target 1.2）：
+       调用时机（rename 之后、prompt 之前、每投递恰一次）/ 失败非阻断（同步与异步）/
+       缺省不注入行为逐字不变 / 清单 = 条目目标提案（trim）。 ── */
+{
+  /* 缺省不注入：链路方法序逐字不变（既有契约），无任何绑定步骤。 */
+  const plain = makeController();
+  assert.deepEqual(
+    await createQueueDeliverer({ sessionController: plain })(entry),
+    { ok: true, sessionId: "s-1" },
+    "缺省不注入绑定 → 投递照常成功"
+  );
+  assert.deepEqual(
+    plain.calls.map((call) => call.method),
+    ["create", "selectModel", "rename", "prompt"],
+    "缺省不注入绑定 → 链路方法序逐字不变"
+  );
+  /* 非函数注入（null / 误传值）同样按未注入处理。 */
+  const nullInjection = makeController();
+  await createQueueDeliverer({ sessionController: nullInjection, bindAssociation: null })(entry);
+  assert.deepEqual(
+    nullInjection.calls.map((call) => call.method),
+    ["create", "selectModel", "rename", "prompt"],
+    "bindAssociation 非函数 → 视同未注入"
+  );
+
+  /* 注入：调用序 = create → selectModel → rename → bind → prompt（**绑定先于 prompt**）。 */
+  const traced = makeController();
+  const order = [];
+  for (const name of ["create", "selectModel", "rename", "prompt"]) {
+    const original = traced[name];
+    traced[name] = async (...args) => {
+      order.push(name);
+      return await original(...args);
+    };
+  }
+  const bindCalls = [];
+  const boundResult = await createQueueDeliverer({
+    sessionController: traced,
+    bindAssociation: async (input) => {
+      order.push("bind");
+      bindCalls.push(input);
+    }
+  })(entry);
+  assert.deepEqual(boundResult, { ok: true, sessionId: "s-1" }, "注入绑定 → 投递照常成功");
+  assert.deepEqual(
+    order,
+    ["create", "selectModel", "rename", "bind", "prompt"],
+    "绑定调用时机 = rename 之后、prompt 之前"
+  );
+  assert.deepEqual(
+    bindCalls,
+    [{ sessionId: "s-1", proposal: "add-a", workspaceId: "ws1" }],
+    "绑定清单 = 条目目标提案（+ 会话 id / 工作区 id 供宿主解析路径）"
+  );
+
+  /* 每投递恰一次：两次投递 → 各一次绑定（不重复、不累积）。 */
+  let bindCount = 0;
+  const eachDelivery = createQueueDeliverer({
+    sessionController: makeController(),
+    bindAssociation: () => {
+      bindCount += 1;
+    }
+  });
+  await eachDelivery(entry);
+  await eachDelivery(entry);
+  assert.equal(bindCount, 2, "每投递恰一次绑定（两次投递 = 两次绑定）");
+
+  /* 提案名 trim：trim 后作为清单；trim 后为空 → 跳过绑定（不产生空清单绑定）。 */
+  const trimmed = [];
+  await createQueueDeliverer({
+    sessionController: makeController(),
+    bindAssociation: (input) => {
+      trimmed.push(input);
+    }
+  })({ ...entry, proposalId: "  add-a  " });
+  assert.deepEqual(trimmed, [{ sessionId: "s-1", proposal: "add-a", workspaceId: "ws1" }], "提案名 trim 后入清单");
+
+  const blankProposal = [];
+  const blankResult = await createQueueDeliverer({
+    sessionController: makeController(),
+    bindAssociation: (input) => {
+      blankProposal.push(input);
+    }
+  })({ ...entry, proposalId: "   " });
+  assert.deepEqual(blankResult, { ok: true, sessionId: "s-1" }, "空提案名不影响投递");
+  assert.deepEqual(blankProposal, [], "提案名 trim 后为空 → 跳过绑定");
+
+  /* 失败非阻断①：同步抛错 → 投递成功返回、warn 一次、prompt 照常。 */
+  const syncWarns = [];
+  const syncFailController = makeController();
+  const syncFailResult = await createQueueDeliverer({
+    sessionController: syncFailController,
+    logger: { warn: (...args) => syncWarns.push(args.join(" ")) },
+    bindAssociation: () => {
+      throw new Error("bind boom");
+    }
+  })(entry);
+  assert.deepEqual(syncFailResult, { ok: true, sessionId: "s-1" }, "绑定同步抛错 → 投递仍成功（无新失败原因族）");
+  assert.equal(syncWarns.length, 1, "绑定同步失败告警一次");
+  assert.equal(syncWarns[0].includes("关联绑定失败"), true, "告警内容可读");
+  assert.equal(syncWarns[0].includes("bind boom"), true, "告警透出宿主原因");
+  assert.equal(syncFailController.calls.some((call) => call.method === "prompt"), true, "绑定失败后 prompt 照常");
+
+  /* 失败非阻断②：异步拒绝 → 同上（await 失败被吞，不污染返回值）。 */
+  const asyncWarns = [];
+  const asyncFailController = makeController();
+  const asyncFailResult = await createQueueDeliverer({
+    sessionController: asyncFailController,
+    logger: { warn: (...args) => asyncWarns.push(args.join(" ")) },
+    bindAssociation: () => Promise.reject(new Error("bind async boom"))
+  })(entry);
+  assert.deepEqual(asyncFailResult, { ok: true, sessionId: "s-1" }, "绑定异步拒绝 → 投递仍成功");
+  assert.equal(asyncWarns.length, 1, "绑定异步失败告警一次");
+  assert.equal(asyncWarns[0].includes("bind async boom"), true, "异步失败原因可见");
+  assert.equal(asyncFailController.calls.some((call) => call.method === "prompt"), true, "异步拒绝后 prompt 照常");
+
+  /* 链路早期失败 → 零绑定（不产生半截绑定）；prompt 失败 → 绑定已按序完成。 */
+  const earlyBinds = [];
+  const earlyResult = await createQueueDeliverer({
+    sessionController: makeController({ createThrows: true }),
+    bindAssociation: () => {
+      earlyBinds.push(1);
+    }
+  })(entry);
+  assert.equal(earlyResult.reason, "create-failed", "create 失败仍为 create-failed");
+  assert.deepEqual(earlyBinds, [], "链路早期失败 → 零绑定（绑定位于 rename 之后）");
+
+  const promptFailBinds = [];
+  const promptFailResult = await createQueueDeliverer({
+    sessionController: makeController({ promptThrows: true }),
+    bindAssociation: () => {
+      promptFailBinds.push(1);
+    }
+  })(entry);
+  assert.equal(promptFailResult.reason, "prompt-failed", "prompt 失败原因族不变");
+  assert.equal(promptFailBinds.length, 1, "绑定先于 prompt → prompt 失败时绑定已完成");
+
+  /* 既有导出不受注入影响：payload 组装口径逐字不变（无绑定相关键）。 */
+  const unaffected = deliverPayloadOf(entry);
+  assert.deepEqual(
+    Object.keys(unaffected.payload).sort(),
+    ["model", "text", "title", "workspaceId"],
+    "deliverPayloadOf 既有导出不受绑定注入影响（payload 键集不变）"
+  );
+}
+
 /* ── 3. 失败码族：服务缺席 / 方法残缺 / 各调用抛错（rename 不阻断） ── */
 {
   const absent = await createQueueDeliverer({})(entry);

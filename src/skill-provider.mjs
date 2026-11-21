@@ -1,5 +1,6 @@
 /**
- * cosmos-spec 技能 provider 纯逻辑（step3-cosmos-skill-provider-render 1.1 / 1.2）。
+ * cosmos-spec 技能 provider 纯逻辑（step3-cosmos-skill-provider-render 1.1 / 1.2，
+ * step4-cosmos-path-unset-visibility 增强，step5-cosmos-path-render-convergence 收敛）。
  *
  * 职责（全部可注入直测，宿主接线在 src/index.mjs）：
  *  - canonical 根解析序：`paths.cosmosSpecDir`（配置面，step2）→
@@ -7,18 +8,28 @@
  *  - 技能束枚举：canonical 根**即时子目录**与 `skills/` 子层（canonical 仓库实际布局
  *    `<cosmos-spec>/skills/<name>/SKILL.md`，见 cosmos-spec/README「变体技能（skills/）」）
  *    双层扫描 `<name>/SKILL.md`，同名以浅层为准；仅目录束（DSH 技能身份规则：
- *    嵌套递归发现不受支持，层级固定两层）；
+ *    嵌套递归发现不受支持，层级固定两层）；枚举**上浮扫描完整性信号**（任一层目录存在
+ *    却读取失败 → 不可信；层缺席是合法形态、单束正文读取失败按非技能束跳过，二者均
+ *    不拖垮观测，step5 D3）；
  *  - frontmatter 解析：`name` / `description` / `when-to-use` / invocation 键
  *    （`disable-model-invocation` / `user-invocable`，缺省双 true——对齐 dsh-skill
  *    本地 provider 的净房口径）；
- *  - 令牌渲染纯函数 `renderSkillContent(text, resolveValue)`：严格实现 step1 契约
- *    （CONTRACT §9 / cosmos-spec capability「路径令牌契约」）——裸前缀整词匹配
+ *  - 令牌渲染纯函数 `renderSkillContent(text, resolveValue, status?)`：严格实现 step1
+ *    契约（CONTRACT §9 / cosmos-spec capability「路径令牌契约」）——裸前缀整词匹配
  *    （右界紧跟分隔符、左界非路径延续字符）、大小写敏感、配置值去尾分隔符、
- *    拼接边界折叠为恰好一个分隔符且无 `//` 残留；未配置时正文头部附加警示行；
- *  - 读取兜底反馈组合（`resolveTokenPath` + `composeTokenFeedback`，design D4）；
+ *    拼接边界折叠为恰好一个分隔符且无 `//` 残留；未配置 / 读取异常时正文头部附加
+ *    **状态化**警示行（`unsolvedTokenWarningLine(status)`，step4 D2）；
+ *  - 读取兜底反馈组合（`resolveTokenPath` + `composeTokenFeedback`，design D4；
+ *    命令串令牌词提取 `findTokenCommandPath`，step4 D3；反馈可选扫描根提示行，
+ *    step4 D5/D6）；
  *  - canonical 目录表控制器 `createCosmosSpecProvider`：list()/get() + 根文件监听
  *    （recursive + ≥2s 防抖 → 注册期 invalidate()，design D5），解析根切换先摘旧
- *    监听再挂新监听，随 disposer 整体摘除。
+ *    监听再挂新监听，随 disposer 整体摘除；返回面暴露 `resolveRoot()` 供兜底反馈
+ *    读取扫描根（step4 D5 桥接）。列表侧维护**最近一次可信扫描候选集**（last-good，
+ *    以解析根为键）：扫描不可信时回退它并报告 complete=false（消除瞬时空候选窗口的
+ *    同名影手顶替），解析根变化 / 缺失清空、dispose 清空（step5 D3）。
+ *  - 渲染报告 `renderSkillTextReport`：渲染服务端点的响应五键组装，复用
+ *    `renderSkillContent` 同一替换 / 警示核心（step5 D1/D2 单点语义）。
  *
  * 渲染只作用于返回值（MUST NOT 触碰磁盘 canonical 文件）；`get()` 每次读盘，
  * 不自建缓存（registry 本身不缓存定义 → 配置热生效即改）。
@@ -56,6 +67,33 @@ const PATH_CONTINUATION_CHARS = new Set([
   "-"
 ]);
 
+/**
+ * 命令串路径词终止字符（step4 D3 findTokenCommandPath 截取右界）：引号、括号 `(` `)`
+ * ——命令替换闭合、反引号、重定向与管道符 `> | & ;`；空白（含 `\n` `\r` 行尾）另由
+ * 空白判定覆盖。已知取舍（design 风险表）：引号内含空白的路径词会被空白截短——
+ * 令牌后字面片段通常不含空白，反馈为提示词级，模型仍可依扫描根自纠。
+ */
+const COMMAND_PATH_TERMINATOR_CHARS = new Set([
+  "\"",
+  "'",
+  "`",
+  "(",
+  ")",
+  ">",
+  "|",
+  "&",
+  ";"
+]);
+
+/**
+ * 命令串路径词终止判定（step4 D3）：空白 / 引号 / 括号 / 反引号 / 重定向与管道符。
+ * @param {string} ch 单字符
+ * @returns {boolean}
+ */
+function isCommandPathTerminator(ch) {
+  return COMMAND_PATH_TERMINATOR_CHARS.has(ch) || /\s/.test(ch);
+}
+
 /** 技能名 kebab-case 校验（DSH 技能身份规则）。 */
 export function isValidSkillName(name) {
   return typeof name === "string" && /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(name);
@@ -83,19 +121,68 @@ export function isTokenOccurrenceAt(text, index) {
 }
 
 /**
- * 令牌渲染纯函数（spec「令牌渲染」/ design D3）。`resolveValue` 为取解析值的函数或
- * 值本身（函数形态保证每次渲染取最新配置 = 热生效）。
- *  - 已配置（trim 后非空）：每个令牌出现处替换为「配置值去尾分隔符 + 恰好一个分隔符
- *    + 其后片段」——其后片段原样保留，边界连续分隔符折叠为恰好一个；
- *  - 未配置且正文含令牌：正文**原样**返回，头部附加一行未解析警示；
- *  - 正文不含令牌出现：原样返回（裸提及令牌名不触发警示）。
+ * 命令串令牌词提取（step4-cosmos-path-unset-visibility D3，取代原有的「命令开头」
+ * 判定）：`bash` / `pwsh` 的 `command` 入参**全文扫描**第一个令牌出现（整词谓词
+ * `isTokenOccurrenceAt`，不要求命令开头——`cat OPENSPEC_PATH/x.md` 的令牌在中部），
+ * 从令牌起延展到第一个路径终止字符（`isCommandPathTerminator`）得到路径词；
+ * 无出现返回 null。提取结果交由 `resolveTokenPath` 按同一拼接口径解析。
+ * @param {unknown} command 命令串
+ * @returns {string|null}
  */
-export function renderSkillContent(text, resolveValue) {
-  if (typeof text !== "string" || text === "") return typeof text === "string" ? text : "";
-  const rawValue = typeof resolveValue === "function" ? resolveValue() : resolveValue;
-  const configured = typeof rawValue === "string" && rawValue.trim() !== "";
-  const value = configured ? stripTrailingSeparators(rawValue) : null;
+export function findTokenCommandPath(command) {
+  if (typeof command !== "string" || command === "") return null;
+  let scan = 0;
+  for (;;) {
+    const index = command.indexOf(PATH_TOKEN, scan);
+    if (index === -1) return null;
+    if (isTokenOccurrenceAt(command, index)) {
+      let end = index + PATH_TOKEN.length + 1; // 右界分隔符已由谓词保证存在
+      while (end < command.length && !isCommandPathTerminator(command[end])) end += 1;
+      return command.slice(index, end);
+    }
+    scan = index + PATH_TOKEN.length; // 形似而非出现（左界/右界不满足）→ 跳过
+  }
+}
 
+/**
+ * 解析值归一（渲染与渲染报告共用同一判定 = 语义单点，step5 D2）：
+ * trim 后非空 → 去尾分隔符后的值；否则 null（未配置 / 读取异常均落 null）。
+ * @param {unknown} resolveValue 取解析值的函数或值本身
+ * @returns {string|null}
+ */
+function configuredValueOf(resolveValue) {
+  const rawValue = typeof resolveValue === "function" ? resolveValue() : resolveValue;
+  return typeof rawValue === "string" && rawValue.trim() !== "" ? stripTrailingSeparators(rawValue) : null;
+}
+
+/**
+ * 令牌出现判定（整段扫描，整词谓词同 `isTokenOccurrenceAt`）：供渲染服务端点上报
+ * `containsToken`（与渲染同一判定，不出现第二处「是否含令牌」语义）。
+ * @param {unknown} text
+ * @returns {boolean}
+ */
+export function hasTokenOccurrence(text) {
+  if (typeof text !== "string" || text === "") return false;
+  let scan = 0;
+  for (;;) {
+    const index = text.indexOf(PATH_TOKEN, scan);
+    if (index === -1) return false;
+    if (isTokenOccurrenceAt(text, index)) return true;
+    scan = index + PATH_TOKEN.length;
+  }
+}
+
+/**
+ * 渲染核心（单点语义实现）：`value` 为已归一的解析值（null = 不可用）。返回渲染文本与
+ * 是否出现令牌——`renderSkillContent`（provider 注入面）与 `renderSkillTextReport`
+ * （渲染端点面）共用本函数，不存在第二处替换 / 警示语义。
+ * @param {string} text
+ * @param {string|null} value
+ * @param {"unset"|"ok"|"read-error"|string} status
+ * @returns {{content: string, hasToken: boolean}}
+ */
+function renderWithResolvedValue(text, value, status) {
+  const configured = value !== null;
   let out = "";
   let cursor = 0; // 已拼接进 out 的边界（其后片段仍未消费）
   let scan = 0; // 下一次搜索起点
@@ -120,18 +207,83 @@ export function renderSkillContent(text, resolveValue) {
     scan = rest;
   }
   if (!configured) {
-    if (!hasToken) return text;
-    return unsolvedTokenWarningLine() + "\n\n" + text;
+    return hasToken
+      ? { content: unsolvedTokenWarningLine(status) + "\n\n" + text, hasToken: true }
+      : { content: text, hasToken: false };
   }
-  return out + text.slice(cursor);
+  return { content: out + text.slice(cursor), hasToken };
 }
 
-/** 未配置降级警示行（单行，正文头部；spec「未配置降级警示」场景）。 */
-export function unsolvedTokenWarningLine() {
+/**
+ * 令牌渲染纯函数（spec「令牌渲染」/ design D3；step4 D2 增状态化警示）。
+ * `resolveValue` 为取解析值的函数或值本身（函数形态保证每次渲染取最新配置 = 热生效）；
+ * `status` 为读取状态（`"ok" | "unset" | "read-error"`，缺省 `"unset"`——向后兼容）。
+ *  - 已配置（trim 后非空）：每个令牌出现处替换为「配置值去尾分隔符 + 恰好一个分隔符
+ *    + 其后片段」——其后片段原样保留，边界连续分隔符折叠为恰好一个；
+ *  - 未配置 / 读取异常且正文含令牌：正文**原样**返回，头部附加状态化警示行
+ *    （`"read-error"` 走读取异常文案，其余一律按「未配置」文案）；
+ *  - 正文不含令牌出现：原样返回（裸提及令牌名不触发警示）。
+ */
+export function renderSkillContent(text, resolveValue, status = "unset") {
+  if (typeof text !== "string" || text === "") return typeof text === "string" ? text : "";
+  return renderWithResolvedValue(text, configuredValueOf(resolveValue), status).content;
+}
+
+/**
+ * 渲染服务报告（step5 D1/D2）：渲染端点响应五键的单点组装。
+ *  - `content`：渲染后文本（整段返回）；
+ *  - `rendered`：本次发生令牌替换——未解析降级形态虽前置警示行、content 相对原文有变，
+ *    但替换未发生，故恒 false（调用方 MUST NOT 以 rendered 判定 content 是否变化）；
+ *  - `configured`：解析值可用（与 `renderSkillContent` 同一归一口径，故与 content 形态
+ *    恒一致：configured=false ⇔ content 为原文或原文+警示行）；
+ *  - `containsToken`：文本含令牌出现（整词判定，裸令牌名不构成出现）；
+ *  - `warning`：仅 containsToken 且解析值不可用时为未解析警示行（`unsolvedTokenWarningLine`
+ *    同一函数产出、随状态区分「未配置 / 读取异常」，与 provider 降级形态同源），其余 null。
+ * @param {unknown} text 待渲染文本
+ * @param {unknown} resolveValue 取解析值的函数或值本身
+ * @param {"unset"|"ok"|"read-error"|string} [status]
+ * @returns {{content: string, rendered: boolean, configured: boolean,
+ *   containsToken: boolean, warning: string|null}}
+ */
+export function renderSkillTextReport(text, resolveValue, status = "unset") {
+  const source = typeof text === "string" ? text : "";
+  const value = configuredValueOf(resolveValue);
+  const rendered = renderWithResolvedValue(source, value, status);
+  const configured = value !== null;
+  return {
+    content: rendered.content,
+    rendered: configured && rendered.hasToken,
+    configured,
+    containsToken: rendered.hasToken,
+    warning: rendered.hasToken && !configured ? unsolvedTokenWarningLine(status) : null
+  };
+}
+
+/**
+ * 未解析降级警示行（单行，正文头部；spec「未配置降级警示」与「读取异常降级警示」场景，
+ * step4 D2 状态化）：
+ *  - `"read-error"`：说明**配置存在但读取失败**（共享配置存储装载失败，正式文件与备份链
+ *    均不可用），提示查阅插件日志；
+ *  - 其余（含 `"unset"` / `"ok"` / 非法值）：按「未配置」文案渲染（设计口径：非
+ *    `"read-error"` 一律落未配置文案——已配置走渲染不会进本分支，该口径仅为注入面
+ *    误用 / 未来接线漂移兜底）。
+ * 两分支均携带设置入口：DSH 设置页「设置-cosmos」→「通用」页签 `openspecPath` 字段。
+ * @param {"unset"|"ok"|"read-error"|string} [status]
+ * @returns {string}
+ */
+export function unsolvedTokenWarningLine(status = "unset") {
+  if (status === "read-error") {
+    return (
+      "> ⚠️ 未解析警示（cosmos 路径令牌）：本技能含路径令牌 OPENSPEC_PATH，但共享配置" +
+      "存储装载失败（正式文件与备份链均不可用），已配置的 openspec 路径读取异常——" +
+      "令牌路径按原样保留。请查阅插件日志排障，并在 DSH 设置页「设置-cosmos」→「通用」" +
+      "页签确认 openspecPath 配置后重新加载本技能。"
+    );
+  }
   return (
     "> ⚠️ 未解析警示（cosmos 路径令牌）：本技能含路径令牌 OPENSPEC_PATH，但尚未配置" +
-    " openspec 路径——令牌路径按原样保留。请在 DSH 设置页「cosmos」中配置 openspec" +
-    " 路径后重新加载本技能。"
+    " openspec 路径——令牌路径按原样保留。请在 DSH 设置页「设置-cosmos」→「通用」页签" +
+    "配置 openspecPath（openspec 路径）后重新加载本技能。"
   );
 }
 
@@ -152,20 +304,27 @@ export function resolveTokenPath(rawPath, value) {
 
 /**
  * 兜底 block 反馈文本（spec「路径令牌读取兜底」：block 反馈是结果的唯一内容通道，
- * 原错误文本 MUST 内嵌进反馈；已配置给解析后路径 + 重试指引，未配置给设置指引）。
- * @param {{rawPath: string, resolved: string|null, originalError?: string}} input
+ * 原错误文本 MUST 内嵌进反馈；已配置给解析后路径 + 重试指引，未配置给设置指引；
+ * 解析根可解析时两个分支均追加「cosmos-spec 技能目录扫描根」提示行，step4 D5/D6）。
+ * @param {{rawPath: string, resolved: string|null, originalError?: string,
+ *          skillRootHint?: string|null}} input
+ *        `skillRootHint` 缺省 / 空串 → 省略该行（既有反馈形状不变，既有断言不失效）
  * @returns {string}
  */
-export function composeTokenFeedback({ rawPath, resolved, originalError } = {}) {
+export function composeTokenFeedback({ rawPath, resolved, originalError, skillRootHint } = {}) {
   const errorText = typeof originalError === "string" && originalError ? originalError : "（无）";
   const head = "路径令牌读取兜底：工具入参以未解析令牌 OPENSPEC_PATH 开头且调用失败。";
   const pathLine = "失败路径：" + String(rawPath ?? "");
+  const rootLine = typeof skillRootHint === "string" && skillRootHint !== ""
+    ? "cosmos-spec 技能目录扫描根：" + skillRootHint + "\n"
+    : "";
   if (typeof resolved === "string" && resolved) {
     return (
       head + "\n" +
       pathLine + "\n" +
       "解析后的绝对路径：" + resolved + "\n" +
       "请改用该路径重试。\n" +
+      rootLine +
       "原始错误信息：" + errorText
     );
   }
@@ -174,6 +333,7 @@ export function composeTokenFeedback({ rawPath, resolved, originalError } = {}) 
     pathLine + "\n" +
     "尚未配置 openspec 路径：请在 DSH Web 设置页「cosmos」中配置 openspec 路径" +
     "（openspecPath）后重试。\n" +
+    rootLine +
     "原始错误信息：" + errorText
   );
 }
@@ -237,23 +397,42 @@ export function parseFrontmatter(text) {
 }
 
 /**
- * 技能束枚举（1.1）：canonical 根即时子目录层 + `skills/` 子层各扫一层
- * `<name>/SKILL.md`（同名浅层优先）；非法形态（非目录 / 无 SKILL.md / 名字非
- * kebab-case / description 缺失）跳过并告警——单束失败不拖垮目录观测。
+ * 技能束枚举（1.1；step5 D3 上浮扫描完整性信号）：canonical 根即时子目录层 + `skills/`
+ * 子层各扫一层 `<name>/SKILL.md`（同名浅层优先）；非法形态（非目录 / 无 SKILL.md /
+ * 名字非 kebab-case / description 缺失）跳过并告警——单束失败不拖垮目录观测。
+ *
+ * 完整性口径（「层读取失败」≠「层缺席」）：
+ *  - 层**缺席**（如根下无 `skills/`）是合法形态：以 `io.exists` 先判定，缺席即跳过，
+ *    `complete` 不受影响——否则每个扁平布局的 canonical 根都会被误判不可信；
+ *  - 层**存在却 readdir 抛错**（权限 / 观测窗口内目录消失 / IO 故障）→ `complete=false`，
+ *    调用方（provider list）据此回退 last-good；
+ *  - 单束正文读取失败仍按「非技能束」跳过（`complete` 不受影响，现状不变）。
  * @param {{root: string, io?: object, logger?: {warn?: Function}|null}} input
- * @returns {Array<{name: string, dir: string, file: string, description: string,
- *   whenToUse?: string, invocation: {modelInvocable: boolean, userInvocable: boolean}}>}
+ * @returns {{bundles: Array<{name: string, dir: string, file: string, description: string,
+ *   whenToUse?: string, invocation: {modelInvocable: boolean, userInvocable: boolean}}>,
+ *   complete: boolean}} `complete` = 本次扫描是否可信（两层目录均无读取失败）
  */
 export function enumerateSkillBundles({ root, io = defaultIo, logger = null } = {}) {
-  if (typeof root !== "string" || !root) return [];
+  if (typeof root !== "string" || !root) return { bundles: [], complete: false };
+  const ioFace = io === defaultIo ? defaultIo : { ...defaultIo, ...io };
   const layers = [root, join(root, "skills")];
   const byName = new Map();
+  let complete = true;
   for (const layer of layers) {
+    let present;
+    try {
+      present = ioFace.exists(layer);
+    } catch {
+      complete = false; // 存在性观测失败同样不可信
+      continue;
+    }
+    if (!present) continue; // 层目录缺席（如根下无 skills/）→ 合法跳过，不算失败
     let entries;
     try {
-      entries = io.readdir(layer);
+      entries = ioFace.readdir(layer);
     } catch {
-      continue; // 层目录缺席（如根下无 skills/）→ 跳过该层，不算失败
+      complete = false; // 层存在却读取失败 → 本次扫描不可信（provider 回退 last-good）
+      continue;
     }
     for (const entry of entries) {
       if (!entry?.isDirectory?.() || typeof entry.name !== "string") continue;
@@ -261,9 +440,9 @@ export function enumerateSkillBundles({ root, io = defaultIo, logger = null } = 
       const file = join(layer, entry.name, SKILL_ENTRY_FILENAME);
       let text;
       try {
-        text = io.readText(file);
+        text = ioFace.readText(file);
       } catch {
-        continue; // 无 SKILL.md / 读失败 → 非技能束
+        continue; // 无 SKILL.md / 读失败 → 非技能束（单束失败不拖垮观测）
       }
       const meta = parseFrontmatter(text);
       const name = isValidSkillName(meta.name) ? meta.name : (isValidSkillName(entry.name) ? entry.name : null);
@@ -289,7 +468,7 @@ export function enumerateSkillBundles({ root, io = defaultIo, logger = null } = 
       });
     }
   }
-  return [...byName.values()];
+  return { bundles: [...byName.values()], complete };
 }
 
 /* ── 默认 IO 面（node:fs；测试经 deps.io 注入桩） ── */
@@ -317,27 +496,34 @@ const defaultWatch = (target, options, listener) => fsWatch(target, options, lis
  * canonical 目录表控制器（2.1 / 2.2 的纯逻辑面）：产出 DSH `SkillProvider` 形状
  * （name / list / get）+ 根监听生命周期。
  *
- *  - `list()`：观测 signal → 对账根监听 → 解析根 → 枚举。canonical 缺席 / 扫描失败 /
- *    signal 已中止 → `{ candidates: [], complete: false }`（观测不完整、不缓存、不抛错，
- *    spec「canonical 缺席降级」）；扫描成功 → 候选数组（complete-discovery 简写）。
+ *  - `list()`：观测 signal → 对账根监听 → 解析根 → 枚举。signal 已中止 → `{ candidates: [],
+ *    complete: false }`；解析根不可解析（真缺席）→ 同形状空观测且清空 last-good（不跨根
+ *    回退）；扫描**可信**（含空结果）→ 候选数组（complete-discovery 简写）并如实更新
+ *    last-good；扫描**不可信**（层目录读取失败）→ 回退 last-good 且 `complete=false`
+ *    （last-good 为空时返回空候选），回退仅 warn 一次（step5 D3）。始终不抛错。
  *  - `get()`：每次读盘 + 渲染（不自建缓存 → 配置热生效即改）；读失败 → undefined
  *    （registry 视为不再可加载，不抛错）。
  *  - 根监听：解析根切换（cosmosSpecDir 配置变更）先摘旧监听再挂新监听；事件 ≥ 防抖
  *    → `invalidate()`（注册期控制柄，失效沿 skills/change 广播）；监听随 `dispose()`
  *    摘除。
+ *  - `resolveRoot()`：解析根纯读取（复用内部 `resolveCosmosSpecRoot` 解析序，非第二处
+ *    定义），供兜底反馈追加扫描根提示行（step4 D5/D6）；不触盘写、不抛错。
  *
  * @param {object} options
  * @param {() => {openspecPath: string|null, cosmosSpecDir: string|null}} options.readPaths
  *     每次使用前取最新 paths 节（宿主接线注入；step2「配置热生效」）
+ * @param {() => ("ok"|"unset"|"read-error")} [options.readPathsStatus]
+ *     读取状态（step4 D1；缺省未注入 → 按 `"unset"`，行为与现状一致）：
+ *     `"read-error"` 渲染读取异常警示行，其余走未配置文案
  * @param {string} options.packageDir 插件包目录（canonical 回退根的基准）
  * @param {() => void} options.invalidate 注册期失效控制柄（control.invalidate）
  * @param {{warn?: Function}|null} [options.logger]
  * @param {{io?: object, watch?: Function, debounceMs?: number}} [options.deps] 测试注入
- * @returns {{name: string, list: Function, get: Function,
+ * @returns {{name: string, list: Function, get: Function, resolveRoot: Function,
  *   reconcileWatch: Function, dispose: Function}}
  */
 export function createCosmosSpecProvider(options = {}) {
-  const { readPaths, packageDir, invalidate, logger = null } = options;
+  const { readPaths, readPathsStatus = null, packageDir, invalidate, logger = null } = options;
   const deps = options.deps ?? {};
   const io = deps.io ? { ...defaultIo, ...deps.io } : defaultIo;
   const watchFn = typeof deps.watch === "function" ? deps.watch : defaultWatch;
@@ -348,6 +534,17 @@ export function createCosmosSpecProvider(options = {}) {
   let watchWarned = false;
   let debounceTimer = null;
   let disposed = false;
+
+  /**
+   * 最近一次**可信**扫描的技能束集（step5 D3 last-good）：以解析根身份为键——不可信
+   * 扫描（层目录读取失败）回退到它，消除瞬时空候选窗口让宿主同名影手顶替的可能。
+   * 内存态、不持久化；解析根变化 / 缺失即清空（旧根候选 MUST NOT 跨根回退）；dispose
+   * 清空。存内部 bundles 而非宿主候选对象：每次回退重新投影，避免跨调用共享可变对象。
+   * @type {{root: string, bundles: Array}|null}
+   */
+  let lastGood = null;
+  /** 回退告警一次性闩（同一 provider 生命周期只 warn 一次，step5 D3）。 */
+  let lastGoodWarned = false;
 
   const safeReadPaths = () => {
     try {
@@ -361,6 +558,17 @@ export function createCosmosSpecProvider(options = {}) {
   };
 
   const resolveRoot = () => resolveCosmosSpecRoot({ paths: safeReadPaths(), packageDir, exists: io.exists });
+
+  /** 读取状态安全面（step4 D1）：未注入 / 非法值 → "unset"；注入面抛错 → "read-error"（防御兜底）。 */
+  const safeReadPathsStatus = () => {
+    if (typeof readPathsStatus !== "function") return "unset";
+    try {
+      const status = readPathsStatus();
+      return typeof status === "string" ? status : "unset";
+    } catch {
+      return "read-error";
+    }
+  };
 
   const closeWatcher = () => {
     if (watcher) {
@@ -418,30 +626,54 @@ export function createCosmosSpecProvider(options = {}) {
     if (hadWatch && callOptions.invalidateIfChanged) invalidate?.();
   };
 
+  /**
+   * 技能束 → 宿主候选投影（正常扫描与 last-good 回退共用同一形状，无第二处定义）。
+   * @param {Array} bundles
+   * @returns {Array<object>}
+   */
+  const projectCandidates = (bundles) =>
+    bundles.map((bundle) => ({
+      name: bundle.name,
+      description: bundle.description,
+      ...(bundle.whenToUse ? { whenToUse: bundle.whenToUse } : {}),
+      invocation: bundle.invocation,
+      source: PROVIDER_NAME,
+      provider: PROVIDER_NAME,
+      rank: PROVIDER_RANK,
+      locator: { name: bundle.name, dir: bundle.dir, file: bundle.file }
+    }));
+
   return {
     name: PROVIDER_NAME,
     async list(lookupOptions = {}) {
       if (lookupOptions?.signal?.aborted) return { candidates: [], complete: false };
       reconcileWatch();
       const root = resolveRoot();
-      if (!root) return { candidates: [], complete: false }; // 空目录观测（不完整、不缓存）
-      let bundles;
+      if (!root) {
+        lastGood = null; // 解析根缺失 = 根身份变化 → 清空（真缺席不回退陈旧候选）
+        return { candidates: [], complete: false }; // 空目录观测（不完整、不缓存）
+      }
+      if (lastGood !== null && lastGood.root !== root) lastGood = null; // 根切换不跨根回退
+      let scan;
       try {
-        bundles = enumerateSkillBundles({ root, io, logger });
+        scan = enumerateSkillBundles({ root, io, logger });
       } catch (error) {
         logger?.warn?.(`[dsh-v-cosmos] canonical 目录扫描失败：${String(error?.message || error)}`);
-        return { candidates: [], complete: false };
+        scan = { bundles: [], complete: false }; // 枚举层意外抛错同样按不可信处理（防御兜底）
       }
-      return bundles.map((bundle) => ({
-        name: bundle.name,
-        description: bundle.description,
-        ...(bundle.whenToUse ? { whenToUse: bundle.whenToUse } : {}),
-        invocation: bundle.invocation,
-        source: PROVIDER_NAME,
-        provider: PROVIDER_NAME,
-        rank: PROVIDER_RANK,
-        locator: { name: bundle.name, dir: bundle.dir, file: bundle.file }
-      }));
+      if (!scan.complete) {
+        if (lastGood === null) return { candidates: [], complete: false };
+        if (!lastGoodWarned) {
+          lastGoodWarned = true;
+          logger?.warn?.(
+            `[dsh-v-cosmos] canonical 目录扫描不可信（层目录读取失败），回退最近一次可信候选集（complete=false）：${root}`
+          );
+        }
+        return { candidates: projectCandidates(lastGood.bundles), complete: false };
+      }
+      /* 可信扫描（含空结果）如实更新 last-good（可信空结果覆盖旧候选，不悬挂陈旧条目）。 */
+      lastGood = { root, bundles: scan.bundles };
+      return projectCandidates(scan.bundles);
     },
     async get(candidate, lookupOptions = {}) {
       if (!candidate || lookupOptions?.signal?.aborted) return undefined;
@@ -462,12 +694,15 @@ export function createCosmosSpecProvider(options = {}) {
         provider: PROVIDER_NAME,
         path: locator.file,
         resourceBase: { kind: "directory", path: locator.dir },
-        content: renderSkillContent(text, () => safeReadPaths().openspecPath)
+        content: renderSkillContent(text, () => safeReadPaths().openspecPath, safeReadPathsStatus())
       };
     },
+    resolveRoot,
     reconcileWatch,
     dispose() {
       disposed = true;
+      lastGood = null; // 内存态候选随实例销毁（step5 D3，不持久化）
+      lastGoodWarned = false;
       if (debounceTimer) {
         clearTimeout(debounceTimer);
         debounceTimer = null;

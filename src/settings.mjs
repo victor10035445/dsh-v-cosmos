@@ -9,7 +9,10 @@
  * v7 → v8；add-cosmos-rightbar-dock：`launchMode` v9 → v10；
  * add-cosmos-template-name-toggle 1.1：星座模板名显示布尔键 `templateNames`
  * 版本 v10 → v11；add-cosmos-zoom-ruler 3.1：删缩放阈值两键 `zoomDiveRatio` /
- * `zoomFlyOutRatio`（阈值收敛为引擎常量、由顶部缩放标尺呈现），版本 v11 → v12）。
+ * `zoomFlyOutRatio`（阈值收敛为引擎常量、由顶部缩放标尺呈现），版本 v11 → v12；
+ * add-cosmos-figure-line-alpha 1.1：图样连线亮度百分比键 `patLineDim`
+ * 版本 v12 → v13；add-cosmos-template-reassign 返工：钻取态顶部模板工具高度键
+ * `wsToolSize` 版本 v13 → v14）。
  *
  * 独立模块——client.jsx 消费（store 装载/引擎注入）、test/engine-smoke.mjs /
  * test/settings-panel-smoke.mjs 冒烟直测。
@@ -17,12 +20,14 @@
  * （Node/隐私模式缺席 → 缺省），键 `dsh-v-cosmos:settings`（旧名 `dsh-cosmos:settings`
  * 存量读取回落迁移，写入恒走新键）。
  *
- * 设置面（version 12，add-cosmos-zoom-ruler 引入 v11 → v12：删除缩放阈值两键——
- * 阈值已收敛为引擎常量并向顶部缩放标尺开放，设置面不再有对应控件；v11 =
- * add-cosmos-template-name-toggle 的 `templateNames` 布尔键 v10 → v11；
- * v10 = add-cosmos-rightbar-dock 的 `launchMode` 两档 v9 → v10；v9 = 历史独立窗口变更的
- * `embedded` / `window` 两档，v10 把历史 `window` 值迁移为 `dock`；v8 =
- * add-cosmos-shortcuts 2.1 的 `shortcuts` 子对象，版本号只进不退）：
+ * 设置面（version 14，add-cosmos-template-reassign 返工引入 v13 → v14：新增顶部模板工具
+ * 边长键 `wsToolSize`（缺省 32、界 [28,48]）；v13 = add-cosmos-figure-line-alpha 的图样连线
+ * 亮度 `patLineDim`（缺省 50 = 引擎因子 0.5，默认渲染零变化）；v12 =
+ * add-cosmos-zoom-ruler 3.1 删除缩放阈值两键——阈值已收敛为引擎常量并向顶部缩放标尺
+ * 开放，设置面不再有对应控件；v11 = add-cosmos-template-name-toggle 的
+ * `templateNames` 布尔键 v10 → v11；v10 = add-cosmos-rightbar-dock 的 `launchMode` 两档
+ * v9 → v10；v9 = 历史独立窗口变更的 `embedded` / `window` 两档，v10 把历史 `window`
+ * 值迁移为 `dock`；v8 = add-cosmos-shortcuts 2.1 的 `shortcuts` 子对象，版本号只进不退）：
  *  - panSpeed：WASD 基础平移速度（世界单位/秒），缺省 120；
  *  - panShiftBoost：Shift 加速倍率，缺省 3；
  *  - skin：内置皮肤 id（枚举 = `COSMOS_SKIN_IDS`），缺省 `rosepine`（design D2）；
@@ -40,7 +45,8 @@
  *    add-cosmos-drag-pan-toggle D4）。与 `zoomPointerFocus` 同构的布尔键净房；开关本体
  *    （引擎内按钮）即设置入口，不另设设置页控件（对照 `sessionPanelOpen` 先例）；
  *  - 界面尺寸 12 键（add-cosmos-layout-tuning D2；缺省 = 引入配置面之前的现值，
- *    默认渲染零变化）：`sessionPanelWidth` / `sessionPanelHeight`（会话列表面板宽 /
+ *    默认渲染零变化；add-cosmos-template-reassign 返工 v14 追加第 13 键 `wsToolSize`）：
+ *    `sessionPanelWidth` / `sessionPanelHeight`（会话列表面板宽 /
  *    高度上限，**0 = 自适应页面**）、`constPanelWidth` / `constPanelHeight`（星座面板
  *    同款）、`addBtnSize`（左下新增按钮边长）、`hudBtnSize`（右下 HUD 按钮边长：
  *    回到银河 + 拖拽平移共用）、`actionBtnWidth` / `actionBtnHeight`（动作条按钮宽 /
@@ -60,6 +66,13 @@
  *    merge 层随场景装配交付每个工作区命中模板的中文名 `ws.tplZh`（模板分配契约单一出处）；
  *    开启时在银河星座 chip 副文本与钻取态标牌副行两处呈现，关闭或 `tplZh` 为 null 时
  *    不渲染任何额外 DOM（add-cosmos-template-name-toggle 1.1/D1/D3）。
+ *  - patLineDim：图样连线亮度百分比（整数 [5, 100]，纯装饰偏好），缺省 **50**（= 引擎
+ *    弱化因子 0.5 × 100，默认渲染零变化）。百分比整数形态复用 `clampTo` 数值净化（绕开其
+ *    `Math.round` 对小数因子的破坏）；引擎经 `setTuning({ patLineDim })` 热更，滑杆控件在
+ *    「通用」页签「星座装饰」组（add-cosmos-figure-line-alpha 1.1/D1/D5）。
+ *  - wsToolSize：钻取态顶部模板工具（「指定模板」/「随机重掷」）方形 icon 按钮边长（px，
+ *    界 [28, 48]，缺省 **32**）。仅钻取态右上星座标牌旁呈现；经 `--cos-ws-tool-size` 令牌
+ *    下发（add-cosmos-template-reassign 返工 D8），银河态零呈现。
  * 后续设置 UI 直接调 `saveCosmosSettings`（写侧净房内置），引擎经 `engine.setTuning` /
  * `engine.setShortcuts` / `engine.setSkin` 热更新（无需重开整页）。
  */
@@ -71,12 +84,14 @@ const SETTINGS_KEY = "dsh-v-cosmos:settings";
 /** 品牌更名前的 localStorage 键（仅读取回落，SHALL NOT 写入）。 */
 const LEGACY_SETTINGS_KEY = "dsh-cosmos:settings";
 export const COSMOS_SETTINGS_KEY = SETTINGS_KEY;
-/** 设置面版本（v12 = add-cosmos-zoom-ruler：删缩放阈值两键；v11 =
+/** 设置面版本（v14 = add-cosmos-template-reassign 返工：新增顶部模板工具高度
+    `wsToolSize`；v13 = add-cosmos-figure-line-alpha：新增图样连线亮度 `patLineDim`；
+    v12 = add-cosmos-zoom-ruler：删缩放阈值两键；v11 =
     add-cosmos-template-name-toggle：新增 `templateNames` 布尔键；v10 =
     add-cosmos-rightbar-dock：`launchMode` 改 `embedded`/`dock` 两档并迁移历史
     `window` 值；v9 = 历史独立窗口变更新增 `launchMode`；v8 = 快捷键子对象；
-    v1–v11 载荷读出补默认）。 */
-export const COSMOS_SETTINGS_VERSION = 12;
+    v1–v13 载荷读出补默认）。 */
+export const COSMOS_SETTINGS_VERSION = 14;
 
 /**
  * Cosmos 入口打开方式枚举（add-cosmos-rightbar-dock）：
@@ -133,13 +148,22 @@ export const COSMOS_SETTINGS_DEFAULTS = Object.freeze({
   launchMode: COSMOS_DEFAULT_LAUNCH_MODE,
   /* ── 星座模板名显示（add-cosmos-template-name-toggle D1）：缺省关闭 ⇒ 默认渲染零变化
      （chip / 钻取标牌不追加模板名 DOM）；开启后经 merge 交付的 `ws.tplZh` 呈现中文名。 ── */
-  templateNames: false
+  templateNames: false,
+  /* ── 图样连线亮度（add-cosmos-figure-line-alpha D1/D5）：百分比整数 [5, 100]，缺省 50 =
+     引擎弱化因子 0.5 × 100（默认渲染逐字节零变化）。存百分比而非浮点因子：既有 `clampTo`
+     对数值键一律 `Math.round`，因子 0.5 会被取整破坏。引擎消费 `patLineDim / 100`。 ── */
+  patLineDim: 50,
+  /* ── 顶部模板工具边长（add-cosmos-template-reassign 返工 D8）：钻取态右上角星座标牌旁的
+     「指定模板 / 随机重掷」方形 icon 按钮边长 px；缺省 32（贴合顶部标牌行高），界 [28, 48]。
+     不改底部 HUD 图标按钮键 `hudBtnSize`（两者语义分离）。 ── */
+  wsToolSize: 32
 });
 
 /** 界（写侧 400 的前置净房界；越界值落回界内端点，SHALL NOT 抛错）。
     保持纯数值 `[min,max]` 形状——枚举界（skin）以 `COSMOS_SKIN_IDS` 表达、布尔键
     （zoomPointerFocus / sessionPanelOpen / dragPan / templateNames）以独立净化分支表达，
-    不混入本表。界面尺寸键全部为数值界（含高度类 `0` 端点 = 自适应）。
+    不混入本表。界面尺寸键与图样连线亮度键（patLineDim）全部为数值界（高度类 `0`
+    端点 = 自适应）。
     v12 起缩放下钻阈值两键已删除（阈值 = 引擎常量，由顶部缩放标尺呈现）。 */
 export const COSMOS_SETTINGS_BOUNDS = Object.freeze({
   panSpeed: [20, 600],
@@ -155,7 +179,13 @@ export const COSMOS_SETTINGS_BOUNDS = Object.freeze({
   constActionHeight: [40, 72],
   searchWidth: [180, 640],
   searchHeight: [0, 64],
-  wsTitleSize: [10, 24]
+  wsTitleSize: [10, 24],
+  /* 图样连线亮度百分比（add-cosmos-figure-line-alpha D1）：下界 5 = 弱化线仍隐约可辨，
+     上界 100 = 皮肤 constline 基线原亮度（仍弱于恒星本体与轨道环）。 */
+  patLineDim: [5, 100],
+  /* 顶部模板工具边长（add-cosmos-template-reassign 返工 D8）：方形 icon 按钮，允许低于图标
+     按钮的 40px 触屏下限（按钮本体即热区，28px 起）。 */
+  wsToolSize: [28, 48]
 });
 
 function clampTo(key, value, fallback) {
@@ -232,8 +262,9 @@ function launchModeOf(value) {
  *        v6 载荷无界面尺寸 12 键、v7 载荷无 `shortcuts` 子对象、v8 载荷无 `launchMode`、
  *        v9 载荷的历史独立窗口值守恒重映射为 `dock`、v10 载荷无 `templateNames`；
  *        v11 及更早载荷的 `zoomDiveRatio` / `zoomFlyOutRatio`（v12 已删键）读出即弃
- *        ——净房投影天然不认识两键，无迁移动作）
- * @returns {{ panSpeed: number, panShiftBoost: number, skin: string, zoomPointerFocus: boolean, sessionPanelOpen: boolean, constPreflight: "native"|"float", dragPan: boolean, sessionPanelWidth: number, sessionPanelHeight: number, constPanelWidth: number, constPanelHeight: number, addBtnSize: number, hudBtnSize: number, actionBtnWidth: number, actionBtnHeight: number, constActionHeight: number, searchWidth: number, searchHeight: number, wsTitleSize: number, shortcuts: {closePage: string, goHome: string, togglePan: string, voiceToggle: string}, launchMode: "embedded"|"dock", templateNames: boolean }}
+ *        ——净房投影天然不认识两键，无迁移动作；v12 及更早载荷无 `patLineDim`（读出补 50）；
+ *        v13 及更早载荷无 `wsToolSize`（读出补 32））
+ * @returns {{ panSpeed: number, panShiftBoost: number, skin: string, zoomPointerFocus: boolean, sessionPanelOpen: boolean, constPreflight: "native"|"float", dragPan: boolean, sessionPanelWidth: number, sessionPanelHeight: number, constPanelWidth: number, constPanelHeight: number, addBtnSize: number, hudBtnSize: number, actionBtnWidth: number, actionBtnHeight: number, constActionHeight: number, searchWidth: number, searchHeight: number, wsTitleSize: number, shortcuts: {closePage: string, goHome: string, togglePan: string, voiceToggle: string}, launchMode: "embedded"|"dock", templateNames: boolean, patLineDim: number, wsToolSize: number }}
  */
 export function sanitizeCosmosSettings(raw) {
   const source = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
@@ -271,7 +302,14 @@ export function sanitizeCosmosSettings(raw) {
     /* 星座模板名显示（add-cosmos-template-name-toggle 1.1/D1）：布尔键同构净房——字符串
        `"on"` / 数字 `1` / null 等手工坏值一律回落缺省 false（SHALL NOT 抛错）；v10 及更早
        载荷（无该键）补缺省 false，呈现零变化。 */
-    templateNames: boolOf(source.templateNames, COSMOS_SETTINGS_DEFAULTS.templateNames)
+    templateNames: boolOf(source.templateNames, COSMOS_SETTINGS_DEFAULTS.templateNames),
+    /* 图样连线亮度（add-cosmos-figure-line-alpha 1.1/D1/D5）：百分比整数走 `clampTo` 同构
+       净房——非数值形态回落缺省 50、越界落界内端点、四舍五入取整（与既有数值键一致）；
+       v12 及更早载荷（无该键）补缺省 50，渲染零变化。 */
+    patLineDim: clampTo("patLineDim", source.patLineDim, COSMOS_SETTINGS_DEFAULTS.patLineDim),
+    /* 顶部模板工具高度（add-cosmos-template-reassign 返工 D8）：数值界 [28, 48]，缺省 32；
+       非数值回落缺省、越界落端点（v13 及更早载荷无该键 → 32）。 */
+    wsToolSize: clampTo("wsToolSize", source.wsToolSize, COSMOS_SETTINGS_DEFAULTS.wsToolSize)
   };
 }
 
@@ -330,7 +368,10 @@ export function cosmosLayoutTokensOf(settings) {
     "--cos-const-action-h": px("constActionHeight", "40px"),
     "--cos-search-w": px("searchWidth", "320px"),
     "--cos-search-h": px("searchHeight", "0px"),
-    "--cos-ws-title-size": px("wsTitleSize", "13px")
+    "--cos-ws-title-size": px("wsTitleSize", "13px"),
+    /* 钻取态顶部模板工具高度（add-cosmos-template-reassign 返工）：仅变量下发，引擎 CSS
+       同时带 32px fallback（无整页包裹时同现值）。 */
+    "--cos-ws-tool-size": px("wsToolSize", "32px")
   };
 }
 

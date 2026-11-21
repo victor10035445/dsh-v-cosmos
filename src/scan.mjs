@@ -17,6 +17,9 @@
  *    扩展（add-cosmos-embryo-cards 2.1：字符串非空才采纳，否则 null——读取方容错，
  *    旧锚点零迁移）；
  *  - 星云 = `archive/` 一级子目录计数；
+ *  - 点燃谱系（add-cosmos-panel-birthline-sort 2.2）：`lineages` 由宿主注入回调投影
+ *    （同一帧扫描结果上做 sighting 登记与点燃配对），本模块只负责挂载；回调缺席 /
+ *    抛错 / 返回非数组 → `lineages: []`（读取失败按空清单兜底，不中断扫描）；
  *  - 容错（R3）：tasks.md / .state.json / pending 条目不可读/解析失败 → 按缺失兜底，
  *    SHALL NOT 抛错、不中断整工作区扫描。
  */
@@ -280,13 +283,18 @@ export function joinProposalDir(changesDir, proposalName) {
  *
  * @param {Array<object>} workspaces 在册工作区实体投影
  * @param {object} readers 读回调组（readChangesDir / readArchiveDir / readTasks / readBirthMs / readState / readPendingDir）
- * @param {{ now: number, associations: Array<{workspace: string, proposal: string, sessionId: string, origin?: string}> }} [context]
- *        now = 生成时刻；associations = 归一化后的关联条目（workspace 为路径指纹）
- * @returns {object} 骨架 JSON（version/generatedAt/workspaces[].{stars,archives,pending,links,associations}）
+ * @param {{ now: number, associations: Array<{workspace: string, proposal: string, sessionId: string, origin?: string}>,
+ *           lineagesOf?: (workspacePath: string, scanned: {stars: object[], pending: object[]}) => Array<object> }} [context]
+ *        now = 生成时刻；associations = 归一化后的关联条目（workspace 为路径指纹）；
+ *        lineagesOf = 点燃谱系台账投影回调（add-cosmos-panel-birthline-sort 2.2）——由
+ *        宿主注入，**在同一帧扫描结果上**做 sighting 登记与点燃配对后返回该工作区谱系行；
+ *        缺席 / 抛错 → `lineages: []`（读取失败按空清单兜底，不中断扫描）
+ * @returns {object} 骨架 JSON（version/generatedAt/workspaces[].{stars,archives,pending,lineages,links,associations}）
  */
 export function buildSkeleton(workspaces, readers, context) {
   const now = Number(context?.now) || Date.now();
   const associations = Array.isArray(context?.associations) ? context.associations : [];
+  const lineagesOf = typeof context?.lineagesOf === "function" ? context.lineagesOf : null;
   const workspacesOut = [];
   for (const workspace of Array.isArray(workspaces) ? workspaces : []) {
     const scanned = scanWorkspace(workspace, readers);
@@ -294,6 +302,18 @@ export function buildSkeleton(workspaces, readers, context) {
       .filter((entry) => entry && entry.workspace === scanned.path)
       .map((entry) => ({ proposal: String(entry.proposal ?? ""), sessionId: String(entry.sessionId ?? ""), origin: entry.origin === "explicit" ? "explicit" : "heuristic" }))
       .filter((entry) => entry.proposal && entry.sessionId);
+    /* 点燃谱系投影（add-cosmos-panel-birthline-sort 2.2）：回调在同一帧的 pending /
+       活跃提案清单上完成「锚点在册 → 同名提案目录出现」的差分配对，返回该工作区台账行；
+       容错与目录扫描同款——失败按空清单兜底，SHALL NOT 中断其余工作区扫描。 */
+    let lineages = [];
+    if (lineagesOf) {
+      try {
+        const rows = lineagesOf(scanned.path, { stars: scanned.stars, pending: scanned.pending });
+        lineages = Array.isArray(rows) ? rows : [];
+      } catch {
+        lineages = [];
+      }
+    }
     workspacesOut.push({
       id: scanned.id,
       name: scanned.name,
@@ -301,6 +321,7 @@ export function buildSkeleton(workspaces, readers, context) {
       stars: scanned.stars,
       archives: scanned.archives,
       pending: scanned.pending,
+      lineages,
       links: deriveLinks(scanned.stars, wsAssociations),
       associations: wsAssociations
     });
@@ -352,9 +373,10 @@ function escapeRe(text) {
 }
 
 /**
- * 近期上下文文本 × 提案名匹配（纯函数，启发式规则 1 的匹配核心）：
- * 提案名（如 `add-xxx`）在文本中按词边界出现即命中。多提案命中全部返回
- * （design.md：多条命中 → 多提案联星）。空文本/空清单 → 空数组。
+ * 文本 × 提案名匹配（纯函数，历史启发式规则 1 的匹配核心；restrict-association-heuristics
+ * 收紧信号口径后**保留供其他消费面**——规则 1 已改用 `assignmentProposalSlugs` 的指派引用，
+ * 纯匹配语义逐字不变）：提案名（如 `add-xxx`）在文本中按词边界出现即命中。多提案命中
+ * 全部返回（design.md：多条命中 → 多提案联星）。空文本/空清单 → 空数组。
  * @param {string} text 近期上下文文本
  * @param {string[]} proposalNames 活跃提案名
  * @returns {string[]}
@@ -372,24 +394,66 @@ export function matchProposalSlugs(text, proposalNames) {
 }
 
 /**
+ * `@<提案目录>` 指派引用解析（纯函数，restrict-association-heuristics 1.1 / design D1）：
+ * 会话**用户侧**消息文本 → 其中 `@` 引用路径所指向的提案 slug 清单（去重保序）。
+ *
+ * 口径：
+ *  - 路径分隔符先归一（`\` → `/`，Windows 反斜杠写法可命中）；@ 引用须含
+ *    `openspec/changes/<slug>` 片段，slug 取 `[\w-]+`（词边界：尾随标点 / 子路径 /
+ *    `#L12` 等不并入 slug）；
+ *  - 普通正文提及（未带 `@` 前缀）不算——「提到」不是「派活」；
+ *  - 解析失败 / 空文本 → 空数组（宁缺勿滥：欠关联优于错误关联）。
+ *
+ * 本函数只做**路径引用解析**，不与活跃提案清单取交集（该过滤在装配层
+ * `applyContextHeuristic` 完成，纯匹配语义单一职责）。
+ *
+ * @param {string} text 用户侧消息文本（多块拼接）
+ * @returns {string[]} 指派信号 slug 清单（去重保序）
+ */
+export function assignmentProposalSlugs(text) {
+  if (typeof text !== "string" || text.length === 0) return [];
+  const normalized = text.replace(/\\/g, "/");
+  const slugs = [];
+  const seen = new Set();
+  for (const match of normalized.matchAll(/@[^\s]*?openspec\/changes\/([\w-]+)/g)) {
+    const slug = match[1];
+    if (!slug || seen.has(slug)) continue;
+    seen.add(slug);
+    slugs.push(slug);
+  }
+  return slugs;
+}
+
+/**
  * 提案目录出现窗口 × 唯一活跃会话判定（纯函数，启发式规则 2）：
  * 提案目录出现时刻 T（birthMs，取不到回落检测时刻）±30min 窗口内，该工作区
  * **唯一**活跃会话（lastActivityMs 落窗内）→ 返回该 sessionId；0 个或 ≥2 个 → null。
  *
- * @param {{ birthMs: number|null, detectedMs: number, sessions: Array<{sessionId: string, lastActivityMs: number}> }} input
+ * 忙碌排除（restrict-association-heuristics 3.1 / design D4）：判定时刻「正在运行」的
+ * 会话不参与候选——忙碌会话不可能是新目录的接生者。排除后仍按唯一性语义判定
+ * （0 个或 ≥2 个 → null）；`runningSessionIds` 缺失/非法 → 不排除（行为退回旧口径）。
+ *
+ * @param {{ birthMs: number|null, detectedMs: number, sessions: Array<{sessionId: string, lastActivityMs: number}>,
+ *           runningSessionIds?: Set<string>|string[] }} input
  * @returns {string|null}
  */
 export function birthtimeWindowUnique(input) {
   const WINDOW_MS = 30 * 60 * 1000;
   const birth = Number.isFinite(input?.birthMs) ? input.birthMs : Number(input?.detectedMs);
   if (!Number.isFinite(birth)) return null;
+  const rawRunning = input?.runningSessionIds;
+  const running = rawRunning instanceof Set
+    ? rawRunning
+    : new Set(Array.isArray(rawRunning) ? rawRunning : []);
   const sessions = Array.isArray(input?.sessions) ? input.sessions : [];
   let inWindow = [];
   for (const session of sessions) {
     const at = Number(session?.lastActivityMs);
     if (!Number.isFinite(at)) continue;
-    if (Math.abs(at - birth) <= WINDOW_MS) inWindow.push(String(session.sessionId ?? ""));
+    if (Math.abs(at - birth) > WINDOW_MS) continue;
+    const sessionId = String(session.sessionId ?? "");
+    if (!sessionId || running.has(sessionId)) continue;
+    inWindow.push(sessionId);
   }
-  inWindow = inWindow.filter(Boolean);
   return inWindow.length === 1 ? inWindow[0] : null;
 }

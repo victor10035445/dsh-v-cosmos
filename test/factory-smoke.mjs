@@ -293,6 +293,19 @@ assert.equal(typeof exportsShape.createHostSessionFollow, "function", "跟随器
   assert.equal(generalInjected.templateNames.set("hacker").templateNames, false, "非布尔写侧回落缺省 false");
   assert.ok(exportsShape.cosmosTemplateNamesStore && typeof exportsShape.cosmosTemplateNamesStore.subscribe === "function",
     "templateNames 受控镜像导出（设置页受控读面）");
+  /* 「通用」页签·图样连线亮度滑杆 face（add-cosmos-figure-line-alpha 3.1/4.4）：三件套 +
+     缺省快照 + 写穿（Node 无 localStorage → 净房合并结果）+ 界内夹取 / 非法回落。 */
+  assert.equal(typeof generalInjected.patLineDim?.getSnapshot, "function", "通用标签页注入 patLineDim face.getSnapshot");
+  assert.equal(typeof generalInjected.patLineDim?.subscribe, "function", "通用标签页注入 patLineDim face.subscribe");
+  assert.equal(typeof generalInjected.patLineDim?.set, "function", "通用标签页注入 patLineDim face.set（即时保存）");
+  assert.equal(generalInjected.patLineDim.getSnapshot().patLineDim, 50, "face 快照含缺省 patLineDim 50（默认渲染零变化）");
+  assert.equal(generalInjected.patLineDim.set(20).patLineDim, 20, "face.set 写穿（Node 无 localStorage → 净房合并结果）");
+  assert.equal(generalInjected.patLineDim.set("20").patLineDim, 20, "字符串数字写穿（既有数值键同构口径）");
+  assert.equal(generalInjected.patLineDim.set(3).patLineDim, 5, "下越界写侧落端点 5");
+  assert.equal(generalInjected.patLineDim.set(200).patLineDim, 100, "上越界写侧落端点 100");
+  assert.equal(generalInjected.patLineDim.set("hacker").patLineDim, 50, "非数值写侧回落缺省 50");
+  assert.ok(exportsShape.cosmosPatLineDimStore && typeof exportsShape.cosmosPatLineDimStore.subscribe === "function",
+    "patLineDim 受控镜像导出（设置页受控读面）");
   /* dock 分流纯逻辑与 store 导出（add-cosmos-rightbar-dock） */
   for (const name of ["dockEntryPlanOf", "findDockTabOf", "dockPresenceOf", "pageCloseActionOf", "dockFallbackNoticeKeyOf"]) {
     assert.equal(typeof exportsShape[name], "function", "dock 纯逻辑导出：" + name);
@@ -315,9 +328,9 @@ assert.equal(typeof exportsShape.createHostSessionFollow, "function", "跟随器
       "actionBtnHeight", "actionBtnWidth", "addBtnSize", "constActionHeight",
       "constPanelHeight", "constPanelWidth", "hudBtnSize", "searchHeight",
       "searchWidth", "sessionPanelHeight", "sessionPanelWidth", "wsTitleSize",
-      "zoomPointerFocus"
+      "wsToolSize", "zoomPointerFocus"
     ],
-    "face 快照 = 指针聚焦 + 界面尺寸 12 键（缩放阈值两键已退场）"
+    "face 快照 = 指针聚焦 + 界面尺寸 13 键（缩放阈值两键已退场）"
   );
   assert.equal(navSnapshot.zoomPointerFocus, true, "指针聚焦缺省开");
   assert.equal("zoomDiveRatio" in navSnapshot, false, "快照不含进入阈值键");

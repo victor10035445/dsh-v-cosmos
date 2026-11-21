@@ -22,9 +22,17 @@ process.env.DSH_HOME = storageHome;
 const NOW = Date.now();
 const OLD = NOW - 2 * 60 * 60 * 1000; // 2h 前（规则 2 的 ±30min 窗口之外）
 
+/** 用户侧消息事件（宿主 dsh-session 形状：`data` 即消息本体，文本块在 `data.content`）。 */
 function messageEvents(at, text) {
-  return [{ type: "user/message", at, data: { message: { content: [{ type: "text", text }] } } }];
+  return [{
+    type: "user/message",
+    time: at,
+    data: { id: "m", role: "user", source: { kind: "user" }, content: [{ type: "text", text }] }
+  }];
 }
+
+/** @提案目录 指派引用（规则 1 的唯一信号口径）。 */
+const assignRef = (proposal) => "@" + join(wsRoot, "openspec", "changes", proposal);
 
 /** 会话 agent 夹具（header.cwd 供 cwd 兜底归属；snapshotEvents 供规则 1/2）。 */
 function agentOf(id, cwd, events) {
@@ -35,12 +43,12 @@ function agentOf(id, cwd, events) {
 }
 
 const agents = new Map([
-  /* s1：本会话语境同时提到目标提案与兄弟提案（修复前规则 1 会把两个都挂上）。 */
-  ["s1", agentOf("s1", wsRoot, messageEvents(NOW, "继续实现 add-a；顺带注意 add-b 是兄弟提案"))],
+  /* s1：本会话语境同时 @派活 目标提案与兄弟提案（新口径下引用照常全部建立 → 绑定的替换语义才是修复面）。 */
+  ["s1", agentOf("s1", wsRoot, messageEvents(NOW, `继续实现 ${assignRef("add-a")}；顺带注意 ${assignRef("add-b")} 是兄弟提案`))],
   /* s2：未绑定会话（规则 1 照常命中 add-b；活动时刻在窗口外 → 规则 2 不参与）。 */
-  ["s2", agentOf("s2", wsRoot, messageEvents(OLD, "add-b 的命名讨论"))],
+  ["s2", agentOf("s2", wsRoot, messageEvents(OLD, `${assignRef("add-b")} 的命名讨论`))],
   /* s3：不在 registry，仅 cwd 与工作区 path 相等（cwd 兜底归属）。 */
-  ["s3", agentOf("s3", wsRoot, messageEvents(NOW, "把 add-b 收个尾"))],
+  ["s3", agentOf("s3", wsRoot, messageEvents(NOW, `把 ${assignRef("add-b")} 收个尾`))],
   /* s4：既不在 registry、cwd 也不归属任何工作区。 */
   ["s4", agentOf("s4", otherRoot, messageEvents(NOW, "游离会话"))]
 ]);
@@ -98,7 +106,7 @@ try {
     .map((line) => JSON.parse(line.slice(6)));
   const assocFrameCount = () => dataFrames().filter((frame) => frame.type === "associations-changed").length;
 
-  /* ── 初始扫描：规则 1 把 s1 同时挂到 add-a、add-b（修复前的缺陷面） ── */
+  /* ── 初始扫描：规则 1 把 s1 的两个 @指派引用同时挂上（绑定替换语义的对照面） ── */
   await handler({ method: "GET", url: "/api/dsh-v-cosmos/scene" }, captureJson().res);
   let scene = await sceneOf(handler);
   let ws = scene.workspaces.find((item) => item.id === "ws1");
@@ -108,7 +116,7 @@ try {
       ["add-a", "s1", "heuristic"],
       ["add-b", "s1", "heuristic"]
     ],
-    "初始启发式：上下文命中双 slug 全部关联（缺陷复现面）"
+    "初始启发式：用户侧双 @指派引用全部关联（绑定前的对照面）"
   );
   assert.deepEqual(ws.links, [[0, 1]], "初始双关联 → 星座内联星虚线（行星被误挂两个提案）");
   const framesBeforeBind = assocFrameCount();
@@ -144,7 +152,7 @@ try {
   assert.equal(assocFrameCount(), framesBeforeIdempotent, "幂等重绑零广播（MUST NOT 抖动）");
   assert.equal(readFileSync(storagePath(), "utf8"), storageTextBefore, "幂等重绑零写入");
 
-  /* ── 规则 1 压制：注册新工作区触发全量重扫，s1 上下文再提 add-b 也不回连 ── */
+  /* ── 规则 1 压制：注册新工作区触发全量重扫，s1 上下文仍有 @add-b 引用也不回连 ── */
   workspaceRows = [...workspaceRows, { id: "ws2", title: "WS Two", path: wsRoot2, sessionIds: [] }];
   let framesBeforeRescan = assocFrameCount();
   scene = await sceneOf(handler);

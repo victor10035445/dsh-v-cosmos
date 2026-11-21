@@ -297,6 +297,14 @@ export function createConfigStore(options = {}) {
   const tmpPath = `${filePath}.tmp`;
   /** 当前装载到的文档（null = 存储缺席：播种前 / 全损回落）。 */
   let state = null;
+  /**
+   * 最近一次装载结局（step4-cosmos-path-unset-visibility D1，只读观测面）：
+   *  - `"ok"`：正式文件装载成功（含备份链恢复）；
+   *  - `"absent"`：存储文件从未成功装载（播种前 / 正式文件与备份链皆缺席）；
+   *  - `"damaged"`：候选文件存在但全部不可用（正式文件与备份链均损坏），读取已降级到
+   *    组合层——恰为「配置存在但读取失败」信号。纯内存，不触盘、不抛错。
+   */
+  let lastLoadOutcome = "absent";
 
   const backupPath = (index) => `${filePath}.bak.${index}`;
 
@@ -318,6 +326,7 @@ export function createConfigStore(options = {}) {
 
   /**
    * 装载：正式文件 → `.bak.1/2/3` 依次恢复；全败按「存储缺席」处理（恰告警一次）。
+   * 每次装载同步刷新 `lastLoadOutcome`（ok / absent / damaged，见其声明处）。
    * @returns {object|null}
    */
   function loadDocument() {
@@ -343,11 +352,15 @@ export function createConfigStore(options = {}) {
       } else {
         warnOnce.clear("recovered");
       }
+      lastLoadOutcome = "ok";
       return doc;
     }
     if (damaged) {
       warnOnce.warn("degraded", "dsh-v-cosmos: config store unusable (file and backups); falling back to layer config");
+      lastLoadOutcome = "damaged";
+      return null;
     }
+    lastLoadOutcome = "absent";
     return null;
   }
 
@@ -512,6 +525,7 @@ export function createConfigStore(options = {}) {
       return { seeded: false, reason: "error" };
     }
     state = doc;
+    lastLoadOutcome = "ok"; // 播种成功 = 存储已可用
     warnOnce.clear("seed-failed");
     return { seeded: true, reason: "created" };
   }
@@ -537,6 +551,7 @@ export function createConfigStore(options = {}) {
       rotateBackups();
       await writeDocumentAtomic(doc);
       state = doc;
+      lastLoadOutcome = "ok"; // 覆盖升级成功 = 存储已可用
       return { upgraded: true, reason: "upgraded" };
     });
   }
@@ -623,6 +638,7 @@ export function createConfigStore(options = {}) {
       rotateBackups();
       await writeDocumentAtomic(doc);
       state = doc;
+      lastLoadOutcome = "ok"; // CAS 写入成功 = 存储已可用
       return { revision: doc.revision };
     });
   }
@@ -715,6 +731,12 @@ export function createConfigStore(options = {}) {
     refresh,
     /** 当前内存文档（不触盘）。 */
     peek: () => state,
+    /**
+     * 最近一次装载结局只读暴露（`"ok" | "absent" | "damaged"`，纯内存、不触盘、不抛错）：
+     * 状态化降级警示与读取异常日志的数据源（step4-cosmos-path-unset-visibility D1）。
+     * @returns {"ok"|"absent"|"damaged"}
+     */
+    loadOutcome: () => lastLoadOutcome,
     revision: currentRevision,
     sections: currentSections,
     snapshot,

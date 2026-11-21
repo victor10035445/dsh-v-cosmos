@@ -7,6 +7,8 @@
  *  create({workspaceId}) → {sessionId}
  *    → selectModel({sessionId, …model})        条目快照绑定模型时（失败 = model-unavailable）
  *    → rename({sessionId, title})              队列·<按钮名>·<提案名>（失败不阻断，warn 继续）
+ *    → bindAssociation({sessionId, proposal, workspaceId})
+ *                                              显式关联绑定（可选注入；失败不阻断，warn 继续）
  *    → prompt({requestId, sessionId, mode:"queue", content:[{type:"text", text}]}, signal)
  * ```
  *
@@ -99,11 +101,17 @@ export function deliverPayloadOf(entry) {
  * @param {object|null} options.sessionController 宿主会话控制面（`inject` 声明的核心服务）
  * @param {object|null} [options.agents] 投递链不使用（仅冷读需要）；保留以与接线处同构构造
  * @param {object|null} [options.logger]
+ * @param {(input: {sessionId: string, proposal: string, workspaceId: string}) => (void | Promise<void>)}
+ *        [options.bindAssociation] 显式关联绑定（bind-queue-sessions-to-target D5）：
+ *        在 rename 之后、prompt 之前 **await** 调用一次，清单恒为条目目标提案（trim 后非空
+ *        才调用，空则跳过）。`workspaceId` 是条目工作区 id（宿主半区据此解析工作区**路径**）。
+ *        同步/异步失败一律吞掉 + logger warn（不产生新失败原因族）。缺省 = 不绑定。
  * @returns {(entry: object) => Promise<object>}
  */
 export function createQueueDeliverer(options = {}) {
   const sessionController = options.sessionController ?? null;
   const logger = options.logger ?? null;
+  const bindAssociation = typeof options.bindAssociation === "function" ? options.bindAssociation : null;
   /* 工厂建立时探测一次：服务缺席/方法残缺 → 每条投递零请求显式失败（不抛穿调度器）。 */
   const missing = missingMembersOf(sessionController, REQUIRED_SESSION_METHODS);
   return async function deliver(entry) {
@@ -145,6 +153,20 @@ export function createQueueDeliverer(options = {}) {
       await sessionController.rename({ sessionId, title });
     } catch (error) {
       warn(logger, `队列投递改名失败（不阻断投递）: ${errorMessageOf(error)}`);
+    }
+
+    /* 显式关联绑定（bind-queue-sessions-to-target 1.1 / spec「执行通道」）：队列会话出生
+       即被认领——清单 = 条目目标提案（trim 后为空则跳过）。**先于 prompt 完成**（design D1：
+       压制必须先于该会话任何上下文产生，宿主启发式首扫即生效）。失败语义与改名同级降级
+       （design D3）：同步/异步/被拒一律吞掉 + warn，不产生新失败原因族、不影响条目成败
+       判定；缺省不注入 = 不绑定，老调用方行为逐字不变。 */
+    const proposal = typeof entry?.proposalId === "string" ? entry.proposalId.trim() : "";
+    if (bindAssociation !== null && proposal) {
+      try {
+        await bindAssociation({ sessionId, proposal, workspaceId });
+      } catch (error) {
+        warn(logger, `队列会话关联绑定失败（不阻断投递）: ${errorMessageOf(error)}`);
+      }
     }
 
     try {

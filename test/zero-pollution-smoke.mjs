@@ -389,8 +389,19 @@ try {
 
   const TEAMMATE = "sess-teammate";
   const SELF = "sess-archiver";
+  /* 用户侧消息事件（宿主 dsh-session 形状）+ @提案目录指派引用：规则 1 的关联由此建立
+     （正文提及不再是信号）。 */
   const events = [
-    { type: "user/message", at: 1700000000000, data: { message: { content: [{ type: "text", text: "归档 add-demo 并扫尾" }] } } }
+    {
+      type: "user/message",
+      time: 1700000000000,
+      data: {
+        id: "m1",
+        role: "user",
+        source: { kind: "user" },
+        content: [{ type: "text", text: `归档 @${join(wsRoot4, "openspec", "changes", "add-demo")} 并扫尾` }]
+      }
+    }
   ];
   let archived4 = new Set();
   const archiveCalls4 = [];

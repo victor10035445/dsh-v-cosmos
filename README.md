@@ -93,7 +93,8 @@ dsh web
   `openspec/pending-changes/<slug>.json`（缺失 / 非法兜底「已创建」），随提案目录跨设备迁移；
   契约定义见 [cosmos-spec/CONTRACT.md](cosmos-spec/CONTRACT.md)。
 - **会话↔提案关联**：存于 `$DSH_HOME/storages/dsh-v-cosmos.json`；显式绑定优先（技能与按钮链路
-  声明工作面），启发式（上下文提及 slug / 目录出现 ±30min）回落；会话归档剪边，提案归档留边。
+  声明工作面），启发式（用户侧 `@<提案目录>` 指派引用 / 目录出现 ±30min 且会话空闲）回落；
+  会话归档剪边，提案归档留边。
 
 宿主端点在 `/api/dsh-v-cosmos/` 下（loopback，与 UI 同端口）：
 
@@ -105,7 +106,43 @@ dsh web
 | `POST /archive-sessions` | 批量归档会话（跳过在跑任务，逐会话 outcome） |
 | `POST /rename-session` | 会话前缀改名（归档扫尾） |
 | `POST /bind-session` | 显式会话↔提案绑定（替换语义、幂等） |
+| `POST /render-skill-text` | 技能文本路径令牌渲染服务（外部加载机制接入；零持久化） |
 | `POST /dismiss-embryo` | 移除星胚锚点（守卫链校验，仅用户点击驱动） |
+
+### 渲染服务端点（技能文本路径令牌）
+
+外部技能加载机制（例如按映射目录直读技能文件并注入会话的插件）可在注入前把待注入正文
+**整段**提交，由本插件按 [cosmos-spec/CONTRACT.md](cosmos-spec/CONTRACT.md) §9「路径令牌」
+语义完成替换后整段取回——渲染与技能 provider 单点同源（同一纯函数、同一配置读取面），
+不会出现第二处实现：
+
+`POST /api/dsh-v-cosmos/render-skill-text`（UTF-8 JSON）：
+
+```json
+// 请求
+{ "text": "<待注入技能正文整段>" }
+// 响应 200
+{ "content": "<渲染后文本>", "rendered": true, "configured": true,
+  "containsToken": true, "warning": null }
+```
+
+- `content`：整段渲染后文本（调用方直接按此注入）；
+- `rendered`：本次是否发生令牌替换。未解析降级形态会前置警示行、`content` 相对原文有变，
+  但替换未发生，故为 `false`——**不要用 `rendered` 判断 `content` 是否变化**；
+- `configured`：解析值是否可用；`containsToken`：文本是否含令牌出现（整词判定，仅裸提及
+  令牌名不构成出现）；`warning`：仅「含出现且解析值不可用」时为警示行文本（与 provider
+  降级形态同源、可区分「未配置 / 读取异常」），其余为 `null`；
+- 缺 `text` 或类型非法 → `400 { "error": "invalid" }`；配置每次请求实时读取（改配置即生效）。
+
+接入方降级矩阵（端点缺席 / 不可达本身就是**协商机制**，接入方无需版本探测）：
+
+| 情形 | 接入方行为 |
+|---|---|
+| `200` | 按 `content` 注入（已渲染；或未配置时的「警示行 + 原文」降级形态） |
+| `404`（旧版插件）/ 连接失败 / 超时 | 按原文注入，并附加一行降级说明（如「渲染服务不可达，路径按原文保留」）；MUST NOT 阻断注入 |
+
+零侵入：端点零配置、零持久化，不写任何文件、不触碰 `openspec/` 工件——渲染只作用于
+响应文本（与 provider 注入面同等暴露面；响应不含配置值本身）。
 
 ## 开发
 

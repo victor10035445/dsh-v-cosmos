@@ -4,6 +4,7 @@
  * 运行：node test/associations-smoke.mjs
  */
 import assert from "node:assert/strict";
+import { assignmentProposalSlugs } from "../src/scan.mjs";
 import {
   ASSOC_VERSION,
   ASSOC_ENTRIES_LIMIT,
@@ -83,35 +84,68 @@ assert.equal(resolveWorkspacePath({ sessionId: "s1", workspaces }), "C:/a", "ses
 assert.equal(resolveWorkspacePath({ sessionId: "s2", cwd: "C:/b", workspaces }), "C:/b", "cwd 兜底");
 assert.equal(resolveWorkspacePath({ sessionId: "s3", cwd: "C:/elsewhere", workspaces }), null, "未归属 → null");
 
-/* ── 规则 1：归属 + 近期上下文含 slug → 关联；幂等重扫零抖动 ── */
-const rule1 = applyContextHeuristic({
-  workspacePath: "C:/ws",
-  sessionId: "s1",
-  proposalNames: ["add-a", "add-b"],
-  contextText: "按照 proposal.md，add-a 需要实现骨架路由；顺带建了 add-b。",
-  entries: [],
-  now: 1000
-});
-assert.equal(rule1.added.length, 2, "双 slug 命中双关联");
-const rule1Rescan = applyContextHeuristic({
-  workspacePath: "C:/ws",
-  sessionId: "s1",
-  proposalNames: ["add-a", "add-b"],
-  contextText: "add-a add-b 再提一次",
-  entries: rule1.entries,
-  now: 2000
-});
-assert.equal(rule1Rescan.added.length, 0, "幂等重扫零抖动");
-assert.ok(rule1Rescan.entries.every((e) => e.updatedAt === 1000), "重扫不重写 updatedAt");
+/* ── 规则 1（restrict-association-heuristics 2.x）：只认用户侧 @指派引用；正文提及不建立；
+      幂等重扫零抖动 ── */
+{
+  /* 正文提及：旧口径会把罗列的 slug 全部挂上；新口径无指派信号 → 零关联。 */
+  const narrativeText = "按照 proposal.md，add-a 需要实现骨架路由；顺带建了 add-b。";
+  assert.deepEqual(assignmentProposalSlugs(narrativeText), [], "正文罗列 slug → 无指派信号");
+  const rule1Narrative = applyContextHeuristic({
+    workspacePath: "C:/ws",
+    sessionId: "s2",
+    proposalNames: ["add-a", "add-b"],
+    assignmentSlugs: assignmentProposalSlugs(narrativeText),
+    entries: [],
+    now: 900
+  });
+  assert.deepEqual(rule1Narrative.added, [], "正文提及不再建立关联");
+  assert.equal(rule1Narrative.entries.length, 0, "无关联条目写入");
 
-/* ── 规则 2：birthtime 窗口唯一会话 → 关联 ── */
+  /* 用户侧 @引用（含 Windows 反斜杠写法 + 非活跃提案名）→ 只挂活跃命中项。 */
+  const assignedText = "请按 @C:\\ws\\openspec\\changes\\add-a 实施；@C:/ws/openspec/changes/unknown-proposal 先不管";
+  const rule1 = applyContextHeuristic({
+    workspacePath: "C:/ws",
+    sessionId: "s1",
+    proposalNames: ["add-a", "add-b"],
+    assignmentSlugs: assignmentProposalSlugs(assignedText),
+    entries: [],
+    now: 1000
+  });
+  assert.deepEqual(rule1.added, ["add-a"], "指派信号命中活跃提案（非活跃 slug 过滤）");
+  assert.equal(rule1.entries.length, 1, "恰一条关联");
+
+  /* 多指派引用 → 多提案联星（去重保序）。 */
+  const multi = applyContextHeuristic({
+    workspacePath: "C:/ws",
+    sessionId: "s3",
+    proposalNames: ["add-a", "add-b"],
+    assignmentSlugs: assignmentProposalSlugs("@C:/ws/openspec/changes/add-b 与 @C:/ws/openspec/changes/add-a"),
+    entries: rule1.entries,
+    now: 1100
+  });
+  assert.deepEqual(multi.added, ["add-b", "add-a"], "多指派引用按出现序建立（联星）");
+
+  /* 幂等重扫：同一指派信号再扫 → 零新增、updatedAt 不刷新。 */
+  const rule1Rescan = applyContextHeuristic({
+    workspacePath: "C:/ws",
+    sessionId: "s1",
+    proposalNames: ["add-a", "add-b"],
+    assignmentSlugs: assignmentProposalSlugs("再看 @C:/ws/openspec/changes/add-a"),
+    entries: multi.entries,
+    now: 2000
+  });
+  assert.equal(rule1Rescan.added.length, 0, "幂等重扫零抖动");
+  assert.ok(rule1Rescan.entries.every((e) => e.updatedAt <= 1100), "重扫不重写 updatedAt");
+}
+
+/* ── 规则 2：birthtime 窗口唯一会话 → 关联；运行中候选排除（restrict-association-heuristics 3.x） ── */
 const now = 10_000_000;
 const rule2 = applyBirthtimeHeuristic({
   workspacePath: "C:/ws",
   proposal: { id: "add-c", birthMs: now },
   detectedMs: now - 1000,
   activeSessions: [{ sessionId: "s7", lastActivityMs: now + 60000 }],
-  entries: rule1.entries,
+  entries: [],
   now
 });
 assert.equal(rule2.added, true, "窗口内唯一会话关联");
@@ -127,6 +161,26 @@ const rule2Miss = applyBirthtimeHeuristic({
   now
 });
 assert.equal(rule2Miss.added, false, "多会话不关联");
+const rule2Busy = applyBirthtimeHeuristic({
+  workspacePath: "C:/ws",
+  proposal: { id: "add-e", birthMs: now },
+  detectedMs: now,
+  activeSessions: [{ sessionId: "s7", lastActivityMs: now }],
+  runningSessionIds: new Set(["s7"]),
+  entries: rule2Miss.entries,
+  now
+});
+assert.equal(rule2Busy.added, false, "唯一候选正在运行 → 不建立（忙碌会话不接生新目录）");
+const rule2Waiting = applyBirthtimeHeuristic({
+  workspacePath: "C:/ws",
+  proposal: { id: "add-f", birthMs: now },
+  detectedMs: now,
+  activeSessions: [{ sessionId: "s9", lastActivityMs: now }],
+  runningSessionIds: new Set(), // 等待决策会话 running=false → 不在运行集合 → 保留候选
+  entries: rule2Busy.entries,
+  now
+});
+assert.equal(rule2Waiting.added, true, "等待决策（非运行）候选保留 → 照常建立");
 
 /* ── 投影口径（骨架 context.associations） ── */
 const projection = projectionOf(rule2.entries);
