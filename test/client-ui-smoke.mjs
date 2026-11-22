@@ -17,6 +17,7 @@ import { createSkinD } from "../src/cosmos/skin-d.mjs";
 import { sessionRowStateOf } from "../src/panel.mjs";
 import { FLOAT_TEXTAREA_MAX_HEIGHT, FLOAT_TEXTAREA_MIN_HEIGHT, floatTextareaHeightOf } from "../src/constellation-actions.mjs";
 import { createEmbryoDismissExecutor } from "../src/actions.mjs";
+import { createSnapshotStore } from "../src/settings-seam.mjs";
 
 /* ── DOM 桩（引擎所需最小面；与 render-smoke 同款） ── */
 function makeCtx2d() {
@@ -1905,8 +1906,9 @@ function goldLiteralsOutsideVarFallback(source) {
 
 /* ── 18. 钻取态 HUD 布局：搜索框退场 + 标牌居中（polish-cosmos-drilled-hud 1.1–1.3 / 2.1–2.2 / 3.1） ──
    React 组件树在 Node 侧不可挂载（react 为 bundle external）→ 搜索框门控走**源码锚点**；
-   运行时行为（dive 后消失 / 飞回带原查询重现）由 4.2 真机核对承接。居中几何走
-   「引擎 CSS × 客户端 CSS」口径一致性断言（640px / 400px 伪视口）。 */
+   运行时行为（dive 后消失 / 飞回即清空，polish-cosmos-search-clear-on-return）由 N4 段
+   引擎真实通知序列直测承接。居中几何走「引擎 CSS × 客户端 CSS」口径一致性断言
+   （640px / 400px 伪视口）。 */
 {
   /* 1.1 搜索框块以 drill == null 门控：搜索锚点必须落在门控分支内（无无条件渲染残留）。 */
   const gateAt = clientSource.indexOf("{drill == null ? (");
@@ -1923,11 +1925,13 @@ function goldLiteralsOutsideVarFallback(source) {
   assert.ok(!clientSource.includes("{showNoMatch ? ("), "旧「无条件消费 showNoMatch」已移除（钻取态不留半截态）");
   assert.ok(clientSource.includes(".cos-search-empty{position:absolute;top:44%"), "空态提示 CSS 本身零改动");
 
-  /* 1.3 查询状态零改动：无主动清理代码（冻结 = 卸载后无输入面的自然结果）。 */
-  assert.equal((clientSource.match(/applyQuery\(""\)/g) ?? []).length, 3, "查询清理点仍为 3 处（输入框 Esc / 清除按钮 / 外壳 Esc 分层）");
+  /* 1.3 查询清理入口仍为 3 处（输入框 Esc / 清除按钮 / 外壳 Esc 分层）；返回清空由
+     `onDrillChange` 非 null → null 守卫单点承接（N4 段直测），搜索块内零新增清理代码。
+     引擎重建（非返回）经 attach 续接保持查询——守卫的豁免面由 N4 源码锚点 + 直测固化。 */
+  assert.equal((clientSource.match(/applyQuery\(""\)/g) ?? []).length, 3, "查询清理点仍为 3 处（块内不新增）");
   assert.ok(clientSource.includes("controllerRef.current?.actions.setFilter(value);"), "applyQuery 写入面原样（无钻取态分支）");
   assert.ok(clientSource.includes("filterStore.set({ query: filterQuery"), "filterStore 写入面原样（MUST NOT 在钻取态改写查询）");
-  assert.ok(clientSource.includes("if (filterQuery.trim()) syncFilter();"), "重挂载保持查询（attach 路径）原样");
+  assert.ok(clientSource.includes("if (filterQuery.trim()) syncFilter();"), "重挂载保持查询（attach 续接）原样");
 
   /* 2.1 / 2.2 行容器居中的跨文件几何一致（step2-add-constellation-switcher D1：定位/限宽职责
      自标牌移交 `.cos-wsbar`，标牌改行内中央格）：470 = 2×(面板 187 + 安全边距 48)；
@@ -3082,6 +3086,447 @@ function goldLiteralsOutsideVarFallback(source) {
   /* 视觉令牌复用风格 D HUD 族（--cos-line / --cos-accent） */
   assert.ok(clientSource.includes("background:var(--cos-line,rgba(255,210,140,.35))"), "轨道复用 --cos-line 令牌");
   assert.ok(clientSource.includes("background:var(--cos-accent,#ffd28a)"), "游标复用 --cos-accent 令牌");
+}
+
+/* ── N2. 搜索回车钻取（add-cosmos-search-enter-dive 2.1/2.2/3.1/3.2）──
+   React 组件树在 Node 侧不可挂载 → 判定纯函数由 merge-smoke 直测（唯一命中 / 零命中 /
+   多命中 / 空查询 / 单工作区边界），本节锚定「接线位次 / 键语义 / shake 本地态 / 视觉面」
+   等结构事实。 */
+{
+  /* 键语义：Enter 分支位于 IME 让位之后、closePage 消费之前（design D3：置于 closePage
+     之后即不可达死代码；行为消费序 IME → closePage → Enter 与键集不相交等价）。 */
+  const inputAt = clientSource.indexOf('className="cos-search-input"');
+  const imeAt = clientSource.indexOf("if (e.isComposing === true || e.keyCode === 229) return;", inputAt);
+  const enterAt = clientSource.indexOf('if (e.key === "Enter") {', inputAt);
+  const closeAt = clientSource.indexOf("if (!shortcutMatches(e, shortcuts.closePage)) return;", inputAt);
+  assert.ok(inputAt > 0, "搜索框输入元素锚点可定位");
+  assert.ok(imeAt > inputAt, "搜索框 IME 组字让位守卫在输入处理器首部");
+  assert.ok(enterAt > imeAt, "Enter 分支位于 IME 让位之后（组字中 Enter 归输入法确认）");
+  assert.ok(closeAt > enterAt, "Enter 分支位于 closePage 消费之前（非死代码）");
+  const enterBlock = clientSource.slice(enterAt, closeAt);
+  assert.ok(enterBlock.includes('e.key === "Enter"'), "Enter 以 e.key 判定（主键区 + 数字键盘同为 Enter）");
+  assert.ok(!/e\.code/.test(enterBlock), "不做 ev.code 参数化（键盘区差异不引入第二语义）");
+  /* 判定走纯函数（同帧 scene 快照 + 受控查询 ref）；dive 走引擎既有公共面。 */
+  assert.ok(enterBlock.includes("const target = enterDiveTarget(controllerRef.current?.getScene?.() ?? null, queryRef.current);"),
+    "判定 = enterDiveTarget(当前 scene, queryRef)（纯函数、零新增引擎态）");
+  assert.ok(enterBlock.includes("controllerRef.current?.getEngine?.()?.diveToWs?.(target.wsId);"),
+    "dive 分支走引擎 diveToWs 公共面（与 chip 点击同一钻取语义）");
+  assert.ok(enterBlock.includes("setShakeTick((tick) => tick + 1);"), "shake 分支仅递增本地 tick");
+  assert.ok(!enterBlock.includes("stopPropagation"), "Enter 分支不 stopPropagation（Enter 无冒泡消费面）");
+  assert.ok((enterBlock.match(/e\.preventDefault\(\);/g) ?? []).length >= 1, "两分支均 preventDefault（封闭默认动作）");
+  /* shake 不改变查询、不清失焦；dive 后查询冻结由结构（搜索框随钻取态卸载）保证。 */
+  assert.ok(!enterBlock.includes("applyQuery("), "Enter 不清空/不改写查询（查询冻结）");
+  assert.ok(!enterBlock.includes(".blur("), "Enter 不失焦（shake 后焦点保持）");
+  /* shake 本地态：tick 挂 data-shake、动画结束摘除（下次递增重播）。 */
+  assert.ok(clientSource.includes("const [shakeTick, setShakeTick] = useState(0);"), "shakeTick 本地态（会话态、零持久化）");
+  assert.ok(clientSource.includes("data-shake={shakeTick > 0 ? shakeTick : undefined}"),
+    "data-shake 由 tick 驱动（0 = 属性摘除，递增重新挂载）");
+  assert.ok(clientSource.includes('if (e.animationName === "cos-search-shake") setShakeTick(0);'),
+    "onAnimationEnd 清标记（只认本动画名，防未来动效误清）");
+  assert.ok(clientSource.includes("enterDiveTarget"), "判定纯函数经 merge.mjs 导入");
+  assert.ok(/import \{[^}]*\benterDiveTarget\b[^}]*\} from "\.\/merge\.mjs";/.test(clientSource),
+    "enterDiveTarget 自 merge.mjs 导入（单一实现）");
+  /* 视觉面：keyframes 水平 ±3px、约 200ms、transform only（不触发布局）。 */
+  const kfAt = clientSource.indexOf("@keyframes cos-search-shake{");
+  assert.ok(kfAt > 0, "shake keyframes 存在");
+  const kfRule = clientSource.slice(kfAt, clientSource.indexOf("\n", kfAt));
+  assert.ok(kfRule.includes("translateX(-3px)") && kfRule.includes("translateX(3px)"), "水平振幅 ±3px");
+  assert.ok(!/\b(top|left|right|bottom|width|height|margin|padding|opacity|background|color):/.test(kfRule),
+    "keyframes 仅 transform（不触发布局/绘制属性）");
+  const animM = /\.cos-search-input\[data-shake\]\{animation:cos-search-shake (\d+)ms/.exec(clientSource);
+  assert.ok(animM && Number(animM[1]) >= 150 && Number(animM[1]) <= 300, "shake 时长约 200ms（150–300ms 带内）");
+  /* 3.2 无叠算残留：shake 挂 input 自身（不动 .cos-search 的 translateX 居中盒），
+     .cos-search 的 z 序/宽度/窄列规则零改动（既有锚点断言见第 18 节）。 */
+  const searchRuleAt = clientSource.indexOf(".cos-search{position:absolute;top:12px");
+  assert.ok(searchRuleAt > 0 && clientSource.indexOf("@keyframes cos-search-shake{") > searchRuleAt,
+    "shake 规则不夹带 .cos-search 盒模型改动（既有规则原样保留）");
+}
+
+/* ── N3. 搜索前缀候选列表（add-cosmos-search-prefix-suggest 2.1–2.3 / 3.1–3.3 / 4.1）──
+   数据面（末 token 前缀 / 名称∪slug 候选域 / 去重 / 字典序 / 截断）由 merge-smoke 直测；
+   React 组件树在 Node 侧不可挂载（react 为 bundle external）→ 本节锚定「接线 / 开合派生 /
+   键盘矩阵位次 / 鼠标语义 / 无障碍关联 / 视觉面」结构事实；运行时行为（下拉出现、硬边界、
+   钻取与飞回清空、IME 让位）由真机验收（5.1/5.2）承接。 */
+{
+  /* ① 接线：候选纯函数自 merge.mjs 导入（单一实现；候选域 MUST NOT 在前端另抄一份） */
+  assert.ok(/import \{[^}]*\bprefixSuggestions\b[^}]*\} from "\.\/merge\.mjs";/.test(clientSource),
+    "prefixSuggestions 自 merge.mjs 导入（与过滤匹配域同源）");
+  assert.ok(clientSource.includes("const rows = prefixSuggestions(scene, filter.query);"),
+    "候选计算 = prefixSuggestions(当前 scene, 查询)（纯函数、零新增数据面）");
+  assert.ok(clientSource.includes("wsName: row.kind === \"slug\" ? (names.get(row.wsId) ?? \"\") : \"\""),
+    "slug 命中附工作区名作次要信息（纯函数输出形状不变，React 层回查）");
+
+  /* ② 2.2 开合派生：候选非空且未 dismiss（无候选零 DOM）+ 高亮夹取 */
+  assert.ok(clientSource.includes("const [suggestIndex, setSuggestIndex] = useState(0);"),
+    "高亮位本地态（与鼠标共用单一高亮位）");
+  assert.ok(clientSource.includes("const [suggestDismissed, setSuggestDismissed] = useState(false);"),
+    "dismissed 本地态（会话态、零持久化）");
+  assert.ok(clientSource.includes("const suggestRows = useMemo(") && clientSource.includes("}, [sceneVersion, filter.query]);"),
+    "候选集 useMemo 依赖 = 场景版本 + 查询（键入即时重算、零轮询零防抖）");
+  assert.ok(clientSource.includes("const suggestOpen = suggestRows.length > 0 && !suggestDismissed;"),
+    "开合 = 派生态（候选非空 && 未 dismiss）");
+  assert.ok(clientSource.includes("const suggestActive = Math.min(Math.max(suggestIndex, 0), Math.max(0, suggestRows.length - 1));"),
+    "高亮夹取在候选区间内（候选收缩不越界指向不存在的 option）");
+
+  /* ③ 键入复位单点：onChange → typeQuery；applyQuery 不复位（补全后的 dismissed 不被覆盖） */
+  assert.ok(clientSource.includes("onChange={(e) => typeQuery(e.target.value)}"),
+    "onChange 走 typeQuery（复位挂在键入调用点）");
+  const typeAt = clientSource.indexOf("const typeQuery = (next) => {");
+  assert.ok(typeAt > 0, "typeQuery 存在");
+  const typeBlock = clientSource.slice(typeAt, clientSource.indexOf("};", typeAt));
+  assert.ok(typeBlock.includes("setSuggestIndex(0);") && typeBlock.includes("setSuggestDismissed(false);")
+    && typeBlock.includes("applyQuery(next);"),
+    "typeQuery = 高亮复位首位 + dismissed 复位 + 写查询");
+  assert.ok(typeBlock.indexOf("setSuggestIndex(0);") < typeBlock.indexOf("applyQuery(next);"),
+    "复位先于写查询（设计 D2 的次序约束）");
+  const applyAt = clientSource.indexOf("const applyQuery = (next) => {");
+  const applyBlock = clientSource.slice(applyAt, clientSource.indexOf("};", applyAt));
+  assert.ok(!applyBlock.includes("setSuggest"), "applyQuery 不碰候选态（复位单点在键入路径 → 补全后不会当场重开）");
+
+  /* ④ 补全动作：末 token 替换 + 关列表 + 过滤即时生效 + 不钻取 */
+  const completeAt = clientSource.indexOf("const completeSuggestion = (row) => {");
+  assert.ok(completeAt > 0, "completeSuggestion 存在（Tab / click 共用同一实现）");
+  const completeBlock = clientSource.slice(completeAt, clientSource.indexOf("};", completeAt));
+  assert.ok(completeBlock.includes("tokens[tokens.length - 1] = row.text;"),
+    "补全替换**末** token（前序 token 原样保留）");
+  assert.ok(completeBlock.includes("applyQuery(tokens.join(\" \"));"), "补全经 applyQuery 重放查询（过滤自然收窄）");
+  assert.ok(completeBlock.includes("setSuggestDismissed(true);"), "补全后关列表（自命中不重开）");
+  assert.ok(!completeBlock.includes("diveToWs"), "补全不钻取（与 Enter 语义分离）");
+  assert.ok(!completeBlock.includes(".blur("), "补全不失焦（焦点留在输入框）");
+
+  /* ⑤ 键盘矩阵位次（design D3）：IME 让位 → ↑/↓ → Tab → Enter → closePage（键集不相交） */
+  const inputAt = clientSource.indexOf('className="cos-search-input"');
+  const imeAt = clientSource.indexOf("if (e.isComposing === true || e.keyCode === 229) return;", inputAt);
+  const arrowAt = clientSource.indexOf('if (suggestOpen && (e.key === "ArrowDown" || e.key === "ArrowUp")) {', inputAt);
+  const tabAt = clientSource.indexOf('if (suggestOpen && e.key === "Tab" && e.shiftKey !== true) {', inputAt);
+  const enterAt = clientSource.indexOf('if (e.key === "Enter") {', inputAt);
+  const closeAt = clientSource.indexOf("if (!shortcutMatches(e, shortcuts.closePage)) return;", inputAt);
+  assert.ok(inputAt > 0 && imeAt > inputAt, "IME 让位守卫在输入处理器首部（组字中导航/补全/钻取全部让位）");
+  assert.ok(arrowAt > imeAt && arrowAt < enterAt, "↑/↓ 分支位于 IME 让位之后、Enter 之前");
+  assert.ok(tabAt > arrowAt && tabAt < enterAt, "Tab 分支位于 ↑/↓ 之后、Enter 之前");
+  assert.ok(enterAt > tabAt && enterAt < closeAt, "Enter 分支在 closePage 消费行之前（非死代码）");
+
+  /* ↑/↓：硬边界（clamp，不循环）+ 仅列表开才消费 + preventDefault */
+  const arrowBlock = clientSource.slice(arrowAt, tabAt);
+  assert.ok(arrowBlock.includes('const delta = e.key === "ArrowDown" ? 1 : -1;'), "翻选方向键判别");
+  assert.ok(arrowBlock.includes("setSuggestIndex(Math.min(Math.max(suggestActive + delta, 0), suggestRows.length - 1));"),
+    "高亮位移 clamp 到 [0, 末位]（硬边界，不循环）");
+  assert.ok(arrowBlock.includes("e.preventDefault();"), "翻选 preventDefault（阻止光标移动）");
+  assert.ok(!arrowBlock.includes("stopPropagation"), "翻选不 stopPropagation（箭头无冒泡消费面）");
+
+  /* Tab：列表开且有高亮才 consume；无候选放行焦点 */
+  const tabBlock = clientSource.slice(tabAt, enterAt);
+  assert.ok(tabBlock.includes("completeSuggestion(suggestRows[suggestActive]);"), "Tab = 补全高亮候选");
+  assert.ok(tabBlock.includes("e.preventDefault();"), "Tab 补全 preventDefault");
+  assert.ok(tabBlock.includes('e.shiftKey !== true'), "Shift+Tab 不消费（无反向补全语义，放行反向焦点移动）");
+  const closeLine = "if (!shortcutMatches(e, shortcuts.closePage)) return;";
+  assert.ok(clientSource.includes(closeLine), "closePage 消费行保留（非关闭键在此 return，其后即不可达）");
+
+  /* Enter：列表态优先（钻取高亮候选、文本不动），无列表态回落 enter-dive 判定 */
+  const enterBlock = clientSource.slice(enterAt, closeAt);
+  const listEnterAt = enterBlock.indexOf("if (suggestOpen) {");
+  const diveTargetAt = enterBlock.indexOf("const target = enterDiveTarget(");
+  assert.ok(listEnterAt >= 0 && diveTargetAt > listEnterAt, "Enter 列表态分支置于无列表唯一命中分支之前");
+  assert.ok(enterBlock.includes("if (row) controllerRef.current?.getEngine?.()?.diveToWs?.(row.wsId);"),
+    "列表态 Enter = diveToWs(候选 wsId)（命令面板语义，文本不动）");
+  assert.ok(enterBlock.slice(listEnterAt, diveTargetAt).includes("e.preventDefault();"),
+    "列表态 Enter preventDefault（封闭默认动作）");
+  assert.ok(!enterBlock.includes("applyQuery("), "Enter 两分支均不清空/不改写查询（查询冻结）");
+  assert.ok(!enterBlock.includes(".blur("), "Enter 两分支均不失焦");
+
+  /* Esc 分层：列表开 → 仅关列表（dismissed 置位 + return），列表关 → 既有清空+失焦 */
+  const dismissAt = clientSource.indexOf("setSuggestDismissed(true);", closeAt);
+  const clearAt = clientSource.indexOf('applyQuery("");', closeAt);
+  assert.ok(dismissAt > closeAt && dismissAt < clearAt,
+    "Esc 分层：列表开 → dismissed 置位并 return（不落到清空层）");
+  const escBlock = clientSource.slice(closeAt, clearAt);
+  assert.ok(escBlock.includes("if (suggestOpen) {") && escBlock.includes("return;"), "Esc 列表开分支提前返回");
+  assert.ok(escBlock.includes("e.stopPropagation();"), "Esc 两分支均 stopPropagation（MUST NOT 冒泡到外壳分层）");
+  assert.ok(clientSource.slice(clearAt, clearAt + 120).includes("e.currentTarget.blur();"),
+    "Esc 列表关回落既有「清空 + 失焦」");
+  assert.equal((clientSource.match(/applyQuery\(""\)/g) ?? []).length, 3,
+    "查询清理点仍为 3 处（本提案零新增清空点：Esc 列表层只置 dismissed）");
+
+  /* ⑥ 4.1 鼠标语义：hover 同步高亮 / mousedown 保焦点 / click 补全（不钻取） */
+  assert.ok(clientSource.includes("onMouseEnter={() => setSuggestIndex(index)}"),
+    "hover 同步高亮（与键盘共用单一高亮位，最后来源优先）");
+  assert.ok(clientSource.includes("onMouseDown={(event) => event.preventDefault()}"),
+    "mousedown preventDefault（保持输入框焦点，与清除按钮同款纪律）");
+  assert.ok(clientSource.includes("onClick={() => completeSuggestion(row)}"), "click = 补全（等价 Tab，不钻取）");
+  const optionAt = clientSource.indexOf('className="cos-search-suggest-item"');
+  const optionBlock = clientSource.slice(optionAt, clientSource.indexOf(">", clientSource.indexOf("onClick={() => completeSuggestion(row)}")));
+  assert.ok(!optionBlock.includes("diveToWs"), "候选条目不携带钻取动作（Pointer 面只补全）");
+  assert.ok(!optionBlock.includes("onMouseLeave"), "移出保留最后高亮（无 mouseleave 清位）");
+
+  /* ⑦ 2.1 无障碍：listbox/option/aria-selected + input aria-expanded/controls/activedescendant
+     块内锚定（模板选择器另有 role="listbox"，故断言切在候选块内，不复用同名字面量） */
+  const gateAt = clientSource.indexOf("{suggestOpen ? (", inputAt);
+  const gateCloseAt = clientSource.indexOf(") : null}", gateAt);
+  const searchBlockEndAt = clientSource.indexOf("\n      ) : null}", gateAt);
+  const listBlock = clientSource.slice(gateAt, searchBlockEndAt);
+  assert.ok(gateAt > 0 && gateCloseAt > gateAt && searchBlockEndAt > gateAt, "候选块切片可定位");
+  assert.ok(listBlock.includes('className="cos-search-suggest"'), "下拉容器锚点");
+  assert.ok(listBlock.includes('role="listbox"'), "容器 role=listbox");
+  assert.ok(listBlock.includes('role="option"'), "条目 role=option");
+  assert.ok(listBlock.includes("aria-selected={index === suggestActive}"), "aria-selected 随单一高亮位");
+  assert.ok(clientSource.includes('aria-expanded={suggestOpen ? "true" : "false"}'), "input aria-expanded 随开合");
+  assert.ok(clientSource.includes("aria-controls={suggestOpen ? SEARCH_SUGGEST_LIST_ID : undefined}"),
+    "aria-controls 仅列表开时关联（关闭时不留悬空引用）");
+  assert.ok(clientSource.includes("aria-activedescendant={suggestOpen ? searchSuggestOptionIdOf(suggestActive) : undefined}"),
+    "aria-activedescendant 指向高亮条目");
+  assert.ok(listBlock.includes("id={SEARCH_SUGGEST_LIST_ID}") && listBlock.includes("id={searchSuggestOptionIdOf(index)}"),
+    "listbox / option 的 id 由同一生成器给出（id 关联闭环）");
+  assert.ok(listBlock.includes("data-active={index === suggestActive || undefined}"),
+    "高亮由 data 属性驱动（与既有 data-focused 同款纪律）");
+
+  /* ⑧ 2.2 无候选零 DOM：列表整块以 suggestOpen 门控（无空态壳） */
+  const listAt = clientSource.indexOf('className="cos-search-suggest"', inputAt);
+  assert.ok(listAt > gateAt && listAt < gateCloseAt,
+    "列表整块位于 suggestOpen 门控分支内（无候选零 DOM、无空态壳）");
+  assert.ok(!clientSource.includes("cos-search-suggest-empty"), "不引入「无候选」空态壳");
+
+  /* ⑨ 2.3 视觉面：正下方定位、z 序继承搜索框层（不另设）、窄列零覆盖、高亮不动布局 */
+  assert.ok(clientSource.includes(".cos-search-suggest{position:absolute;top:calc(100% + 4px);left:0;right:0"),
+    "列表 = 搜索框容器内绝对定位子元素（正下方、宽随容器）");
+  const suggestRule = clientSource.slice(clientSource.indexOf(".cos-search-suggest{"), clientSource.indexOf("}", clientSource.indexOf(".cos-search-suggest{")));
+  assert.ok(!suggestRule.includes("z-index"), "列表不另设 z-index（继承 .cos-search 的 z 40：高于画布/HUD、低于面板族 42+）");
+  assert.ok(clientSource.includes(".cos-search{position:absolute;top:12px;left:50%;transform:translateX(-50%);z-index:40"),
+    "搜索框层 z 序 40 原样（列表随父层）");
+  assert.ok(!clientSource.includes(".cos-page-dock .cos-search-suggest"),
+    "窄列重排零覆盖（列表随搜索框盒定位，自搜索条下缘起排）");
+  assert.ok(clientSource.includes(".cos-page-dock .cos-search{top:10px;left:8px;transform:none;"),
+    "窄列重排既有规则零改动");
+  const activeRule = /\.cos-search-suggest-item\[data-active\]\{([^}]*)\}/.exec(clientSource);
+  assert.ok(activeRule !== null, "高亮规则存在");
+  assert.ok(!/\b(top|left|right|bottom|width|height|margin|padding|display|position|font-size):/.test(activeRule[1]),
+    "高亮只动绘制属性（background / color；MUST NOT 触发布局或重排动画）");
+  assert.ok(clientSource.includes(".cos-search-suggest-item::before{content:'';position:absolute;"),
+    "高亮左缘标记走伪元素（零布局占位）");
+}
+
+/* ── N4. 返回银河清空搜索（polish-cosmos-search-clear-on-return 1.1 / 2.1 / 2.2）──
+   React 组件树在 Node 侧不可挂载（react 为 bundle external）→ 接线（单点守卫 + 豁免面 +
+   注释翻转）走**源码锚点**；状态链（filterQuery 闭包 / filterStore 镜像 / engine.setFilter）
+   用引擎真实回调与真实返回路径直测（dive / Esc / 回到银河按钮 / flyOut / 注销 / 缩放越阈）。 */
+{
+  /* ① 1.1 单点守卫接线：prev 快照 → 镜像写入 → 非 null → null 才清空（顺序即语义）。 */
+  const wiringAt = clientSource.indexOf("onDrillChange: (info) => {");
+  assert.ok(wiringAt > 0, "onDrillChange 已改为守卫式回调（client 单点）");
+  const prevAt = clientSource.indexOf("const prev = drillStore.getSnapshot();", wiringAt);
+  const mirrorAt = clientSource.indexOf("drillStore.set(info);", wiringAt);
+  const clearAt = clientSource.indexOf('if (prev && !info) actions.setFilter("");', wiringAt);
+  assert.ok(prevAt > wiringAt, "先取 prev 快照（判定转换方向）");
+  assert.ok(mirrorAt > prevAt, "prev 快照后写 drill 镜像");
+  assert.ok(clearAt > mirrorAt, "镜像写入后按 prev && !info 守卫清空");
+  const wiringBlock = clientSource.slice(wiringAt, clientSource.indexOf("},", clearAt));
+  assert.equal((wiringBlock.match(/setFilter\(/g) ?? []).length, 1,
+    "回调内单点清空（唯一 setFilter；引擎零新增公共面）");
+  assert.ok(!wiringBlock.includes("if (info)"), "无非 null 分支动作（dive / 换星座不清空）");
+  /* 1.1 配套：返回清空不经组件 applyQuery → queryRef MUST 与受控查询同步（否则 Enter 的
+     空查询语义与外壳 Esc「清空搜索」层会读到旧查询）。 */
+  assert.ok(clientSource.includes("useLayoutEffect(() => {\n    queryRef.current = query;\n  }, [query]);"),
+    "queryRef 随 filterStore 查询单向同步（非键入清空路径同样收敛，无旧值残留）");
+
+  /* ② 注释同步翻转（1.1 接线注释 / 1.2 搜索块挂载注释 / 1.2 引擎重挂续接注释）。 */
+  assert.ok(clientSource.includes("返回银河即清空搜索（polish-cosmos-search-clear-on-return D1）"),
+    "接线注释声明「返回银河即清空」");
+  assert.ok(clientSource.includes("飞回银河即清空"), "搜索块挂载注释表述「飞回即清空」");
+  assert.ok(clientSource.includes("重挂载保持当前查询（引擎重建非返回：守卫不清空，落位 + 坡道续接）"),
+    "引擎重挂续接注释与 spec「引擎重建不清空」对齐");
+  assert.ok(!clientSource.includes("飞回后带原查询重现"), "旧「飞回带原查询重现」表述零残留");
+
+  /* ③ 2.2 豁免面源码锚点：teardown 直写不经回调；整页关开重置与引擎 boot/早退不变。 */
+  assert.equal((clientSource.match(/drillStore\.set\(null\);/g) ?? []).length, 2,
+    "引擎销毁 / 页卸载两处直写 drillStore（不经 onDrillChange → 守卫不误清）");
+  const detachAt = clientSource.indexOf("detach() {");
+  const detachBlock = clientSource.slice(detachAt, clientSource.indexOf("setOpen(nextOpen) {", detachAt));
+  assert.ok(detachBlock.includes("drillStore.set(null);") && !detachBlock.includes("setFilter"),
+    "页卸载路径只归零钻取镜像、不清查询");
+  assert.ok(clientSource.includes('queryRef.current = "";') && clientSource.includes('controllerRef.current?.actions.setFilter("");'),
+    "整页关闭重置查询/过滤（既有，spec「整页重开查询重置」）");
+  assert.ok(engineSource.includes('drillKey: "\\u0000"'),
+    "引擎 boot 幂等键初值「\\u0000」（未钻取首 null 通知 prev 恒 null）");
+  const flyOutAt = engineSource.indexOf("function flyOut() {");
+  const flyOutBlock = engineSource.slice(flyOutAt, engineSource.indexOf("function diveToWsById", flyOutAt));
+  assert.ok(flyOutBlock.includes("if (E.focusMix <= 0 && !E.focusWs) { setSelection(null); return; }"),
+    "银河视图 flyOut 早退仅清选中（无 drill 通知 → 不清空）");
+  assert.ok(!flyOutBlock.includes("notifyDrill"),
+    "flyOut 本身不发通知（返回落地通知在补间收尾；早退路径无通知）");
+
+  /* ④ 2.1 / 2.2 运行时直测：客户端状态链镜像 + 引擎真实通知序列。
+     镜像与 client.jsx 同形：filterQuery 闭包 + filterStore 快照 + syncFilter
+     （engine.setFilter + 镜像写入）；守卫与接线同源（上文①锚定同一序列）。 */
+  const realPerformance = globalThis.performance;
+  let fakeNow = 900000;
+  globalThis.performance = { now: () => fakeNow };
+  rafQueue.length = 0;
+  const clock = (ms) => {
+    fakeNow += ms;
+    const cb = rafQueue.shift();
+    assert.ok(cb, "帧回调在队");
+    cb(fakeNow);
+  };
+  const scene = {
+    workspaces: [
+      { id: "ws1", name: "alpha", pos: [-80, 0, 0], stars: [], links: [], planets: [], comets: [], archives: 0, satelliteCount: 0 },
+      { id: "ws2", name: "beta", pos: [80, 0, 0], stars: [], links: [], planets: [], comets: [], archives: 0, satelliteCount: 0 }
+    ]
+  };
+  const filterStore = createSnapshotStore({ query: "", matched: 2, total: 2, active: false });
+  let filterQuery = "";
+  let drillMirror = null;
+  let clears = 0;
+  const drillCalls = [];
+  let engine = null;
+  const syncFilter = () => {
+    const active = filterQuery.trim() !== "";
+    engine.setFilter(active ? new Set(["ws1", "ws2"]) : new Set(), new Map(), { active });
+    filterStore.set({ query: filterQuery, matched: 2, total: 2, active });
+  };
+  const applyQuery = (next) => {
+    filterQuery = next;
+    syncFilter();
+  };
+  const guard = (info) => {
+    const prev = drillMirror;
+    drillMirror = info;
+    drillCalls.push(info);
+    if (prev && !info) {
+      clears += 1;
+      applyQuery("");
+    }
+  };
+  const mountEngine = () => {
+    const container = makeElement("div");
+    const next = createCosmosEngine({ container, style: createSkinD(), onDrillChange: guard });
+    engine = next;
+    next.setScene(scene, "rebuild");
+    next.start();
+    return container.children[0];
+  };
+  const fire = (el, type, ev) => {
+    for (const fn of el.listeners[type] ?? []) fn({ preventDefault() {}, ...ev });
+  };
+  let root = mountEngine();
+  clock(50);
+  assert.equal(drillCalls.length, 1, "boot 首个 null 通知（未钻取）");
+  assert.equal(drillCalls[0], null, "通知载荷为 null");
+  assert.equal(clears, 0, "boot 首 null（prev 恒 null）不触发清空");
+  assert.equal(filterStore.getSnapshot().query, "");
+
+  /* 2.1 dive 后 Esc 飞回：落地清空（filterQuery / filterStore / 引擎过滤三重断言）。 */
+  applyQuery("alpha");
+  assert.equal(engine.inspectFilter().active, true, "查询激活 → 引擎过滤 on");
+  assert.equal(filterStore.getSnapshot().query, "alpha", "filterStore 镜像查询");
+  engine.diveToWs("ws1");
+  assert.deepEqual(drillCalls.at(-1), { wsId: "ws1", name: "alpha" }, "钻取通知（prev null → info）");
+  assert.equal(clears, 0, "dive 不清空（无 prev 转换）");
+  clock(1400);
+  assert.equal(engine.isDiving(), true, "钻取态成立");
+  assert.equal(filterStore.getSnapshot().query, "alpha", "钻取态查询冻结（无输入面）");
+  assert.equal(engine.inspectFilter().active, true, "钻取态过滤呈现维持");
+  engine.consumeEscape(); // Esc / 配置关闭键
+  assert.equal(filterStore.getSnapshot().query, "alpha", "飞出补间在途查询仍冻结（落地才清）");
+  clock(1400);
+  assert.equal(engine.isDiving(), false, "已落地银河视图");
+  assert.equal(clears, 1, "返回落地触发一次清空");
+  assert.equal(filterQuery, "", "filterQuery 归零");
+  assert.equal(filterStore.getSnapshot().query, "", "filterStore.query 清空");
+  assert.equal(filterStore.getSnapshot().active, false, "filterStore 过滤关闭");
+  assert.equal(engine.inspectFilter().active, false, "引擎过滤 active:false（完整银河）");
+
+  /* 2.1 右下「回到银河」按钮：与 Esc 同一条 flyOut 收尾。 */
+  applyQuery("beta");
+  engine.diveToWs("ws1");
+  clock(1400);
+  const homeBtn = root.querySelector(".cos-overlay").children.find((el) => el.className === "cos-home-btn");
+  assert.ok(homeBtn, "回到银河按钮已建（overlay 子级）");
+  fire(homeBtn, "click", {});
+  assert.equal(clears, 1, "点击瞬间补间在途 → 未清（落地才清）");
+  clock(1400);
+  assert.equal(clears, 2, "「回到银河」返回落地同样清空");
+  assert.equal(filterStore.getSnapshot().query, "");
+  assert.equal(engine.inspectFilter().active, false);
+
+  /* 2.1 回家键 / 程序化飞回：同一 flyOut 公共面（goHome 键分派在 engine-smoke 4.3 既有）。 */
+  applyQuery("beta");
+  engine.diveToWs("ws2");
+  clock(1400);
+  engine.flyOut();
+  clock(1400);
+  assert.equal(clears, 3, "flyOut（回家键 / 程序化）落地清空");
+  assert.equal(filterStore.getSnapshot().query, "");
+
+  /* 2.2 银河视图点「回到银河」：flyOut 早退仅清选中 → 刚键入的查询不被误伤。 */
+  applyQuery("gamma");
+  const clearsAtGalaxy = clears;
+  engine.flyOut();
+  fire(homeBtn, "click", {});
+  assert.equal(clears, clearsAtGalaxy, "银河态 flyOut 早退无 drill 通知、不清空");
+  assert.equal(filterStore.getSnapshot().query, "gamma", "刚输入的查询保留");
+  assert.equal(engine.inspectFilter().active, true, "过滤态保留");
+
+  /* 2.2 引擎重建（页面内重挂 / 皮肤切换同构）：client 直写 drillStore 归零不经回调，
+     attach 的 `if (filterQuery.trim()) syncFilter()` 续接 → 查询与过滤态保持。 */
+  const callsBeforeRebuild = drillCalls.length;
+  const clearsBeforeRebuild = clears;
+  engine.dispose(); // detach：引擎销毁（不触发 onDrillChange）
+  rafQueue.length = 0;
+  root = mountEngine();
+  clock(50);
+  assert.equal(drillCalls.length, callsBeforeRebuild + 1, "新引擎 boot 首 null 通知");
+  assert.equal(clears, clearsBeforeRebuild, "boot null（prev 恒 null）不清空");
+  assert.equal(filterStore.getSnapshot().query, "gamma", "引擎重建查询保持（续接前）");
+  syncFilter(); // attach: if (filterQuery.trim()) syncFilter()
+  assert.equal(filterStore.getSnapshot().query, "gamma", "引擎重建续接后查询保持");
+  assert.equal(engine.inspectFilter().active, true, "过滤态续接（引擎重建非返回，spec「引擎重建不清空」）");
+
+  /* 2.4 ④ 银河态带查询切皮肤（呈现层热替 setSkin）：无 drill 通知、查询与过滤态保持。 */
+  const callsBeforeSkin = drillCalls.length;
+  const clearsBeforeSkin = clears;
+  engine.setSkin(createSkinD(), "dark"); // 设置页皮肤点选 → 已打开引擎热切（client 唯一写者链路）
+  assert.equal(drillCalls.length, callsBeforeSkin, "皮肤切换不产生 drill 通知");
+  assert.equal(clears, clearsBeforeSkin, "皮肤切换不清空");
+  assert.equal(filterStore.getSnapshot().query, "gamma", "银河态带查询切皮肤 → 查询保持");
+  assert.equal(engine.inspectFilter().active, true, "切换后过滤态保持");
+
+  /* 2.1 钻取中焦点星座注销（注销飞回）：notifyDrill(null) 同步先于飞回补间 → 清空即时。 */
+  applyQuery("alpha");
+  engine.diveToWs("ws2");
+  clock(1400);
+  const clearsBeforeGone = clears;
+  engine.setScene({ workspaces: [scene.workspaces[0]] }, "rebuild"); // ws2 注销
+  assert.equal(clears, clearsBeforeGone + 1, "注销 → 钻取镜像归零并清空（notifyDrill(null) 同步）");
+  assert.equal(filterStore.getSnapshot().query, "", "注销返回清空查询");
+  assert.equal(engine.inspectFilter().active, false, "注销返回过滤关闭（无半暗残留前提）");
+  clock(1400);
+  assert.equal(clears, clearsBeforeGone + 1, "随后 flyOut 收尾的重复 null 被引擎幂等键去重（不二次清空）");
+  for (let i = 0; i < 4; i += 1) clock(120); // 过 FILTER_RAMP_DUR（0.35s）
+  assert.deepEqual(engine.inspectFilter().filterAlphas.map((row) => row[1]), [1],
+    "清空后 α 坡道回归 1（无半暗残留）");
+
+  /* 2.1 缩放越过迟滞下限返回：与 Esc flyOut 等效的收尾通知。 */
+  engine.setScene(scene, "rebuild");
+  applyQuery("alpha");
+  engine.diveToWs("ws1");
+  clock(1400);
+  fakeNow += 900; // 过切换冷却窗（SWITCH_COOLDOWN_MS = 800）
+  clock(50);
+  const clearsBeforeZoom = clears;
+  const wheel = (dy) => fire(root, "wheel", { deltaY: dy, clientX: 300, clientY: 250 });
+  wheel(120);
+  wheel(120);
+  assert.equal(clears, clearsBeforeZoom, "未越迟滞下限：仍处钻取态、不清空");
+  wheel(120);
+  assert.equal(clears, clearsBeforeZoom, "越阈触发 flyOut，落地前不清");
+  clock(1400);
+  assert.equal(clears, clearsBeforeZoom + 1, "缩放越阈返回落地清空");
+  assert.equal(filterStore.getSnapshot().query, "");
+  assert.equal(engine.inspectFilter().active, false);
+
+  engine.dispose();
+  rafQueue.length = 0;
+  globalThis.performance = realPerformance;
 }
 
 console.log("client-ui-smoke: all assertions passed");

@@ -22,6 +22,10 @@
  *    匹配（大小写不敏感子串 + 空格切分 AND，merge.matchWorkspaces）→ 引擎过滤
  *    呈现态（engine.setFilter：命中保留/未命中 α 淡隐、子集重排、camera-fit）；
  *    查询为会话态（关页重置，MUST NOT 持久化）；
+ *  - 搜索前缀候选（add-cosmos-search-prefix-suggest）：查询**末 token** 的锚点前缀建议层
+ *    （名称 ∪ 星胚 slug，字典序 ≤4 条，去重先于截断；merge.prefixSuggestions）——↑↓ 硬边界
+ *    翻选 / Tab 与 click 补全末 token / Enter 钻取高亮候选（查询冻结）/ Esc 关列表留查询；
+ *    纯建议层：过滤语义与呈现零改动，钻取态随搜索框一起卸载；
  *  - Esc 分层（5.3，外壳单点 keydown；add-cosmos-session-list-panel 3.4 插入收面板层）：
  *    引擎钻取返回 > 清空搜索 > 收起会话面板（展开态） > 退全屏 > 关整页；
  *  - 会话列表面板（add-cosmos-session-list-panel 2.x/3.x；swap-cosmos-panel-sides 移至左缘；
@@ -68,7 +72,10 @@ import {
   findDockTabOf,
   pageCloseActionOf
 } from "./dock.mjs";
-import { mergeScene, sceneDiffLevel, planetStateOf, relativeTime, matchWorkspaces, filteredPositions, findRegisteredWorkspace, normalizeWorkspacePath, isWindowsPlatform, setTemplateOverrides, templateForFigure } from "./merge.mjs";
+import { mergeScene, sceneDiffLevel, planetStateOf, relativeTime, matchWorkspaces, prefixSuggestions, enterDiveTarget, filteredPositions, findRegisteredWorkspace, normalizeWorkspacePath, isWindowsPlatform, setTemplateOverrides, templateForFigure } from "./merge.mjs";
+/* T9 挂载编排（stage4-cosmos-v9-lshape D4/D5）：路径探测 / 双容器挂载 / 单句柄幂等释放
+   全部收敛在 constellation-t9.mjs（纯逻辑、可冒烟直测）；本文件只做容器渲染与 effect 接线。 */
+import { disposeT9Handle, mountT9Panel, readT9Bridge, t9EmbedModeOf } from "./constellation-t9.mjs";
 /* 模板指定覆盖（add-cosmos-template-reassign）：存储/净化/重掷/选择器数据面/storage 投影
    全部收敛在 template-assign.mjs（纯逻辑、可冒烟直测）；本文件只做 UI 与控制器接线。 */
 import { loadTemplateOverrides, randomTemplateIdOf, saveTemplateOverrides, templateOverridesFromStorageEvent, templatePickerRowsOf } from "./template-assign.mjs";
@@ -1744,8 +1751,20 @@ function createCosmosController(ctx, notifyToast, channels) {
           /* `dismiss` 文案面随 tips 入口退役（add-cosmos-embryo-dismiss-button 4.3）：
              引擎 labels 契约收缩为 decide / vitality / card 三项。 */
         },
-        /* 钻取态 → React 面板（过滤/让位）；引擎是唯一权威，镜像只读。 */
-        onDrillChange: (info) => drillStore.set(info),
+        /* 钻取态 → React 面板（过滤/让位）；引擎是唯一权威，镜像只读。
+           返回银河即清空搜索（polish-cosmos-search-clear-on-return D1）：prev 非空 → info
+           空 = 用户可见返回落地（flyOut 补间收尾的 `notifyDrill()` / 钻取中焦点星座注销），
+           经 `actions.setFilter("")` 复用清除按钮同源语义——查询归零、过滤关闭、完整银河
+           平滑回归；`drillStore.set` 与清空同批提交，重挂的搜索框首帧即空查询。
+           天然豁免面（MUST NOT 视为返回）：引擎销毁与页卸载直写 `drillStore`（不经本回调）；
+           引擎重建（如皮肤切换重挂）由 attach 的 `if (filterQuery.trim()) syncFilter()` 续接
+           ——「搜索过滤态全部保持」不受守卫影响；引擎 boot 未钻取的首个 null 通知 prev 恒为
+           null；银河视图点「回到银河」（flyOut 早退仅清选中）无 drill 转换、无通知。 */
+        onDrillChange: (info) => {
+          const prev = drillStore.getSnapshot();
+          drillStore.set(info);
+          if (prev && !info) actions.setFilter("");
+        },
         /* 引擎选中 → React 面板（add-cosmos-selection-linkage 3.1/D6）：同款幂等镜像通道，
            「视图里选中的恒星」据此映射回对应提案卡片。 */
         onSelectChange: (info) => engineSelectStore.set(info),
@@ -1797,7 +1816,7 @@ function createCosmosController(ctx, notifyToast, channels) {
         }
       });
       if (mergedScene) engine.setScene(mergedScene, "rebuild");
-      if (filterQuery.trim()) syncFilter(); // 重挂载保持当前查询（引擎落位 + 坡道续接）
+      if (filterQuery.trim()) syncFilter(); // 重挂载保持当前查询（引擎重建非返回：守卫不清空，落位 + 坡道续接）
       refreshSkeleton(); // 挂载即拉一次（SSE 重连/首次打开双保险）
       /* 队列快照与骨架同批拉取（spec「持久化与多窗口广播」：GET /queue 供页面加载对账）；
          之后由 `queue-changed` 轻帧驱动增量对账，MUST NOT 轮询。 */
@@ -3031,6 +3050,16 @@ const EMPTY_ATTACHMENT_IDS = Object.freeze([]);
  *    （引导 toast + Bundle 详情页跳转；MUST NOT 原生 disabled），不再整体隐藏；
  *    权限拒绝/转写失败/空转写 → toast，浮窗留存、草稿不丢。
  */
+/**
+ * 读取 t9ime 插件暴露的可嵌入面板桥（`window.__dshVT9IME__.embedPanel`）。
+ * t9ime 未安装/未启用 → null（浮窗不呈现 T9 按钮，零降级噪音）。
+ * 桥读取 / 挂载路径探测 / 双容器挂载 / 单句柄释放收敛在 constellation-t9.mjs。
+ */
+function readT9IMEBridge() {
+  if (typeof window === "undefined") return null;
+  return readT9Bridge(window);
+}
+
 function ConstellationFloatDock(props) {
   const floats = props.floats ?? null;
   const sessionId = props.sessionId;
@@ -3081,6 +3110,27 @@ function ConstellationFloatDock(props) {
   /* 已落稿的标记 token（防宿主未发布草稿时对同一标记反复 setDraft）。 */
   const fillRef = useRef(0);
   const textareaRef = useRef(null);
+  /* T9 九键面板（t9ime 插件可嵌入桥；stage4「L 型」布局）：按钮默认可见（桥可用即呈现），
+     草稿经 adapter 与宿主输入面双向同步。`t9View` 是单一状态源——null = 收起；否则
+     `{ mode }`（`parts` = 新版 parts 双容器 → L 型；`legacy` = 旧版单容器 → 并排），
+     mode 在打开瞬间探测并锁定，本次打开期间 MUST NOT 切换路径。 */
+  const [t9View, setT9View] = useState(null);
+  const [t9Bridge, setT9Bridge] = useState(() => readT9IMEBridge());
+  /* L 型两块容器（备选区 / 键盘输入区）与旧版单容器（并排）各自持 ref——
+     两条路径互不渗透：同一时刻只有当前路径的容器被渲染。 */
+  const t9CandidatesRef = useRef(null);
+  const t9InputRef = useRef(null);
+  const t9ContainerRef = useRef(null);
+  const t9DraftListeners = useRef(new Set());
+  const t9HandleRef = useRef(null);
+  const sendRef = useRef(null);
+  /* 皮肤作用域（stage5-cosmos-const-float-skin 1.1/1.2 / design D1）：浮窗是 body portal，
+     `applySkinTokens` 在整页只写 `.cos-page` 根容器——portal 是其兄弟子树，皮肤令牌不可达。
+     本组件订阅同一 `cosmosSkinStore`（冷启动快照即读持久化偏好，注册层已枚举钳制），把 27 枚
+     `--cos-*` + `data-cos-mode` 下发到 **portal 根**（作用域 = 浮窗子树）。零泄漏红线：
+     MUST NOT 写 `html` / `body` / `documentElement`；浮窗卸载时令牌随 DOM 一并消失（无残留写者）。 */
+  const skinState = useSyncExternalStore(cosmosSkinStore.subscribe, cosmosSkinStore.getSnapshot);
+  const floatRootRef = useRef(null);
 
   const tr = (key, fallback) => {
     try {
@@ -3091,11 +3141,113 @@ function ConstellationFloatDock(props) {
     }
   };
 
+  /* 皮肤令牌下发（1.2 / design D1）：复用注册层唯一写者 `applySkinTokens`（27 枚令牌表零手抄），
+     `useLayoutEffect` → 浏览器绘制之前完成（首帧同气，无「先默认后切」闪跳）。
+     依赖含 `armed`：浮窗闭合时 portal 未挂载（ref 为 null → 下发 no-op），开启后必须重新下发
+     一次（只依赖 skin 会在「闭合 → 打开」时漏发，浮窗退回静态兜底色）。皮肤切换即时重下发。 */
+  useLayoutEffect(() => {
+    applySkinTokens(floatRootRef.current, skinState.skin);
+  }, [skinState.skin, armed]);
+
   /* 草稿镜像同步（design D6）：onstop 落稿读 `draftRef.current`（当时最新），不读点击
      录音时冻结的 `draft` 闭包——录音期间的手动输入零丢失。 */
   useEffect(() => {
     draftRef.current = draft;
   }, [draft]);
+
+  /* T9 桥晚到（t9ime 客户端先/后加载均可能）：监听 ready 事件补挂，已可用则零监听。 */
+  useEffect(() => {
+    if (t9Bridge !== null || typeof window === "undefined") return () => {};
+    const onReady = () => {
+      const bridge = readT9IMEBridge();
+      if (bridge !== null) setT9Bridge(bridge);
+    };
+    window.addEventListener("dsh-v-t9ime:ready", onReady);
+    return () => window.removeEventListener("dsh-v-t9ime:ready", onReady);
+  }, [t9Bridge]);
+
+  /* T9 面板草稿订阅：宿主草稿每次发布都通知面板（adapter.subscribeDraft）。 */
+  useEffect(() => {
+    for (const listener of t9DraftListeners.current) {
+      try {
+        listener();
+      } catch {
+        /* 单个订阅者异常不影响浮窗 */
+      }
+    }
+  }, [draft]);
+
+  /* V9 开合：打开瞬间经桥能力探测锁定本次挂载路径（`parts` / `legacy`），关闭即置空。
+     开合期间路径不切换（探测缓存随 `t9View` 生命周期），两分支互不渗透。 */
+  const toggleT9 = () => {
+    setT9View((current) => {
+      if (current !== null) return null;
+      const bridge = t9Bridge !== null ? t9Bridge : readT9IMEBridge();
+      const mode = t9EmbedModeOf(bridge);
+      return mode === null ? null : { mode };
+    });
+  };
+  const closeT9 = () => setT9View(null);
+
+  /* T9 面板挂载/卸载（stage4 design D5）：面板负责输入与候选，草稿写回仍走宿主
+     `inputActions.setDraft`；发送走浮窗同一 `send()`（含空稿/附件观察态守卫）。
+     - `parts`：`embedPanelParts({ candidates, input, ... })` 双容器挂载（L 型）；
+     - `legacy`：`embedPanel(container, ...)` 单容器挂载（并排，现状零变化）。
+     卸载、开合翻转与组件卸载均经单句柄 `dispose()`（幂等；异常吞并与旧路径同口径）。 */
+  useEffect(() => {
+    if (t9View === null) return () => {};
+    const bridge = t9Bridge !== null ? t9Bridge : readT9IMEBridge();
+    if (bridge === null) {
+      setT9View(null);
+      return () => {};
+    }
+    const options = {
+      sessionId,
+      instanceId: "cosmos-float",
+      adapter: {
+        getDraft: () => draftRef.current,
+        subscribeDraft(listener) {
+          t9DraftListeners.current.add(listener);
+          return () => t9DraftListeners.current.delete(listener);
+        },
+        setDraft(text) {
+          if (inputActions !== null && typeof inputActions.setDraft === "function") {
+            inputActions.setDraft(text);
+          }
+        },
+        submit() {
+          sendRef.current?.();
+        }
+      },
+      onClose: closeT9
+    };
+    const handle = mountT9Panel({
+      bridge,
+      mode: t9View.mode,
+      containers: {
+        candidates: t9CandidatesRef.current,
+        input: t9InputRef.current,
+        legacy: t9ContainerRef.current
+      },
+      panelOptions: options,
+      onError: (error) => console.warn("[dsh-v-cosmos] T9 panel failed to mount:", error)
+    });
+    /* 容器缺失或桥拒绝挂载（契约：非法容器/桥抛错 → null）→ 收起 V9，避免空壳/高亮态残留。 */
+    if (handle === null) {
+      setT9View(null);
+      return () => {};
+    }
+    t9HandleRef.current = handle;
+    return () => {
+      t9HandleRef.current = null;
+      disposeT9Handle(handle);
+    };
+  }, [t9View, t9Bridge, sessionId, inputActions]);
+
+  /* 浮窗关闭（任何路径置空标记）→ 收起 T9，避免面板随隐藏容器残留。 */
+  useEffect(() => {
+    if (armed === null && t9View !== null) setT9View(null);
+  }, [armed, t9View]);
 
   /* 释放采集资源（design D5，**只释放、不转写**）：先置释放标志 + 递增代次（既让兜底
      stop 触发的 onstop 早退，又作废在途转写）→ 停在册 recorder → 停全部音轨 → 清 refs。
@@ -3444,6 +3596,7 @@ function ConstellationFloatDock(props) {
   const close = () => {
     /* 主动关闭路径（关闭钮 / Esc / 点浮窗外 / 观察态看门狗）先解除附件观察态，再关窗
        （p2 design D4：观察态随时可退；草稿与在册附件留在机器中原样保留）。 */
+    closeT9();
     setAttachWatch(null);
     setArmed(null);
   };
@@ -3468,6 +3621,8 @@ function ConstellationFloatDock(props) {
        带附件都走本路径（不感知附件消费结果——spec 已知边界）。 */
     close();
   };
+  /* T9 面板发送复用浮窗 send()（同守卫/同关窗语义）；adapter 在挂载期经 ref 取最新闭包。 */
+  sendRef.current = send;
   /* ── 附件 intake 两通道（p2 design D2 / spec「浮窗图片附件」）── */
   /** 共享 intake 链路（按钮拾取 + 剪贴板粘贴）：校验 → 铸造 → 登记；outcome → toast。 */
   const intakeFiles = (files) => {
@@ -3781,6 +3936,7 @@ function ConstellationFloatDock(props) {
 
   return createPortal(
     <div
+      ref={floatRootRef}
       className="dsh-cosmos-const-float"
       data-cosmos-const-float="true"
       role="dialog"
@@ -3788,7 +3944,12 @@ function ConstellationFloatDock(props) {
       aria-label={title}
     >
       <div className="dsh-cosmos-const-float-backdrop" onClick={close} />
-      <div className="dsh-cosmos-const-float-card" onClick={(event) => event.stopPropagation()}>
+      <div
+        className="dsh-cosmos-const-float-shell"
+        data-t9-open={t9View !== null ? "true" : "false"}
+        data-t9-mode={t9View === null ? undefined : t9View.mode}
+      >
+        <div className="dsh-cosmos-const-float-card" onClick={(event) => event.stopPropagation()}>
         <div className="dsh-cosmos-const-float-head">
           <span className="dsh-cosmos-const-float-title" title={title}>{title}</span>
           {buttonName ? <span className="dsh-cosmos-const-float-tag">{buttonName}</span> : null}
@@ -3906,6 +4067,21 @@ function ConstellationFloatDock(props) {
             >
               ＋
             </button>
+            {/* T9 九键入口（默认可见；t9ime 插件桥缺席则整体不呈现）：新版桥 → L 型
+                （备选区在卡片下方、键盘列右列包裹）；旧版桥 → 并排/窄屏折行回退。 */}
+            {t9Bridge !== null ? (
+              <button
+                type="button"
+                className="dsh-cosmos-const-float-t9-toggle"
+                data-state={t9View !== null ? "open" : "closed"}
+                aria-pressed={t9View !== null}
+                aria-label={tr("cosmos.constFloat.t9Aria", "九键输入（V9）")}
+                title={tr("cosmos.constFloat.t9Aria", "九键输入（V9）")}
+                onClick={toggleT9}
+              >
+                V9
+              </button>
+            ) : null}
           </span>
           {/* 模型选择面（rework 增强）：目录可达 = 可交互下拉（模型 + 级别）；目录降级 =
               只剩「会话当前模型」+ 注记；按钮绑定模型经链路先行切换后在此回显。模型行容器已
@@ -4017,6 +4193,33 @@ function ConstellationFloatDock(props) {
             {floatHintText}
           </span>
         </div>
+        </div>
+        {/* T9 面板容器：单一状态源 `t9View` 驱动两条互斥分支——
+            - parts（新版 t9ime）：L 型双容器——备选区正常流排在卡片正下方（宽=卡片宽），
+              键盘输入区绝对右列（高=卡片+间距+备选区，底边与备选区底边对齐）；
+            - legacy（旧版 t9ime）：单容器并排（卡片右侧，窄屏折行到下方，现状不变）。
+            挂载路径在打开瞬间锁定，开合期间 MUST NOT 切换。 */}
+        {t9View !== null && t9View.mode === "parts" ? (
+          <div
+            className="dsh-cosmos-const-float-t9-candidates"
+            ref={t9CandidatesRef}
+            data-cosmos-t9-candidates="true"
+          />
+        ) : null}
+        {t9View !== null && t9View.mode === "parts" ? (
+          <div
+            className="dsh-cosmos-const-float-t9-input"
+            ref={t9InputRef}
+            data-cosmos-t9-input="true"
+          />
+        ) : null}
+        {t9View !== null && t9View.mode === "legacy" ? (
+          <div
+            className="dsh-cosmos-const-float-t9"
+            ref={t9ContainerRef}
+            data-cosmos-t9-panel="true"
+          />
+        ) : null}
       </div>
     </div>,
     document.body
@@ -4587,6 +4790,12 @@ const COSMOS_CHROME_DRILL_ONLY = new Set(["wsbar-left", "wsbar-right", "wsbar-to
    `zoomMeterTrackOf` 同源单次计算——窗口 resize 不改变对数刻度，无需重算。 */
 const ZOOM_RULER_TICK_PCT = zoomMeterTrackOf(ZOOM_RULER_TICK, ZOOM_RULER_DIST_MIN, ZOOM_RULER_DIST_MAX) * 100;
 
+/* 搜索前缀候选列表的无障碍 id（add-cosmos-search-prefix-suggest 2.1 / design D6）：
+   搜索块单实例（`drill == null` 门控 + 单一承载面 overlay|dock），常量 id 即可唯一；
+   `aria-controls` / `aria-activedescendant` 与 listbox / option 元素共用本处两个生成器。 */
+const SEARCH_SUGGEST_LIST_ID = "dsh-v-cosmos-search-suggest";
+const searchSuggestOptionIdOf = (index) => SEARCH_SUGGEST_LIST_ID + "-option-" + index;
+
 /**
  * Cosmos 呈现面（整页覆盖 / 右栏停靠共享）。
  * @param {object} props `mode` = overlay | dock；其余为槽框架标准 props
@@ -4630,7 +4839,26 @@ function CosmosSurface(props) {
   const filter = useFilterState();
   const query = filter.query;
   const queryRef = useRef("");
+  /* 受控查询 → ref 单向同步（polish-cosmos-search-clear-on-return D2 配套）：返回清空经
+     控制器 `onDrillChange` 守卫调用 `actions.setFilter("")` 落地，**不经本组件的
+     applyQuery**——若 ref 只由键入写面维护会滞留旧查询：Enter 判定（空查询语义 → 全集
+     命中即 shake）与外壳 Esc「清空搜索」层（读 ref，绑定一次不依赖 query）都会读到脏值。
+     `useLayoutEffect` 在绘制前同步，用户下一次按键看到的就是屏幕上的查询；引擎重建/
+     皮肤切换等非返回路径的查询保持同样经此收敛（与 filterStore 单一数据源一致）。 */
+  useLayoutEffect(() => {
+    queryRef.current = query;
+  }, [query]);
   const [searchFocused, setSearchFocused] = useState(false);
+  /* 搜索回车 shake 反馈（add-cosmos-search-enter-dive 3.1 / design D4）：整数 tick 递增
+     驱动 `data-shake` 挂载；动画结束归零摘标记（下次递增重新挂载 → 重播）。纯视觉本地态，
+     无持久化、无引擎副作用。 */
+  const [shakeTick, setShakeTick] = useState(0);
+  /* 搜索前缀候选（add-cosmos-search-prefix-suggest 2.2 / design D2）：hover 与键盘共用的
+     **单一高亮位** + 「用户已 dismiss」本地态（Esc 关列表 / 补全后置位，键入复位）。开合为
+     派生态（`suggestOpen`：候选非空且未 dismiss）——无候选零 DOM、无空态壳。纯会话态，
+     与查询同纪律：不持久化，整页关闭随组件卸载归零。 */
+  const [suggestIndex, setSuggestIndex] = useState(0);
+  const [suggestDismissed, setSuggestDismissed] = useState(false);
   /* 新增工作区 busy 态（add-cosmos-add-workspace 4.1/4.4）：pick → create 全程按钮
      disabled；服务侧另有控制器 busy 门（双保险，UI 状态滞后也不重入）。 */
   const [adding, setAdding] = useState(false);
@@ -4660,6 +4888,27 @@ function CosmosSurface(props) {
     queryRef.current = value;
     controllerRef.current?.actions.setFilter(value);
   };
+  /* 键入路径（add-cosmos-search-prefix-suggest 2.2 / design D2）：候选复位**只挂在此处**
+     ——input `onChange` 的调用点。补全 / 清除 / 外壳清空等非键入写面一律不复位，于是
+     「补全后 dismissed = true 被随后的查询变化复位覆盖 → 列表当场重开」结构性不可达
+     （design D2 的同批次序约束由「复位单点」满足，不依赖同批后写生效）。 */
+  const typeQuery = (next) => {
+    setSuggestIndex(0);
+    setSuggestDismissed(false);
+    applyQuery(next);
+  };
+  /* 候选补全（add-cosmos-search-prefix-suggest 3.2/4.1 / design D2/D5）：**末 token** 替换为
+     锚点文本原文后重放查询（`join(" ")` 归一空白）→ 过滤按新查询即时生效；随后关列表
+     （自命中不重开）。文本前序 token 原样保留，焦点留在输入框、不钻取。 */
+  const completeSuggestion = (row) => {
+    if (!row || typeof row.text !== "string" || !row.text) return;
+    const tokens = String(queryRef.current ?? "").trim().split(/\s+/).filter(Boolean);
+    if (tokens.length === 0) return;
+    tokens[tokens.length - 1] = row.text;
+    applyQuery(tokens.join(" "));
+    setSuggestIndex(0);
+    setSuggestDismissed(true);
+  };
   /* 「无匹配工作区」空态（React 层 / D6）：有工作区但命中 0 个才显示；场景无任何
      工作区时由引擎「暂无在册工作区」空态独显（互斥）。 */
   const showNoMatch = filter.active && filter.total > 0 && filter.matched === 0;
@@ -4669,6 +4918,28 @@ function CosmosSurface(props) {
      projectPanel（钻取态过滤 + 搜索过滤联动）。 */
   const sceneVersion = useSceneVersion();
   const drill = useDrill();
+  /* 前缀候选行（add-cosmos-search-prefix-suggest 2.1/2.2 / design D1/D2）：数据面 =
+     `merge.prefixSuggestions`（与过滤匹配域同源、纯函数）；键盘翻选 / Tab 补全 / Enter 钻取
+     / hover 高亮 / click 补全全部只消费本数组。slug 命中附**工作区名**作次要信息（design D6），
+     故在 React 层补一次名称回查——纯函数输出形状保持 `{text, wsId, kind}` 不变。
+     依赖 = 场景版本 + 查询：键入即时重算，与面板分组同一刷新通道（零轮询、零防抖）。 */
+  const suggestRows = useMemo(() => {
+    const scene = controllerRef.current?.getScene?.() ?? null;
+    const rows = prefixSuggestions(scene, filter.query);
+    if (rows.length === 0) return rows;
+    const names = new Map();
+    for (const ws of Array.isArray(scene?.workspaces) ? scene.workspaces : []) {
+      if (ws?.id != null) names.set(String(ws.id), String(ws?.name ?? ""));
+    }
+    return rows.map((row) => ({
+      ...row,
+      wsName: row.kind === "slug" ? (names.get(row.wsId) ?? "") : ""
+    }));
+  }, [sceneVersion, filter.query]);
+  /* 开合与高亮位（派生态，2.2）：候选非空且未 dismiss 才渲染（无候选零 DOM）；高亮恒夹在
+     候选区间内 —— 候选集收缩（场景刷新 / 删除字符）时不会越界指向不存在的 option。 */
+  const suggestOpen = suggestRows.length > 0 && !suggestDismissed;
+  const suggestActive = Math.min(Math.max(suggestIndex, 0), Math.max(0, suggestRows.length - 1));
   /* 用户修订：星场只替换画布主视图——提案面板/队列/会话面板/动作条/模板工具/新增入口
      两面完全一致，MUST NOT 随面隐藏（无 face 消费点）。 */
   /* 引擎选中镜像（add-cosmos-selection-linkage 3.1/3.2）：视图 → 面板的反向通道。 */
@@ -5748,8 +6019,9 @@ function CosmosSurface(props) {
       {/* 钻取态隐藏搜索框（polish-cosmos-drilled-hud 1.1 / D1）：搜索是星座级工具，
           钻入后其主要功能（找星座）已完成，顶部中央让位给星座标牌。门控信号 =
           `drillStore` 镜像（dive 立即置值、flyOut 收尾归零，时序与面板让位同源）；
-          查询状态零改动——块卸载即无输入面（冻结是自然结果），MUST NOT 主动清理
-          （`filterQuery`/`filterStore`/`syncFilter` 原样，飞回后带原查询重现）。 */}
+          块卸载即无输入面（钻取态查询冻结是自然结果）；飞回银河即清空
+          （polish-cosmos-search-clear-on-return D1：`onDrillChange` 非 null → null
+          守卫经 `actions.setFilter("")` 清空，重挂即以空查询重现、过滤关闭）。 */}
       {drill == null ? (
         <div
           className="cos-search"
@@ -5764,17 +6036,78 @@ function CosmosSurface(props) {
             autoComplete="off"
             placeholder={tr("cosmos.search.placeholder", "搜索工作区…")}
             aria-label={tr("cosmos.search.aria", "搜索工作区")}
-            onChange={(e) => applyQuery(e.target.value)}
+            onChange={(e) => typeQuery(e.target.value)}
             onFocus={() => setSearchFocused(true)}
             onBlur={() => setSearchFocused(false)}
+            aria-expanded={suggestOpen ? "true" : "false"}
+            aria-controls={suggestOpen ? SEARCH_SUGGEST_LIST_ID : undefined}
+            aria-activedescendant={suggestOpen ? searchSuggestOptionIdOf(suggestActive) : undefined}
+            data-shake={shakeTick > 0 ? shakeTick : undefined}
+            onAnimationEnd={(e) => {
+              /* shake 结束摘标记（3.1）：tick 归零 → 属性移除 → 下次递增重新挂载重播。 */
+              if (e.animationName === "cos-search-shake") setShakeTick(0);
+            }}
             onKeyDown={(e) => {
               /* 关闭键参数化（add-cosmos-shortcuts 5.1/D3）：聚焦态关闭键 = 清空 + 失焦，
                  MUST NOT 冒泡到外壳分层（关页/退全屏）；键位跟随全局配置，配置键非 Esc 时
                  Esc 在本框亦不消费（无任何 Cosmos 行为）。组字中让位输入法。 */
               if (e.isComposing === true || e.keyCode === 229) return;
+              /* 前缀候选列表态（add-cosmos-search-prefix-suggest 3.2 / design D3）：↑/↓ 硬边界
+                 翻选 + Tab 补全，**仅列表开才消费**——无列表时箭头/ Tab 一律放行（光标与焦点
+                 行为逐字不变）。键集与 closePage 池不相交（池 = Escape / Backquote / 字母 /
+                 数字 / F2F4F8F9 / Ctrl|Alt+字母），故本段置于 closePage 消费行之前的代码位次
+                 不改变行为消费序（与 enter-dive 同款等价性论证：非关闭键在 closePage 行直接
+                 return，置于其后即成死代码）。Shift+Tab 保留为反向焦点移动（无反向补全语义，
+                 不消费）。 */
+              if (suggestOpen && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
+                e.preventDefault();
+                const delta = e.key === "ArrowDown" ? 1 : -1;
+                setSuggestIndex(Math.min(Math.max(suggestActive + delta, 0), suggestRows.length - 1));
+                return;
+              }
+              if (suggestOpen && e.key === "Tab" && e.shiftKey !== true) {
+                e.preventDefault();
+                completeSuggestion(suggestRows[suggestActive]);
+                return;
+              }
+              /* 搜索回车钻取（add-cosmos-search-enter-dive 2.1 / design D3）：唯一命中 →
+                 经引擎 `diveToWs` 公共面钻取（与 chip 点击同一钻取语义：镜头补间、钻取态
+                 隐藏搜索框、查询冻结）；0/多命中（含空查询的全集语义）→ 一次轻微 shake
+                 （纯视觉，不清空、不失焦）。位次 MUST 在 IME 让位之后、closePage 消费之前
+                 ——下方 closePage 分支对非关闭键直接 return，置于其后即不可达死代码。
+                 Enter 为输入框内语义键（`e.key` 判定，主键区与数字键盘同为 "Enter"），
+                 MUST NOT 入全局键位池；两分支均 preventDefault 封闭默认动作，无需
+                 stopPropagation（Enter 无任何冒泡消费面）。 */
+              if (e.key === "Enter") {
+                /* 列表态优先（add-cosmos-search-prefix-suggest 3.3 / design D3）：Enter =
+                   钻取高亮候选（命令面板语义，文本不动、查询冻结），与下方无列表态的唯一
+                   命中钻取以 `suggestOpen` 互斥、共用引擎 `diveToWs` 公共面。 */
+                if (suggestOpen) {
+                  const row = suggestRows[suggestActive];
+                  e.preventDefault();
+                  if (row) controllerRef.current?.getEngine?.()?.diveToWs?.(row.wsId);
+                  return;
+                }
+                const target = enterDiveTarget(controllerRef.current?.getScene?.() ?? null, queryRef.current);
+                e.preventDefault();
+                if (target.kind === "dive") {
+                  /* 未命中（目标同帧注销）→ 引擎返回 false，静默降级（不 shake、不报错）。 */
+                  controllerRef.current?.getEngine?.()?.diveToWs?.(target.wsId);
+                } else {
+                  setShakeTick((tick) => tick + 1);
+                }
+                return;
+              }
               if (!shortcutMatches(e, shortcuts.closePage)) return;
               e.preventDefault();
               e.stopPropagation();
+              /* Esc 分层（add-cosmos-search-prefix-suggest 3.1 / design D3）：列表开 → **仅**
+                 关列表（查询保留、焦点保留、不冒泡到外壳分层）；列表关 → 回落既有
+                 「清空 + 失焦」。 */
+              if (suggestOpen) {
+                setSuggestDismissed(true);
+                return;
+              }
               applyQuery("");
               e.currentTarget.blur();
             }}
@@ -5790,6 +6123,42 @@ function CosmosSurface(props) {
             >
               ×
             </button>
+          ) : null}
+          {/* 前缀候选下拉（add-cosmos-search-prefix-suggest 2.1/2.2 / design D4/D6）：
+              `suggestOpen` 派生开合——候选非空且未 dismiss 才渲染，无候选**零 DOM**（无空态
+              壳）；容器内绝对定位子元素（正下方、宽随搜索框），z 序继承搜索框层 40（高于
+              画布/引擎 HUD、低于面板族 42+）。条目 role="option" + aria-selected，输入框经
+              aria-activedescendant 指向高亮条目；主文本 = 锚点文本原文，slug 命中附工作区名
+              作次要行。 */}
+          {suggestOpen ? (
+            <div
+              className="cos-search-suggest"
+              id={SEARCH_SUGGEST_LIST_ID}
+              role="listbox"
+              aria-label={tr("cosmos.search.suggest", "搜索前缀候选")}
+            >
+              {suggestRows.map((row, index) => (
+                <div
+                  key={row.text}
+                  id={searchSuggestOptionIdOf(index)}
+                  className="cos-search-suggest-item"
+                  role="option"
+                  aria-selected={index === suggestActive}
+                  data-active={index === suggestActive || undefined}
+                  /* 鼠标语义（4.1 / design D5）：hover 同步高亮（与键盘共用单一高亮位，最后
+                     来源优先，移出保留）；mousedown preventDefault 保持输入框焦点（与清除
+                     按钮同款纪律），click 补全（等价 Tab，**不钻取**）。 */
+                  onMouseEnter={() => setSuggestIndex(index)}
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => completeSuggestion(row)}
+                >
+                  <span className="cos-search-suggest-text">{row.text}</span>
+                  {row.wsName ? (
+                    <span className="cos-search-suggest-ws">{row.wsName}</span>
+                  ) : null}
+                </div>
+              ))}
+            </div>
           ) : null}
         </div>
       ) : null}
@@ -6219,9 +6588,34 @@ ${ENGINE_CSS}
 .cos-search[data-focused]{border-color:rgb(var(--cos-accent-rgb,255 210 140) / .7);box-shadow:0 0 12px rgb(var(--cos-accent-rgb,255 210 140) / .14)}
 .cos-search-input{flex:1 1 auto;min-width:0;background:none;border:none;outline:none;color:var(--cos-accent-ink,#ffe3b8);font-family:inherit;font-size:13px;letter-spacing:.5px;padding:3px 0}
 .cos-search-input::placeholder{color:rgb(var(--cos-accent-ink-rgb,255 227 184) / .38);letter-spacing:1px}
+/* ── 搜索回车钻取（add-cosmos-search-enter-dive 3.1/3.2 / design D4）：非（唯一）命中回车
+      → 输入框一次轻微水平 shake（±3px、约 200ms、transform only——不触发布局/重排，挂
+      input 自身故不影响 .cos-search 的 translateX(-50%) 居中盒；无 z 序/宽度/窄列改动，
+      与聚焦描边、清除按钮等既有动效零叠算）。data-shake 由 React 本地 tick 驱动、动画
+      结束摘除；纯视觉反馈，无声音。 ── */
+@keyframes cos-search-shake{0%,100%{transform:translateX(0)}20%{transform:translateX(-3px)}40%{transform:translateX(3px)}60%{transform:translateX(-2px)}80%{transform:translateX(2px)}}
+.cos-search-input[data-shake]{animation:cos-search-shake 200ms ease-out}
 .cos-search-clear{flex:none;display:flex;align-items:center;justify-content:center;width:18px;height:18px;padding:0;cursor:pointer;
   background:none;border:1px solid var(--cos-line,rgba(255,210,140,.35));color:var(--cos-accent-ink,#ffe3b8);font-size:12px;line-height:1}
 .cos-search-clear:hover{border-color:rgb(var(--cos-accent-rgb,255 210 140) / .85);background:var(--cos-hover,rgba(255,210,140,.12))}
+/* ── 搜索前缀候选下拉（add-cosmos-search-prefix-suggest 2.3 / design D4）：搜索框容器内
+      绝对定位子元素——搜索框正下方、宽随容器（left/right 0）；z 序**继承**搜索框层 40
+      （父层已建叠层上下文，本层不另设 z-index）：高于画布/引擎 HUD，低于面板族 42+，
+      二者遮挡关系由既有层表自然消解。窄列重排（.cos-page-dock .cos-search 顶缘单条、
+      top:10px）下列表自搜索条下缘起排（100% 相对搜索框盒），MUST NOT 参与列重排——
+      搜索框盒子高/宽零改动。条目高 4 条、无滚动分页（截断即全部呈现面）；高亮只动
+      绘制属性（background / 左缘伪元素色 / color），MUST NOT 动布局。 ── */
+.cos-search-suggest{position:absolute;top:calc(100% + 4px);left:0;right:0;box-sizing:border-box;
+  margin:0;padding:2px 0;background:var(--cos-glass,rgba(8,8,16,.72));border:1px solid var(--cos-line,rgba(255,210,140,.35));
+  pointer-events:auto}
+.cos-search-suggest-item{position:relative;display:flex;align-items:baseline;gap:8px;padding:4px 10px 4px 12px;cursor:pointer;
+  color:var(--cos-accent-ink,#ffe3b8);font-family:inherit;font-size:12px;letter-spacing:.5px;line-height:1.4;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cos-search-suggest-item::before{content:'';position:absolute;top:2px;bottom:2px;left:0;width:2px;background:transparent;pointer-events:none}
+.cos-search-suggest-item[data-active]{background:var(--cos-hover,rgba(255,210,140,.12));color:var(--cos-accent,#ffd28a)}
+.cos-search-suggest-item[data-active]::before{background:var(--cos-line-strong,#ffd28a)}
+.cos-search-suggest-text{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis}
+.cos-search-suggest-ws{flex:none;font-size:11px;letter-spacing:0;color:var(--cos-ink-dim,rgba(255,233,207,.55))}
 .cos-search-empty{position:absolute;top:44%;left:50%;transform:translate(-50%,-50%);z-index:22;pointer-events:none;text-align:center;
   font-size:13px;letter-spacing:2px;color:var(--cos-ink-dim,rgba(255,233,207,.55))}
 .cos-search-empty b{display:block;font-size:16px;margin-bottom:8px;color:rgb(var(--cos-accent-ink-rgb,255 227 184) / .8)}
@@ -6714,20 +7108,154 @@ ${ENGINE_CSS}
 .dsh-cosmos-tpl-picker-zh{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}
 .dsh-cosmos-tpl-picker-id{flex:none;font-size:11px;letter-spacing:.5px;color:var(--dsw-alias-label-tertiary,var(--cos-ink-dim,#cbb89a))}
 .dsh-cosmos-tpl-picker-empty{padding:16px 8px;text-align:center;font-size:12px;color:var(--dsw-alias-label-tertiary,var(--cos-ink-dim,#cbb89a))}
-/* ── 星座浮窗输入器（add-cosmos-constellation-actions 4.2）：body portal，z 序高于
-      Cosmos 覆盖层（页面 toast 9999 之下，toast 仍可见）；配色走官方 --dsw-alias-*
-      token（theme 插件换肤自动跟随，明暗主题无需刷新），暖金描边/角标为 HUD 装饰层；
-      发送/关闭触屏目标 ≥40px。 ── */
+/* ── 星座浮窗输入器（add-cosmos-constellation-actions 4.2；stage5-cosmos-const-float-skin
+       改配色口径）：body portal，z 序高于 Cosmos 覆盖层（页面 toast 9999 之下，toast 仍可见）。
+       配色**整套跟随当前 Cosmos 皮肤**（「两上下文各随其主」：Cosmos 浮窗随皮肤、DSH 内 T9
+       面板随 DSH 主题）：portal 根 = 皮肤令牌作用域（组件经 applySkinTokens 下发 27 枚
+       --cos-* 令牌 + data-cos-mode），根上两层映射把 DSH 别名与 --t9-* 主题钩子接到皮肤令牌
+       （全部带现值兜底）。错误/录音语义色与圆角保留官方 token（皮肤无 error 令牌、圆角不随
+       皮肤——保留清单见映射块尾注）。发送/关闭触屏目标 ≥40px。 ── */
+/* ── 浮窗皮肤映射层（design D2）：作用域严格 = .dsh-cosmos-const-float 子树（portal 根）。
+      MUST NOT 写 html / body / documentElement（零泄漏红线，test/t9-skin-smoke.mjs 固化）；
+      映射随浮窗挂卸自动生灭，无残留写者。两级并存、发布顺序无关：
+      ① DSW 别名层（18 枚）= 浮窗自身消费 + **旧版 t9ime** 的全部色彩令牌（通用兜底）；
+      ② --t9-* 主题钩子精修层（12 枚，t9ime stage4-t9-theme-hook-layer 契约）= **新版
+         t9ime** 精修换装；上游未发布该层时声明惰性（无消费者即无效果），发布后自动接管。
+      每枚取值 = var(--cos-X, <改造前静态兜底>) 或 rgb(var(--cos-X-rgb, <基线通道>) / α)：
+      皮肤令牌缺席（降级路径）逐值回落改造前静态观感，MUST NOT 出现无色/透明中间态（D4）。 ── */
+.dsh-cosmos-const-float{
+  /* ① DSW 别名映射（18 枚） */
+  --dsw-specific-input-major:var(--cos-panel-strong,rgba(10,10,20,.9));
+  --dsw-alias-bg-base:var(--cos-panel-strong,rgba(8,8,16,.96));
+  --dsw-alias-label-primary:var(--cos-ink,#ffe9cf);
+  --dsw-alias-label-secondary:var(--cos-accent-ink,#ffe3b8);
+  --dsw-alias-label-tertiary:var(--cos-ink-dim,#cbb89a);
+  --dsw-alias-label-dimmed:rgb(var(--cos-accent-ink-rgb,255 227 184) / .45);
+  --dsw-alias-border-l1:rgb(var(--cos-accent-rgb,255 210 140) / .28);
+  --dsw-alias-border-l2:rgb(var(--cos-accent-rgb,255 210 140) / .4);
+  --dsw-alias-border-l3:rgb(var(--cos-accent-rgb,255 210 140) / .55);
+  --dsw-alias-border-inverted:rgb(var(--cos-accent-rgb,255 210 140) / .85);
+  --dsw-alias-interactive-bg-hover:var(--cos-hover,rgb(255 210 140 / .12));
+  --dsw-alias-button-info-fill:var(--cos-accent,#ffd28a);
+  --dsw-alias-button-info-hover:rgb(var(--cos-accent-rgb,255 210 140) / .82);
+  --dsw-alias-brand-primary-new-colorprimary-new-color:var(--cos-accent,#ffd28a);
+  --dsw-alias-label-on-color:var(--cos-bg,#ffffff);
+  --dsw-alias-button-contrast-fill:var(--cos-panel-strong,rgb(255 255 255 / .85));
+  --dsw-alias-label-primary-inverted:var(--cos-ink,#151515);
+  --dsw-elevation-soft:var(--cos-shadow,0 2px 10px rgba(0,0,0,.12));
+  /* ② --t9-* 主题钩子精修（12 枚；t9ime stage4 契约，与 DSW 层同源取色） */
+  --t9-surface-bg:var(--cos-panel-strong,rgba(10,10,20,.9));
+  --t9-border-l1:rgb(var(--cos-accent-rgb,255 210 140) / .28);
+  --t9-border-l2:rgb(var(--cos-accent-rgb,255 210 140) / .4);
+  --t9-border-l3:rgb(var(--cos-accent-rgb,255 210 140) / .55);
+  --t9-focus-ring:var(--cos-accent,#ffd28a);
+  --t9-accent-fill:var(--cos-accent,#ffd28a);
+  --t9-accent-fill-hover:rgb(var(--cos-accent-rgb,255 210 140) / .82);
+  --t9-hover-bg:var(--cos-hover,rgb(255 210 140 / .12));
+  --t9-on-accent:var(--cos-bg,#ffffff);
+  --t9-label-primary:var(--cos-ink,#ffe9cf);
+  --t9-label-secondary:var(--cos-accent-ink,#ffe3b8);
+  --t9-elevation-shadow:var(--cos-shadow,0 2px 10px rgba(0,0,0,.12));
+  /* 保留清单（MUST NOT 映射，design D2/D3 + 用户裁决）：--dsw-alias-state-error-primary
+     （错误/录音语义色，皮肤无 error 令牌、不为本次新增）、--dsw-alias-state-business-primary
+     （发送钮已改走 --cos-accent；现标记下只剩缩略图角标基础底，且被 uploading/error 两态
+     覆盖不可见）、--dsw-radius-md / --dsw-radius-panel（圆角形状不随皮肤）。 */
+}
 .dsh-cosmos-const-float{position:fixed;inset:0;z-index:9998;box-sizing:border-box;display:flex;align-items:center;
   justify-content:center;padding:24px}
 .dsh-cosmos-const-float-backdrop{position:absolute;inset:0;background:rgba(4,5,12,.55)}
+/* 遮罩保持中性黑（遮罩不属于皮肤语义，12 套皮肤通吃）；light 皮肤下 α 降一档（纸面观感，
+   实施期人工验收微调项，见 design「Risks」）——data-cos-mode 由皮肤令牌下发到 portal 根，
+   降级路径无该属性 → 沿用既有中性黑，不出现透明中间态。 */
+.dsh-cosmos-const-float[data-cos-mode=light] .dsh-cosmos-const-float-backdrop{background:rgba(24,19,12,.34)}
 .dsh-cosmos-const-float-card{--cos-float-body-max:298px;position:relative;z-index:1;box-sizing:border-box;display:flex;flex-direction:column;gap:8px;
   width:min(560px,100%);padding:12px 14px;color:var(--dsw-alias-label-primary,var(--cos-ink,#ffe9cf));
   background:var(--dsw-alias-bg-base,var(--cos-panel-strong,rgba(8,8,16,.96)));border:1px solid var(--dsw-alias-border-l2,var(--cos-line,rgba(255,210,140,.4)));
-  border-radius:10px;box-shadow:0 18px 48px rgba(0,0,0,.45)}
+  border-radius:10px;box-shadow:var(--cos-shadow,0 18px 48px rgba(0,0,0,.45))}
 .dsh-cosmos-const-float-card::before,.dsh-cosmos-const-float-card::after{content:'';position:absolute;width:10px;height:10px;pointer-events:none}
 .dsh-cosmos-const-float-card::before{top:-1px;left:-1px;border-top:2px solid var(--cos-line-strong,#ffd28a);border-left:2px solid var(--cos-line-strong,#ffd28a)}
 .dsh-cosmos-const-float-card::after{bottom:-1px;right:-1px;border-bottom:2px solid var(--cos-line-strong,#ffd28a);border-right:2px solid var(--cos-line-strong,#ffd28a)}
+/* T9 九键面板（t9ime 可嵌入桥；stage4「L 型」布局）：
+   - 新版 t9ime（embedPanelParts，parts 双容器）：L 型——浮窗卡片原位不动，备选区在卡片
+     正下方正常流展开（与卡片同宽），高度为恒定的候选条高（t9ime stage6 起候选为恒高单行
+     横滑条，容器高度 = 条高钩子 + parts 本体上下内边距），键盘输入区为绝对定位右列
+     （高度 = 卡片 + 间距 + 备选区，底边与备选区底边严格对齐）；
+   - 旧版 t9ime（只有 embedPanel）：单容器并排（卡片右侧，窄屏 ≤980px 折行到下方，现状不变）；
+   - 无桥：V9 按钮不呈现、不挂载任何容器（零降级噪音）。
+   L 型三约束（同宽 / 等高 / 底对齐）全部由壳 CSS 自动成立——零 JS 测量。 */
+.dsh-cosmos-const-float-shell{--cos-float-w:min(560px,100%);
+  /* 备选容器高 = 候选条高 + parts 本体上下内边距（6px × 2）。条高钩子 --t9-cand-strip-h
+     由 t9ime stage6 提供（缺省 44px = 32px 卡高 + 上下 6px，三形态一致），宿主 MAY 覆盖；
+     t9ime 未升级时钩子缺席 → 取缺省 44px（+12 = 56px 恒高）惰性兜底，宿主先行部署亦不破版
+     （旧版多行网格的内容溢出由备选容器 overflow-y 兜底承接，见下）。 */
+  --cos-t9-cand-h:calc(var(--t9-cand-strip-h,44px) + 12px);
+  position:relative;z-index:1;box-sizing:border-box;display:flex;
+  align-items:flex-start;justify-content:center;gap:12px;width:min(1180px,100%);max-width:100%;
+  max-height:calc(100vh - 48px);overflow:auto}
+/* L 型态（parts）：壳宽 = 卡片宽（--cos-float-w 同源），备选区正常流排在卡片正下方。
+   垂直锚定（零位移的关键）：壳内容高 = 卡片 + 间距 + 备选区，但 margin-bottom 抵消备选区
+   增量 → 壳的 margin box 高恒等于卡片高，外层 flex 居中按卡片计算 ⇒ 开合前后卡片位置逐像素
+   不变（备选区视觉上溢出壳边框盒，overflow:visible 允许）。MUST NOT 保留壳自身
+   max-height：受限盒会把绝对定位键盘的百分比高度算到受限后的盒高上，底边对齐失真。
+   水平适配（stage6 键盘自适应）：键盘自然宽超出卡片右侧余量时，壳整体左移恰好补齐
+   （translateX = min(0, 余量 − 键盘自然宽)），保证全部键落在视口内；余量足够时位移为 0，
+   开合零位移不受影响。 */
+.dsh-cosmos-const-float-shell[data-t9-mode=parts]{flex-direction:column;align-items:stretch;
+  justify-content:flex-start;width:var(--cos-float-w);max-height:none;overflow:visible;
+  margin-bottom:calc(-1 * (12px + var(--cos-t9-cand-h)));
+  transform:translateX(min(0px,calc((50vw - 316px) - (5 * var(--t9-key-h,44px) + 36px))))}
+.dsh-cosmos-const-float-shell[data-t9-mode=parts] .dsh-cosmos-const-float-card{flex:0 0 auto;width:var(--cos-float-w);min-width:0}
+/* 备选区容器：宽度 = 卡片宽（同源变量），高度 = 恒定条高（--cos-t9-cand-h 缺省 56px）。
+   t9ime stage6 起候选为恒高单行横滑条（横滑由面板部件内部承担），容器高度 MUST NOT 随候选
+   数量 / 视口尺寸变化——总高约束由恒高直接成立，不再需要视口相关限幅。overflow-y:auto 保留
+   但降级为版本错配防御性兜底：新版恒高条下永不触发；旧版多行网格（宿主先行 / 面板未升级）
+   时承接为容器内滚动而非内容溢出。高度兜底断点 632px 见文末媒体查询。 */
+.dsh-cosmos-const-float-t9-candidates{box-sizing:border-box;flex:0 0 auto;width:100%;
+  height:var(--cos-t9-cand-h);min-height:0;overflow-y:auto}
+/* 键盘输入列：绝对右列，左缘贴卡片右缘 + 12px。宽高由**键盘自身尺寸**决定（stage6 键盘自适应：
+   备选条恒高后右列不再被「卡片 + 备选区」锁死，键帽放大不裁切）：
+   - 高：height:auto + min-height:100%——键区自然高（4 行键帽 + 1.5 行确定键 + 间距 + 预编辑）
+     超过卡片 + 间距 + 备选区时右列向下生长（全部键完整显示、无内部纵向滚动）；不超过时
+     保持等高（底边与备选区底边对齐）；
+   - 宽：clamp(256px, 50vw - 316px, max(--t9-input-w 缺省 320px, 5 × --t9-key-h + 36px))，
+     并以 min-width:max-content 兜底——键区自然宽（5 列键帽 + 4×4px gap + 面板内边距/边框）
+     永不被列宽裁切；右缘余量 = 50vw - 316px（24px 视口内边距 + 卡片半宽 280px + 12px 间距）；
+   - 放不下时由壳整体左移补齐（见壳 transform），键盘完整优先于卡片居中。
+   收缩下限 256px（5×44px 键列 + gap + 内边距 + 余量 = 5 × 44 + 36）
+   ⟺ 宽度兜底断点 1144px（50vw - 316 = 256），断点与下限 MUST 成对自洽。 */
+.dsh-cosmos-const-float-t9-input{position:absolute;left:calc(100% + 12px);top:0;z-index:1;
+  display:flex;flex-direction:column;height:auto;min-height:100%;min-width:max-content;
+  width:clamp(256px,calc(50vw - 316px),max(var(--t9-input-w,320px),calc(5 * var(--t9-key-h,44px) + 36px)))}
+/* 旧版并排（legacy）：单容器面板在卡片右侧（现状不变）；窄屏折行到下方。 */
+.dsh-cosmos-const-float-shell[data-t9-mode=legacy] .dsh-cosmos-const-float-card{flex:0 1 560px;min-width:0}
+.dsh-cosmos-const-float-t9{flex:0 1 360px;min-width:300px;max-width:360px;align-self:flex-start}
+.dsh-cosmos-const-float-t9 .dsh-v-t9ime-panel{max-width:100%;margin-bottom:0}
+.dsh-cosmos-const-float-t9-toggle{box-sizing:border-box;flex:none;display:inline-flex;align-items:center;justify-content:center;
+  min-width:40px;height:40px;padding:0 9px;cursor:pointer;font:inherit;font-size:12px;font-weight:600;letter-spacing:.5px;
+  border-radius:8px;color:var(--dsw-alias-label-secondary,var(--cos-accent,#ffd28a));background:transparent;
+  border:1px solid transparent}
+.dsh-cosmos-const-float-t9-toggle:hover{background:var(--dsw-alias-interactive-bg-hover,rgb(var(--cos-accent-rgb,255 210 140) / .14));
+  color:var(--dsw-alias-label-primary,var(--cos-title-ink,#fff3dd))}
+.dsh-cosmos-const-float-t9-toggle[data-state=open]{border-color:var(--dsw-alias-border-l2,rgb(var(--cos-accent-rgb,255 210 140) / .55));
+  background:var(--dsw-alias-interactive-bg-hover,rgb(var(--cos-accent-rgb,255 210 140) / .16));
+  color:var(--dsw-alias-label-primary,var(--cos-title-ink,#fff3dd))}
+@media (max-width:980px){
+  .dsh-cosmos-const-float-shell[data-t9-mode=legacy]{flex-direction:column;align-items:center;width:100%}
+  .dsh-cosmos-const-float-shell[data-t9-mode=legacy] .dsh-cosmos-const-float-card{flex:0 0 auto;width:min(560px,100%)}
+  .dsh-cosmos-const-float-shell[data-t9-mode=legacy] .dsh-cosmos-const-float-t9{flex:0 0 auto;width:min(560px,100%);max-width:560px;min-width:0;align-self:center}
+}
+/* L 型兜底折行（两维度同构）：视口宽 ≤1144px（键盘列右缘余量达不到收缩下限 256px）或高 ≤632px
+   （垂直居中下卡片上限 + 恒定备选高仍超视口）→ 输入列回归正常流排在备选容器下方、占满卡片宽、
+   高度自适应；壳恢复 max-height + 滚动，垂直锚定的负 margin 同步取消。
+   高度阈值推导（垂直居中、零余量口径）：卡片上限 448 + 2 × (间距 12 + 恒定备选高 56) + 外层
+   padding 48 = 632——居中盒按卡片计高、备选区向下溢出壳，故备选段按 2 × 计；备选高每减 1px
+   阈值降 2px（旧限幅下限 120px 时 448 + 2 × 132 + 48 = 760，口径一致）。 */
+@media (max-width:1144px),(max-height:632px){
+  .dsh-cosmos-const-float-shell[data-t9-mode=parts]{max-height:calc(100vh - 48px);overflow:auto;margin-bottom:0;transform:none}
+  .dsh-cosmos-const-float-shell[data-t9-mode=parts] .dsh-cosmos-const-float-t9-candidates{height:auto;max-height:none}
+  .dsh-cosmos-const-float-shell[data-t9-mode=parts] .dsh-cosmos-const-float-t9-input{position:static;left:auto;top:auto;
+    width:100%;min-width:0;height:auto;min-height:0;flex:0 0 auto}
+}
 .dsh-cosmos-const-float-head{display:flex;align-items:center;gap:8px}
 .dsh-cosmos-const-float-title{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
   font-size:14px;font-weight:600;letter-spacing:.5px}
@@ -6758,7 +7286,8 @@ ${ENGINE_CSS}
   font-size:10px;line-height:12px;letter-spacing:.5px;word-break:break-all;
   color:var(--dsw-alias-label-secondary,var(--cos-accent,#ffd28a))}
 .dsh-cosmos-const-float-thumb-badge{position:absolute;top:4px;left:4px;z-index:1;box-sizing:border-box;display:grid;
-  place-items:center;width:18px;height:18px;border-radius:50%;font:inherit;font-size:11px;line-height:1;color:#fff;
+  place-items:center;width:18px;height:18px;border-radius:50%;font:inherit;font-size:11px;line-height:1;color:var(--dsw-alias-label-on-color,#fff);
+  /* 基础底保留官方 business-primary（保留清单）：现标记下仅有 uploading/error 两态，基础底不可见。 */
   background:var(--dsw-alias-state-business-primary,#c8963e)}
 .dsh-cosmos-const-float-thumb-badge[data-state=uploading]{background:transparent;
   border:2px solid rgb(255 255 255 / .4);border-top-color:var(--dsw-alias-label-primary,#fff);
@@ -6837,12 +7366,14 @@ ${ENGINE_CSS}
 .dsh-cosmos-const-float-voice[data-state=unavailable]:hover{background:transparent}
 .dsh-cosmos-const-float-voice:focus-visible{outline:1px solid rgb(var(--cos-accent-rgb,255 210 140) / .85);outline-offset:2px}
 .dsh-cosmos-const-float-hint{display:block;min-width:0;font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary,#cbb89a)}
-/* 发送钮（design D4）：原生同款箭头图标钮（图标 path 与「InputBar.tsx」主发送钮同源）；
-   40×40 触屏目标，配色沿既有 business-primary 底 + 白色前景（仅文本换图标）。 */
+/* 发送钮（design D4/3.1）：原生同款箭头图标钮（图标 path 与「InputBar.tsx」主发送钮同源）；
+   40×40 触屏目标。底色改**皮肤主色** var(--cos-accent)（不再是官方 business-primary 暖金常量，
+   见映射层保留清单），前景走 on-accent 映射 var(--dsw-alias-label-on-color)（= var(--cos-bg, …)，
+   12 套皮肤均成立：dark 皮肤 accent 浅 → 深字；唯一 light 皮肤 fidenza accent 深 → 亮字）。 */
 .dsh-cosmos-const-float-send{flex:none;box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;
   min-width:40px;min-height:40px;padding:0;cursor:pointer;
-  border-radius:8px;border:1px solid transparent;color:#fff;
-  background:var(--dsw-alias-state-business-primary,#c8963e)}
+  border-radius:8px;border:1px solid transparent;color:var(--dsw-alias-label-on-color,#fff);
+  background:var(--cos-accent,#c8963e)}
 .dsh-cosmos-const-float-send:hover{filter:brightness(1.08)}
 /* 发送禁用（p2 design D5：上传未就绪 / 机器忙）：只降视觉权重，点击由原生 disabled 语义阻断。 */
 .dsh-cosmos-const-float-send:disabled{opacity:.5;cursor:default;filter:none}
@@ -8019,6 +8550,7 @@ const DICT = {
     "cosmos.constFloat.attachImageOnly": "仅支持添加图片",
     "cosmos.constFloat.attachBusy": "当前不可添加附件",
     "cosmos.constFloat.attachRemove": "移除图片",
+    "cosmos.constFloat.t9Aria": "九键输入（V9）",
     "cosmos.constFloat.modelLabel": "模型",
     "cosmos.constFloat.switching": "切换中…",
     "cosmos.constFloat.modelFallback": "已按会话当前模型",
@@ -8393,6 +8925,7 @@ const DICT = {
     "cosmos.constFloat.attachImageOnly": "Only images can be added",
     "cosmos.constFloat.attachBusy": "Attachments cannot be added right now",
     "cosmos.constFloat.attachRemove": "Remove image",
+    "cosmos.constFloat.t9Aria": "Nine-key input (V9)",
     "cosmos.constFloat.modelLabel": "Model",
     "cosmos.constFloat.switching": "Switching…",
     "cosmos.constFloat.modelFallback": "using the session's current model",

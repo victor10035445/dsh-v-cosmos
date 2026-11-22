@@ -6,11 +6,13 @@
  * 卫星装配/深度折叠/孤儿/上限/委托忙碌、确定性摆放（天球投影 + Fibonacci 降级）、
  * 天球方位保真/黄道带松弛/子集向心/降级三态、属性级补丁 diff（含卫星/生命周期/彗星状态签名）、
  * 恒星图样落位（two-use-cosmos-template-star-layout：模板分配确定性、规范序落位、追加
- *    稳定、溢出环形外扩、星胚点燃一致、降级路径、图样线交付与尺度定标数值面）。
+ *    稳定、溢出环形外扩、星胚点燃一致、降级路径、图样线交付与尺度定标数值面）、
+ * 搜索前缀候选（add-cosmos-search-prefix-suggest：末 token 严格前缀、名称 ∪ 星胚 slug
+ *    候选域、前序 token 不收窄、同文本去重与确定性平局、字典序 + 4 条截断）。
  * 运行：node test/merge-smoke.mjs
  */
 import assert from "node:assert/strict";
-import { mergeScene, sceneDiffLevel, planetStateOf, relativeTime, constellationPositions, skyPositionOf, starOffset, dustCountOf, hash32, matchWorkspaces, embryoGroupsOf, filteredPositions, normalizeWorkspacePath, findRegisteredWorkspace, isWindowsPlatform, starPlanetIdsOf, templateForWorkspace, templateForPosition, templateForFigure, setTemplateOverrides, templateZhOf, starPatternLayout, PATTERN_SCALE, PATTERN_RING_RATIO, PATTERN_SLOT_GAP } from "../src/merge.mjs";
+import { mergeScene, sceneDiffLevel, planetStateOf, relativeTime, constellationPositions, skyPositionOf, starOffset, dustCountOf, hash32, matchWorkspaces, prefixSuggestions, enterDiveTarget, embryoGroupsOf, filteredPositions, normalizeWorkspacePath, findRegisteredWorkspace, isWindowsPlatform, starPlanetIdsOf, templateForWorkspace, templateForPosition, templateForFigure, setTemplateOverrides, templateZhOf, starPatternLayout, PATTERN_SCALE, PATTERN_RING_RATIO, PATTERN_SLOT_GAP } from "../src/merge.mjs";
 import { TEMPLATE_COUNT, allTemplates, templateOf } from "../src/cosmos/templates.mjs";
 
 const NOW = 1_000_000_000_000;
@@ -628,7 +630,185 @@ assert.equal(hash32("x"), hash32("x"));
   assert.deepEqual(idsOf(matchWorkspaces(reversed, "")), idsOf(matchWorkspaces(searchScene, "")), "全量命中亦顺序无关");
 }
 
-/* ── 匹配子集布局（1.2 / design D3）：复用 constellationPositions，√N 向心聚拢 ── */
+/* ── 搜索回车钻取判定（add-cosmos-search-enter-dive 1.1 / design D1） ──
+   复用 matchWorkspaces 语义：唯一命中 → dive(wsId)；0 / 多命中 → shake；
+   空查询不特判（全集恰 1 时同样 dive）；大小写不敏感与中文逐字语义同源。 */
+{
+  const scene = {
+    workspaces: [
+      { id: "ws1", name: "银河项目", stars: [{ id: "add-cosmos-search-filter", lifecycle: "proto" }] },
+      { id: "ws2", name: "Api-Gateway", stars: [] },
+      { id: "ws3", name: "dsh-v-hive", stars: [{ id: "add-hive-search", lifecycle: "proto" }] }
+    ]
+  };
+
+  /* 唯一命中（名称 / 星胚 slug / 多 token AND）→ dive 且 wsId 正确 */
+  assert.deepEqual(enterDiveTarget(scene, "银河项目"), { kind: "dive", wsId: "ws1" }, "名称唯一命中 → dive");
+  assert.deepEqual(enterDiveTarget(scene, "add-cosmos-search-filter"), { kind: "dive", wsId: "ws1" }, "星胚 slug 唯一命中 → dive");
+  assert.deepEqual(enterDiveTarget(scene, "add-hive-search"), { kind: "dive", wsId: "ws3" }, "另一星胚 slug 唯一命中 → dive");
+  assert.deepEqual(enterDiveTarget(scene, "银河 项目"), { kind: "dive", wsId: "ws1" }, "多 token AND 唯一命中 → dive");
+  assert.deepEqual(enterDiveTarget(scene, "add-cosmos-search-filter 银河"), { kind: "dive", wsId: "ws1" }, "跨名称/星胚两 token AND 唯一命中 → dive");
+  assert.deepEqual(enterDiveTarget(scene, " 银河 "), { kind: "dive", wsId: "ws1" }, "查询 trim 后唯一命中 → dive");
+  assert.deepEqual(enterDiveTarget(scene, "api"), { kind: "dive", wsId: "ws2" }, "小写查询命中大写名称 → dive");
+  assert.deepEqual(enterDiveTarget(scene, "API-GATEWAY"), { kind: "dive", wsId: "ws2" }, "大写查询唯一命中 → dive");
+
+  /* 零命中 / 多命中 / 空查询 → shake（不钻取） */
+  assert.deepEqual(enterDiveTarget(scene, "不存在"), { kind: "shake" }, "零命中 → shake");
+  assert.deepEqual(enterDiveTarget(scene, "银项"), { kind: "shake" }, "非连续字符不命中（子串语义）→ shake");
+  assert.deepEqual(enterDiveTarget(scene, "add"), { kind: "shake" }, "两工作区星胚 slug 同含 add → 多命中 shake");
+  assert.deepEqual(enterDiveTarget(scene, "-"), { kind: "shake" }, "两工作区名称同含分隔符 → 多命中 shake");
+  assert.deepEqual(enterDiveTarget(scene, ""), { kind: "shake" }, "空查询（多工作区全集）→ shake");
+  assert.deepEqual(enterDiveTarget(scene, "   \t\n "), { kind: "shake" }, "仅空白查询同空查询 → shake");
+  assert.deepEqual(enterDiveTarget(null, "银河"), { kind: "shake" }, "空 scene → shake（防御降级）");
+  assert.deepEqual(enterDiveTarget({ workspaces: [] }, ""), { kind: "shake" }, "零工作区空查询 → shake");
+
+  /* 边界：单工作区场景空查询 = 全集恰为 1 → dive */
+  const single = { workspaces: [{ id: "only", name: "唯一工作区", stars: [] }] };
+  assert.deepEqual(enterDiveTarget(single, ""), { kind: "dive", wsId: "only" }, "单工作区空查询（全集恰 1）→ dive");
+  assert.deepEqual(enterDiveTarget(single, "唯一"), { kind: "dive", wsId: "only" }, "单工作区名称命中 → dive");
+
+  /* 正式提案名不进匹配域（与 matchWorkspaces 同源，MUST NOT 因回车面扩张） */
+  const formalOnly = { workspaces: [{ id: "w", name: "工作区", stars: [{ id: "add-formal", lifecycle: "created" }] }] };
+  assert.deepEqual(enterDiveTarget(formalOnly, "add-formal"), { kind: "shake" }, "正式提案名不进匹配域 → shake");
+  assert.deepEqual(enterDiveTarget(formalOnly, ""), { kind: "dive", wsId: "w" }, "单工作区空查询仍 dive（与正式提案名无关）");
+}
+
+/* ── 搜索前缀候选（add-cosmos-search-prefix-suggest 1.2 / design D1） ──
+   候选域 = 名称 ∪ 星胚 slug（与 matchWorkspaces 同源）；严格前缀（非子串）；仅末 token
+   参与、前序 token 不收窄候选域；同文本去重（先于截断，wsId 码点序最小者 + name 优先）；
+   字典序 + 4 条截断；空查询/末 token 为空 → 空集。
+   rowsOf 把候选投影成 "text|wsId|kind" 便于逐项断言。 */
+{
+  const idsOf = (set) => [...set].sort();
+  const rowsOf = (rows) => rows.map((row) => row.text + "|" + row.wsId + "|" + row.kind);
+  const suggestScene = {
+    workspaces: [
+      /* ws1：中文名称 + 两个前缀族星胚 slug。 */
+      {
+        id: "ws1",
+        name: "银河项目",
+        stars: [
+          { id: "add-cosmos-search-filter", lifecycle: "proto" },
+          { id: "add-cosmos-search-enter-dive", lifecycle: "proto" }
+        ]
+      },
+      /* ws2：ASCII 名称（大小写不敏感反证）。 */
+      { id: "ws2", name: "Api-Gateway", stars: [] },
+      /* ws3：名称本身是前缀族一员（name 类候选）；正文恒星 id 是正式提案名（不进候选域）。 */
+      { id: "ws3", name: "add-cosmos-dock", stars: [{ id: "add-formal", lifecycle: "created" }] },
+      /* ws4：星胚 slug 为 add-* 族（截断用例补量）。 */
+      { id: "ws4", name: "dsh-v-hive", stars: [{ id: "add-hive-search", lifecycle: "proto" }] }
+    ]
+  };
+
+  /* ① 名称 + slug 同域前缀命中，字典序（codepoint 升序）确定性；输出形状钉死 */
+  const addCo = prefixSuggestions(suggestScene, "add-co");
+  assert.deepEqual(rowsOf(addCo), [
+    "add-cosmos-dock|ws3|name",
+    "add-cosmos-search-enter-dive|ws1|slug",
+    "add-cosmos-search-filter|ws1|slug"
+  ], "名称/星胚 slug 同域前缀命中 + 字典序");
+  assert.deepEqual(Object.keys(addCo[0]), ["text", "wsId", "kind"], "输出形状 = {text, wsId, kind}");
+  assert.equal(addCo[0].text, "add-cosmos-dock", "候选主文本 = 锚点文本原文（不转小写）");
+
+  /* ② 严格前缀（不是子串）：末 token 必须从锚点文本开头命中 */
+  assert.deepEqual(rowsOf(prefixSuggestions(suggestScene, "cosmos-dock")), [], "中段子串不构成候选（前缀语义）");
+
+  /* ③ 大小写不敏感（仅 ASCII；锚点原文保留大小写） */
+  assert.deepEqual(rowsOf(prefixSuggestions(suggestScene, "API")), ["Api-Gateway|ws2|name"], "大写查询命中名称");
+  assert.deepEqual(rowsOf(prefixSuggestions(suggestScene, "api")), ["Api-Gateway|ws2|name"], "小写查询命中名称");
+  assert.deepEqual(rowsOf(prefixSuggestions(suggestScene, "ADD-CO")), rowsOf(addCo), "大写查询与 add-co 同集");
+
+  /* ④ 中文逐字前缀 */
+  assert.deepEqual(rowsOf(prefixSuggestions(suggestScene, "银")), ["银河项目|ws1|name"], "中文单字前缀命中");
+  assert.deepEqual(rowsOf(prefixSuggestions(suggestScene, "银河")), ["银河项目|ws1|name"], "中文双字前缀命中");
+  assert.deepEqual(rowsOf(prefixSuggestions(suggestScene, "河项")), [], "中文非起始片段不命中（严格前缀）");
+  assert.deepEqual(rowsOf(prefixSuggestions(suggestScene, "银河项目")), ["银河项目|ws1|name"], "自身整串 = 自命中（补全后靠 dismissed 不重开）");
+
+  /* ⑤ 多 token：仅末 token 参与，前序 token 不收窄候选域 */
+  assert.deepEqual(rowsOf(prefixSuggestions(suggestScene, "银河 add-co")), rowsOf(addCo),
+    "「银河 add-co」候选域 = 仅末 token（前 token 不收窄）");
+  assert.deepEqual(rowsOf(prefixSuggestions(suggestScene, "不存在 add-co")), rowsOf(addCo),
+    "前序 token 零命中同样不收窄候选域");
+  assert.deepEqual(rowsOf(prefixSuggestions(suggestScene, "银河 银")), ["银河项目|ws1|name"], "末 token 为中文时同理");
+  assert.deepEqual(rowsOf(prefixSuggestions(suggestScene, "  银河   银  ")), ["银河项目|ws1|name"], "多空白 + trim 正常");
+  /* 双层语义：候选层与过滤层互不牵连（过滤仍按完整查询 AND，且跨字段各自成立） */
+  assert.deepEqual(idsOf(matchWorkspaces(suggestScene, "银河 add-co")), ["ws1"],
+    "过滤层按完整查询 AND 命中 ws1（名称含「银河」+ slug 含 add-co；与候选层独立）");
+  assert.deepEqual(idsOf(matchWorkspaces(suggestScene, "不存在 add-co")), [],
+    "同一查询在过滤层零命中、候选层仍有 3 条（列表是建议层，非过滤结果）");
+
+  /* ⑥ 字典序/确定性：与工作区传入顺序无关 */
+  const reversed = { workspaces: [...suggestScene.workspaces].reverse() };
+  assert.deepEqual(prefixSuggestions(reversed, "add-co"), addCo, "候选顺序与工作区传入顺序无关");
+
+  /* ⑦ 同文本去重（去重先于截断）：幸存者 = wsId 码点序最小者 */
+  const dupScene = {
+    workspaces: [
+      { id: "b", name: "共享名", stars: [{ id: "共享名", lifecycle: "proto" }] },
+      { id: "a", name: "共享名", stars: [] }
+    ]
+  };
+  assert.deepEqual(rowsOf(prefixSuggestions(dupScene, "共享")), ["共享名|a|name"],
+    "同名工作区去重单行 + wsId 最小者胜（a < b）");
+  const dupSlugScene = {
+    workspaces: [
+      { id: "b0", name: "另一工作区", stars: [] },
+      { id: "a0", name: "名义", stars: [{ id: "同文标签", lifecycle: "proto" }] }
+    ]
+  };
+  assert.deepEqual(rowsOf(prefixSuggestions(dupSlugScene, "同文")), ["同文标签|a0|slug"],
+    "名称与 slug 同文去重（幸存者为 slug 所属工作区，kind 如实）");
+  const selfDup = { workspaces: [{ id: "c", name: "同文", stars: [{ id: "同文", lifecycle: "proto" }] }] };
+  assert.deepEqual(rowsOf(prefixSuggestions(selfDup, "同")), ["同文|c|name"],
+    "同一工作区内名称与 slug 同文 → kind 以 name 优先");
+
+  /* ⑧ 4 条上限截断（去重后按字典序取前 limit 条；可显式覆盖） */
+  const manyScene = {
+    workspaces: [
+      { id: "w1", name: "pre-1", stars: [] },
+      { id: "w2", name: "pre-2", stars: [] },
+      { id: "w3", name: "pre-3", stars: [] },
+      { id: "w4", name: "pre-4", stars: [] },
+      { id: "w5", name: "pre-5", stars: [] },
+      { id: "w6", name: "pre-6", stars: [] }
+    ]
+  };
+  assert.deepEqual(rowsOf(prefixSuggestions(manyScene, "pre-")), [
+    "pre-1|w1|name", "pre-2|w2|name", "pre-3|w3|name", "pre-4|w4|name"
+  ], "缺省 4 条截断（字典序前 4）");
+  assert.deepEqual(rowsOf(prefixSuggestions(manyScene, "pre-", 2)), ["pre-1|w1|name", "pre-2|w2|name"], "显式 limit 生效");
+  assert.deepEqual(prefixSuggestions(manyScene, "pre-", 0), [], "limit 0 → 空集");
+  assert.deepEqual(prefixSuggestions(manyScene, "pre-", -3), [], "负 limit → 空集");
+  assert.deepEqual(rowsOf(prefixSuggestions(manyScene, "pre-", 99)), [
+    "pre-1|w1|name", "pre-2|w2|name", "pre-3|w3|name", "pre-4|w4|name", "pre-5|w5|name", "pre-6|w6|name"
+  ], "上限大于命中数 → 全量（无补空）");
+
+  /* ⑨ 空查询 / 末 token 为空 / 非法 scene → 空集（列表不渲染） */
+  assert.deepEqual(prefixSuggestions(suggestScene, ""), [], "空查询 → 空集");
+  assert.deepEqual(prefixSuggestions(suggestScene, "   \t\n "), [], "仅空白查询 → 空集");
+  assert.deepEqual(prefixSuggestions(suggestScene, null), [], "非字符串查询 → 空集");
+  assert.deepEqual(prefixSuggestions(suggestScene, undefined), [], "undefined 查询 → 空集");
+  assert.deepEqual(prefixSuggestions(null, "add"), [], "空 scene → 空集");
+  assert.deepEqual(prefixSuggestions({ workspaces: [] }, "add"), [], "零工作区 → 空集");
+  assert.deepEqual(prefixSuggestions({ workspaces: [{ id: null, name: "add-x", stars: [] }] }, "add"), [],
+    "缺 id 工作区不参与（输出恒可定位 wsId）");
+
+  /* ⑩ 正式提案名不进候选域（与 matchWorkspaces 同源，MUST NOT 因候选面扩张） */
+  assert.deepEqual(prefixSuggestions(suggestScene, "add-formal"), [], "正式提案名不进候选域");
+  assert.deepEqual(rowsOf(prefixSuggestions(suggestScene, "add-hive")), ["add-hive-search|ws4|slug"],
+    "星胚 slug 进候选域（对照）");
+
+  /* ⑪ 补全闭环（spec「slug 候选呈现」+ 5.1「Tab 补全后过滤收窄」）：任一候选的锚点文本
+     作为**完整查询**必然命中其所属工作区（前缀命中 ⇒ 子串命中），故 Tab / click 补全后
+     过滤必然收窄到含该工作区的非空集合——补全与过滤语义闭环。 */
+  for (const row of addCo) {
+    assert.ok(matchWorkspaces(suggestScene, row.text).has(row.wsId),
+      "补全文本「" + row.text + "」作为完整查询命中其所属工作区 " + row.wsId);
+  }
+}
+
+
 {
   const allIds = ["a", "b", "c", "d", "e", "f", "g", "h"];
   const full = constellationPositions(allIds.map((id) => ({ id })));

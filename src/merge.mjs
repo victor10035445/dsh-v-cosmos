@@ -343,7 +343,8 @@ export function constellationPositions(workspaces, options = {}) {
  *  - 非空 → 按空白切分多 token，匹配域小写化后**每个 token 都必须是子串**
  *    （AND 语义；小写化只影响 ASCII，中文逐字语义不受影响）；
  *  - 匹配域 = **工作区名称 ∪ 该工作区星胚 slug**（`lifecycle === "proto"` 的恒星 id；
- *    add-cosmos-embryo-cards 3.2：星胚 slug 是唯一可检索的锚点文本）；
+ *    add-cosmos-embryo-cards 3.2：星胚 slug 是唯一可检索的锚点文本；字段清单单一出处 =
+ *    `anchorTextsOf`，前缀候选 `prefixSuggestions` 与之同源）；
  *  - **正式提案名 MUST NOT 参与匹配**（既有契约不变）；
  *  - 输出命中 ws id 的 `Set`（顺序无关：集合语义，重排输入由
  *    `constellationPositions` 内部规范排序保证确定性）。
@@ -369,13 +370,13 @@ export function matchWorkspaces(scene, query) {
     if (ws?.id == null) continue;
     /* 字段以换行拼接：子串语义只在单个字段内成立，MUST NOT 跨「名称 / slug」边界
        拼出伪命中（例如名称尾部 + slug 头部拼出第三个词）。 */
-    const haystack = [String(ws?.name ?? ""), ...embryoSlugsOf(ws)].join("\n").toLowerCase();
+    const haystack = anchorTextsOf(ws).map((anchor) => anchor.text).join("\n").toLowerCase();
     if (tokens.every((token) => haystack.indexOf(token) >= 0)) out.add(ws.id);
   }
   return out;
 }
 
-/** 工作区内星胚 slug 清单（`matchWorkspaces` 匹配域；正式提案名不参与）。 */
+/** 工作区内星胚 slug 清单（匹配域 / 候选域的 slug 字段；正式提案名不参与）。 */
 function embryoSlugsOf(ws) {
   const slugs = [];
   for (const star of Array.isArray(ws?.stars) ? ws.stars : []) {
@@ -384,6 +385,100 @@ function embryoSlugsOf(ws) {
     if (slug) slugs.push(slug);
   }
   return slugs;
+}
+
+/**
+ * 锚点文本清单（**匹配域 / 候选域的单一出处**；add-cosmos-search-filter 1.1 /
+ * add-cosmos-embryo-cards 3.2 / add-cosmos-search-prefix-suggest 1.1）：
+ * 逐字段产出 `{ text, kind }`——`kind: "name"` = 工作区名称、`kind: "slug"` = 该工作区
+ * 星胚 slug（`lifecycle === "proto"` 的恒星 id）。**逐字段交付而非拼接**：子串/前缀语义
+ * 只在单个字段内成立，MUST NOT 跨「名称 / slug」边界拼出伪命中。正式提案名不参与。
+ * @param {object|null} ws 场景工作区
+ * @returns {Array<{text: string, kind: "name"|"slug"}>}
+ */
+function anchorTextsOf(ws) {
+  const out = [{ text: String(ws?.name ?? ""), kind: "name" }];
+  for (const slug of embryoSlugsOf(ws)) out.push({ text: slug, kind: "slug" });
+  return out;
+}
+
+/**
+ * 搜索前缀候选（纯函数，add-cosmos-search-prefix-suggest 1.1 / design D1）：
+ * 控制台式前缀补全的数据面——**建议层**，MUST NOT 影响 `matchWorkspaces` 的过滤语义。
+ *
+ * 口径：
+ *  - trim 后按空白切分取**末 token**；空查询 / 末 token 为空 → `[]`（列表不渲染）；
+ *  - 候选域 = 各工作区锚点文本（`anchorTextsOf`：名称 ∪ 星胚 slug，与过滤匹配同源）；
+ *    前序 token **不参与**候选域收窄（「银河 add-co」的候选只看 `add-co`——列表找锚点、
+ *    过滤看结果的双层语义）；
+ *  - 命中 = `field.toLowerCase().startsWith(token.toLowerCase())`（仅 ASCII 小写化，
+ *    中文逐字）；前缀语义严格，不做子串/模糊候选；
+ *  - 同 `text` 去重（同名工作区 / 名称与另一工作区 slug 同文 → 至多一条；**去重先于截断**）：
+ *    幸存者取 `wsId` 码点序最小者，同 id 再以 `kind` 的 name 优先——确定性平局裁决，
+ *    与「匹配结果顺序无关」同精神（否则重复行挤占 4 条呈现面、Enter 钻取目标随遍历序漂移）；
+ *  - 输出按 `text` 码点序升序（同候选集恒同顺序；拼音序会引入 locale 依赖，收益不成比例）
+ *    后截断 `limit`（上限缺省 4；`limit <= 0` → `[]`）。
+ *
+ * @param {object|null} scene merge 产出的 scene（{ workspaces: [...] }）
+ * @param {string} query 原始查询串（未 trim）
+ * @param {number} [limit] 候选上限（缺省 4；非有限值回落缺省）
+ * @returns {Array<{text: string, wsId: string, kind: "name"|"slug"}>} 去重排序后的候选
+ */
+export function prefixSuggestions(scene, query, limit = 4) {
+  const max = Number.isFinite(Number(limit)) ? Math.max(0, Math.floor(Number(limit))) : 4;
+  if (max === 0) return [];
+  const list = Array.isArray(scene?.workspaces) ? scene.workspaces : [];
+  const text = typeof query === "string" ? query.trim() : "";
+  if (!text) return [];
+  const tokens = text.split(/\s+/).filter(Boolean);
+  const token = tokens.length > 0 ? tokens[tokens.length - 1] : "";
+  if (!token) return [];
+  const needle = token.toLowerCase();
+  /* 锚点文本 → 候选（Map 保序无关：最终按 text 码点序重排后再截断）。 */
+  const picked = new Map();
+  for (const ws of list) {
+    if (ws?.id == null) continue;
+    const wsId = String(ws.id);
+    for (const anchor of anchorTextsOf(ws)) {
+      if (!anchor.text.toLowerCase().startsWith(needle)) continue;
+      const prev = picked.get(anchor.text);
+      if (prev === undefined) {
+        picked.set(anchor.text, { text: anchor.text, wsId, kind: anchor.kind });
+        continue;
+      }
+      /* 平局裁决（design D1）：wsId 码点序最小者赢；同一工作区 → kind 以 name 优先。 */
+      const betterId = wsId < prev.wsId;
+      const sameIdName = wsId === prev.wsId && anchor.kind === "name" && prev.kind !== "name";
+      if (betterId || sameIdName) picked.set(anchor.text, { text: anchor.text, wsId, kind: anchor.kind });
+    }
+  }
+  return [...picked.values()]
+    .sort((a, b) => compareText(a.text, b.text))
+    .slice(0, max);
+}
+
+/**
+ * 搜索回车钻取判定（纯函数，add-cosmos-search-enter-dive 1.1 / design D1）：
+ * 复用 `matchWorkspaces` 的匹配语义（多 token AND 子串、大小写不敏感、匹配域 =
+ * 工作区名称 ∪ 星胚 slug；正式提案名不参与），按命中数统一裁决——
+ *  - 恰命中 1 个工作区 → `{ kind: "dive", wsId }`（调用方经引擎 `diveToWs` 钻取）；
+ *  - 0 个 / 多于 1 个 → `{ kind: "shake" }`（不钻取、不清空、不失焦，仅一次轻微 shake）。
+ *
+ * 空查询**不特判**：空查询经 `matchWorkspaces` 走全集分支，仍按命中数统一裁决——
+ * 全集恰为 1（单工作区场景）时同样 dive，多工作区时按多命中 shake（spec
+ *「搜索回车钻取」：空查询 = 过滤关闭的全集，命中数同规）。
+ * 纯判定、零副作用：scene/query 防御口径与 `matchWorkspaces` 逐字同源。
+ *
+ * @param {object|null} scene merge 产出的 scene（{ workspaces: [...] }）
+ * @param {string} query 原始查询串（未 trim）
+ * @returns {{kind: "dive", wsId: string}|{kind: "shake"}}
+ */
+export function enterDiveTarget(scene, query) {
+  const matched = matchWorkspaces(scene, query);
+  if (matched.size === 1) {
+    return { kind: "dive", wsId: [...matched][0] };
+  }
+  return { kind: "shake" };
 }
 
 /**
