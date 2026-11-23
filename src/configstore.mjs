@@ -34,18 +34,21 @@ import { basename, dirname, join, resolve as pathResolve } from "node:path";
 import { normalizeButtons } from "./buttons.mjs";
 import { normalizeConstButtons } from "./const-buttons.mjs";
 import { normalizePaths, PATHS_UNSET, pathsConfigured } from "./paths.mjs";
+import { normalizeWarpPlan, sanitizeWarpPlan } from "./warp-plan.mjs";
 
 /** 共享存储文件名（`<DSH_HOME>/` 之下）。 */
 export const CONFIG_STORE_BASENAME = "dsh-v-cosmos.config.json";
-/** 共享存储的节名（顺序即快照字段顺序；三节互不读写）。 */
-export const CONFIG_STORE_SECTIONS = ["buttons", "constellationButtons", "paths"];
-/** 节值形状表（step2-cosmos-openspec-path-setting 1.1）：数组节 / 对象节。
- *  写路径门（writeSections）与存储读取门（isSectionValue）共用——数组节保持
- *  「仅数组」既有门（对象值按 invalid 拒绝，行为不变），对象节仅认普通对象。 */
+/** 共享存储的节名（顺序即快照字段顺序；各节互不读写）。 */
+export const CONFIG_STORE_SECTIONS = ["buttons", "constellationButtons", "paths", "warpPlan"];
+/** 节值形状表（step2-cosmos-openspec-path-setting 1.1；two-add-cosmos-proposal-warp 5.1
+ *  新增 `warpPlan` 对象节）：数组节 / 对象节。写路径门（writeSections）与存储读取门
+ *  （isSectionValue）共用——数组节保持「仅数组」既有门（对象值按 invalid 拒绝，行为
+ *  不变），对象节仅认普通对象。 */
 const SECTION_VALUE_SHAPES = {
   buttons: "array",
   constellationButtons: "array",
-  paths: "object"
+  paths: "object",
+  warpPlan: "object"
 };
 
 /** @param {string} key 节值形状（未注册节按数组节兜底，行为与既往一致）。 */
@@ -66,8 +69,8 @@ function isSectionValue(key, value) {
 }
 
 /**
- * 节内容非空判定（seed / upgrade / ensureSeeded 共用）：数组节非空列表；对象节
- * 至少一键已配置（全 null 形状不播种——spec「全 null = 未配置」）。
+ * 节内容非空判定（seed / upgrade / ensureSeeded 共用）：数组节非空列表；对象节按节
+ * 类型判定（`paths` 至少一键已配置、`warpPlan` 至少一条动作条；全 null / 空计划不播种）。
  * @param {string} key
  * @param {unknown} value
  * @returns {boolean}
@@ -75,6 +78,7 @@ function isSectionValue(key, value) {
 function sectionHasContent(key, value) {
   if (Array.isArray(value)) return value.length > 0;
   if (shapeOf(key) === "object" && value !== null && typeof value === "object" && !Array.isArray(value)) {
+    if (key === "warpPlan") return Array.isArray(value.bars) && value.bars.length > 0;
     return pathsConfigured(value);
   }
   return false;
@@ -133,11 +137,13 @@ export class ConfigStoreError extends Error {
   }
 }
 
-/** 节归一化器表（提案动作 buttons / 星座动作 constellationButtons / 路径 paths；各自独立口径）。 */
+/** 节归一化器表（提案动作 buttons / 星座动作 constellationButtons / 路径 paths /
+ *  曲率计划 warpPlan；各自独立口径）。 */
 const SECTION_NORMALIZERS = {
   buttons: (raw) => normalizeButtons(raw),
   constellationButtons: (raw) => normalizeConstButtons(raw),
-  paths: (raw) => normalizePaths(raw)
+  paths: (raw) => normalizePaths(raw),
+  warpPlan: (raw) => normalizeWarpPlan(raw)
 };
 
 /**
@@ -155,7 +161,9 @@ const SECTION_READ_NORMALIZERS = {
   }),
   constellationButtons: (raw) => normalizeConstButtons(raw, { tolerateUnknownShortcut: true }),
   /* paths：读路径净房与写路径同口径（纯形态校验恒成功，垃圾形状归一为未配置形状）。 */
-  paths: (raw) => normalizePaths(raw)
+  paths: (raw) => normalizePaths(raw),
+  /* warpPlan：读面容错（坏条目逐条剔除、未知 rule 回落 direct；设置页可回显）。 */
+  warpPlan: (raw) => sanitizeWarpPlan(raw)
 };
 
 /** 归一化失败的兜底（组合层来源非法时不让插件激活失败）。 */
@@ -168,13 +176,14 @@ function safeNormalize(fn, fallback) {
 }
 
 /**
- * 把一节任意来源的输入归一化为**完整组合层视图**（三节齐备）。
+ * 把一节任意来源的输入归一化为**完整组合层视图**（四节齐备）。
  * 缺节 → 空数组 / 未配置形状；节级非法 → 按空处理（写入校验另有拦截）。
  * @param {unknown} raw 补丁层 entry config 或 settingsScope 解析值
  * @param {{tolerateUnknownPreState?: boolean}} [options] 读面容错（快照专用：
  *        `preState` / `shortcut` 漂移值原样保留，供设置页回显；seed/upgrade 等写路径恒严格）
  * @returns {{buttons: Array<object>, constellationButtons: Array<object>,
- *            paths: {openspecPath: string|null, cosmosSpecDir: string|null}}}
+ *            paths: {openspecPath: string|null, cosmosSpecDir: string|null},
+ *            warpPlan: {bars: Array<{name: string, rule?: "queue"}>}}}
  */
 export function normalizeView(raw, options = {}) {
   const source = raw !== null && typeof raw === "object" ? raw : {};
@@ -182,23 +191,28 @@ export function normalizeView(raw, options = {}) {
   return {
     buttons: safeNormalize(() => table.buttons(source.buttons), []),
     constellationButtons: safeNormalize(() => table.constellationButtons(source.constellationButtons), []),
-    paths: safeNormalize(() => table.paths(source.paths), { ...PATHS_UNSET })
+    paths: safeNormalize(() => table.paths(source.paths), { ...PATHS_UNSET }),
+    warpPlan: safeNormalize(() => table.warpPlan(source.warpPlan), { bars: [] })
   };
 }
 
 /**
  * 生效值 = 组合层 base ← 存储节逐节覆盖（节缺席回落 base）。
- * @param {{buttons: Array<object>, constellationButtons: Array<object>, paths?: object}} base 已归一化视图
+ * @param {{buttons: Array<object>, constellationButtons: Array<object>, paths?: object,
+ *          warpPlan?: object}} base 已归一化视图
  * @param {object|null} sections 存储节（storeSectionsOf 的输出）
  * @returns {{buttons: Array<object>, constellationButtons: Array<object>,
- *            paths: {openspecPath: string|null, cosmosSpecDir: string|null}}}
+ *            paths: {openspecPath: string|null, cosmosSpecDir: string|null},
+ *            warpPlan: {bars: Array<{name: string, rule?: "queue"}>}}}
  */
 export function mergeView(base, sections) {
   const out = {
     buttons: Array.isArray(base?.buttons) ? base.buttons : [],
     constellationButtons: Array.isArray(base?.constellationButtons) ? base.constellationButtons : [],
     /* paths base 经净房兜底（base 来源非法 → 未配置形状；净房恒成功恒新对象）。 */
-    paths: normalizePaths(base?.paths)
+    paths: normalizePaths(base?.paths),
+    /* 曲率计划 base 读面容错兜底（悬空引用由保存面/附着面丢弃，不阻断）。 */
+    warpPlan: sanitizeWarpPlan(base?.warpPlan)
   };
   if (sections !== null && typeof sections === "object") {
     for (const key of CONFIG_STORE_SECTIONS) {

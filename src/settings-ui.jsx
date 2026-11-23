@@ -237,6 +237,12 @@ export const COSMOS_SETTINGS_CSS = `
 .cs-dropLine{position:absolute;left:4px;right:4px;height:2px;border-radius:1px;background:var(--dsw-alias-border-inverted);z-index:1;pointer-events:none}
 .cs-dropLine[data-edge=before]{top:-3px}
 .cs-dropLine[data-edge=after]{bottom:-3px}
+/* ── 「曲率引擎」页签（two-add-cosmos-proposal-warp 5.2）：动作条行多选 + 规则下拉。
+   与动作页签行骨架同族：行容器 = 浅描边圆角、勾选行提亮；徽标复用「cs-badge」。 ── */
+.cs-warpRows{display:flex;flex-direction:column;gap:4px}
+.cs-warpRow{display:flex;align-items:center;gap:8px;padding:6px 8px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px}
+.cs-warpRow[data-checked=true]{border-color:var(--dsw-alias-border-inverted);background:var(--dsw-alias-interactive-bg-hover)}
+.cs-warpName{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dsw-alias-label-primary);font-size:13px}
 .cs-modelRow{display:flex;flex-wrap:wrap;align-items:center;gap:10px}
 .cs-modelField{display:inline-flex;align-items:center;gap:6px;min-width:0}
 .cs-modelCap{flex:none;font-size:12px;line-height:16px;color:var(--dsw-alias-label-tertiary)}
@@ -1638,3 +1644,148 @@ const SHORTCUT_FIELD_HINTS = Object.freeze({
   voiceToggle: "仅浮窗打开时生效：开始/停止语音录入；浮窗文本域聚焦时可用。",
   closePage: "整页打开时生效：关闭/收起链——钻取返回 > 清空搜索 > 收起会话面板 > 退全屏 > 关闭整页。"
 });
+
+/** 曲率计划的「前置状态」徽标文案（null = 不限；与动作页签下拉文案同值）。 */
+const WARP_PRE_STATE_TEXT = Object.freeze({
+  proto: ["warpPreStateProto", "待创建（星胚）"],
+  created: ["warpPreStateCreated", "已创建"],
+  reviewed: ["warpPreStateReviewed", "已审核"],
+  executed: ["warpPreStateExecuted", "已执行"]
+});
+
+/** 前置状态徽标取值（未知漂移值原样回显，不静默改写）。 */
+function warpPreStateText(t, preState) {
+  if (typeof preState !== "string" || !preState) return "";
+  const pair = WARP_PRE_STATE_TEXT[preState];
+  if (pair) return tr(t, "cosmos.settings." + pair[0], pair[1]);
+  return preState;
+}
+
+/**
+ * 「曲率引擎」标签页（two-add-cosmos-proposal-warp 5.2 / spec「曲率计划配置模型与曲率
+ * 引擎设置页签」）：
+ *  - 行清单 = 当前提案动作条（`face.rows`：名称 / 前置状态徽标），多选框勾选即加入
+ *    曲率计划；每行规则下拉「曲率直航（缺省）/ 转入脉冲队列」（未勾选时禁用）。
+ *  - **暂存-保存模型**：编辑只改本地草稿；「保存」才经 face 整节 CAS 写入 `warpPlan`；
+ *    「放弃修改」回退草稿；配置层存在用户覆盖时显示「已覆盖」并允许「重置」。
+ *  - 不可写 / 保存中 → 全部控件禁用（与动作页签同门控）。
+ *  - 空行清单（尚无动作条）→ 引导去「动作」页签配置，不渲染可点却永不生效的空表。
+ * @param {{t: Function, face: object}} props
+ */
+export function CosmosWarpPanel(props) {
+  const t = props.t;
+  const face = props.face;
+  const state = useSyncExternalStore(
+    face ? face.subscribe : noopSubscribe,
+    face ? face.getSnapshot : noopSnapshot
+  );
+  if (face === undefined || face === null) return null;
+  if (!state) return null;
+  if (state.status === "loading") {
+    return <div className="cs-loading">{tr(t, "cosmos.settings.loading", "正在加载设置…")}</div>;
+  }
+  const disabled = state.writable !== true || state.saving === true;
+  const rows = Array.isArray(state.rows) ? state.rows : [];
+  const checkedCount = rows.filter((row) => row.checked === true).length;
+  const reset = () => {
+    try {
+      void face.reset?.();
+    } catch (error) {
+      console.error("[dsh-v-cosmos] warp plan reset failed:", error);
+    }
+  };
+  return (
+    <div className="cs-list" data-cosmos-warp-plan="true" data-plugin-anchor="dsh-v-cosmos:settings-warp-engine">
+      <div className="cs-secHead">
+        <h3 className="cs-label">{tr(t, "cosmos.settings.warpPlanLabel", "曲率引擎动作（附着到目标后自动接力）")}</h3>
+        <button
+          className="cs-btn"
+          type="button"
+          data-cosmos-warp-plan-reset="true"
+          disabled={state.overridden !== true || disabled}
+          title={tr(t, "cosmos.settings.warpPlanResetTitle", "清除用户覆盖，回落默认曲率计划")}
+          onClick={reset}
+        >{tr(t, "cosmos.settings.warpPlanReset", "重置")}</button>
+      </div>
+      <div className="cs-hint">
+        {tr(
+          t,
+          "cosmos.settings.warpPlanHint",
+          "从已保存的提案动作条中多选组成曲率计划：附着到选中提案（或星胚组）后，前置状态一满足即自动执行并逐级接力；规则缺省「曲率直航」，「转入脉冲队列」把该动作交给脉冲队列（转投落定即在曲率侧完成）。计划变更不影响已附着目标在途条目。"
+        )}
+      </div>
+      {rows.length === 0 ? (
+        <div className="cs-hint" data-cosmos-warp-plan-empty="true">
+          {tr(t, "cosmos.settings.warpPlanNoBars", "还没有可用的提案动作条：请先到「动作」页签配置按钮。")}
+        </div>
+      ) : (
+        <div className="cs-warpRows">
+          {rows.map((row) => {
+            const preStateText = warpPreStateText(t, row.preState);
+            return (
+              <div
+                className="cs-warpRow"
+                key={row.name}
+                data-cosmos-warp-plan-row={row.name}
+                data-checked={row.checked === true ? "true" : undefined}
+              >
+                <label className="cs-auto">
+                  <input
+                    type="checkbox"
+                    checked={row.checked === true}
+                    disabled={disabled}
+                    aria-label={row.name}
+                    onChange={(event) => face.edit(row.name, { checked: event.target.checked })}
+                  />
+                  <span className="cs-warpName">{row.name}</span>
+                </label>
+                <span
+                  className="cs-badge"
+                  data-pre-state={typeof row.preState === "string" && row.preState ? row.preState : "any"}
+                >{preStateText || tr(t, "cosmos.settings.warpPreStateAny", "不限")}</span>
+                <select
+                  className="cs-select"
+                  value={row.rule === "queue" ? "queue" : "direct"}
+                  disabled={disabled || row.checked !== true}
+                  aria-label={row.name + " · " + tr(t, "cosmos.settings.warpRuleLabel", "规则")}
+                  onChange={(event) => face.edit(row.name, { rule: event.target.value === "queue" ? "queue" : "direct" })}
+                >
+                  <option value="direct">{tr(t, "cosmos.settings.warpRuleDirect", "曲率直航（缺省）")}</option>
+                  <option value="queue">{tr(t, "cosmos.settings.warpRuleQueue", "转入脉冲队列")}</option>
+                </select>
+              </div>
+            );
+          })}
+        </div>
+      )}
+      {!state.writable ? (
+        <div className="cs-error">{tr(t, "cosmos.settings.notWritable", "当前连接不支持持久设置修改")}</div>
+      ) : null}
+      {state.failed ? (
+        <div className="cs-error">{tr(t, "cosmos.settings.saveFailed", "保存未生效，请重试")}</div>
+      ) : null}
+      {state.overridden ? (
+        <div className="cs-meta" data-cosmos-warp-plan-overridden="true">
+          {tr(t, "cosmos.settings.warpPlanOverridden", "已覆盖默认曲率计划")}
+        </div>
+      ) : null}
+      <div className="cs-meta">
+        {tr(t, "cosmos.settings.warpPlanCount", "曲率计划动作条：") + checkedCount + " / " + rows.length}
+      </div>
+      <div className="cs-actions">
+        <button
+          className="cs-btn"
+          type="button"
+          disabled={state.dirty !== true || state.saving === true}
+          onClick={() => face.discard()}
+        >{tr(t, "cosmos.settings.discard", "放弃修改")}</button>
+        <button
+          className="cs-btn cs-btnPrimary"
+          type="button"
+          disabled={state.dirty !== true || disabled}
+          onClick={() => face.save()}
+        >{state.saving ? tr(t, "cosmos.settings.saving", "保存中…") : tr(t, "cosmos.settings.save", "保存")}</button>
+      </div>
+    </div>
+  );
+}

@@ -212,12 +212,15 @@
  *    （`.cos-badge-cluster`，银河态零呈现），不再占用顶部中央；定位/限宽职责自标牌移交容器
  *    （`max(160px, min(844px, calc(100% - 470px)))`，844 = 480 + 2×(170+12)），标牌收敛为单一
  *    上限 480px；<520px 断点改挂容器并隐藏条目槽（标牌旧媒体查询同步移除）；
- *  - `wsSwitcherItemsOf(scene, focusWsId)` 纯函数：**可切换星座判据 = `stars` 非空**
- *    （正式提案 ∪ 星胚 proto；仅会话（planets/comets）的星座、仅星云、全空 MUST NOT 入列——
- *    与 step1 星座活力判据（存在口径，含会话）**刻意分离**，后者继续服务 chip/标牌两态）；
+ *  - `wsSwitcherItemsOf(scene, focusWsId, favoriteIds?)` 纯函数：**可切换星座判据 =
+ *    `stars` 非空 ∪ 已收藏**（add-cosmos-constellation-favorites 2.1/D3：正式提案 ∪ 星胚
+ *    （proto）**或**该星座 id 在收藏集合内；未收藏的仅会话（planets/comets）星座、仅星云、
+ *    全空 MUST NOT 入列——与 step1 星座活力判据（存在口径，含会话）**刻意分离**，后者继续
+ *    服务 chip/标牌两态）；第三参缺省/null/非集合 → 空集（既有两参调用逐字节等价）；
+ *    收藏 id 与焦点比较同纪律归一化（`String(ws.id ?? '')`）。
  *    排除当前 → 星座名（id 兜底）字典序成环 → 前驱/后继；边界档位 0/1/≥2（恰 1 个其他
  *    可切换星座时单条目落右槽，MUST NOT 两侧同显）；当前星座不在可切换环上 → 以可切换清单
- *    自身成环降级；
+ *    自身成环降级；收藏座只是**入环**，环序/边界档位/降级环语义全部原样；
  *  - 条目随 `updateOverlay` 逐帧派生（导航铬件，MUST NOT 与搜索过滤求交集），内容走
  *    `dataset.html` 差分、`.on` 走 0.25s opacity 过渡（淡入；淡出满 0.25s 后清内容），零新增
  *    轮询；条目 click → `diveToWs` 同一条内部实现（未命中静默降级），多指手势期点击抑制；
@@ -295,6 +298,35 @@ export const ENGINE_CSS = `
    （缺省 32、界 28–48）；工具本体由 client React portal 渲染（图标 + aria/title 文案）。 */
 .cos-wsbar-tools { flex: none; display: flex; width: var(--cos-ws-tool-size, 32px);
   height: var(--cos-ws-tool-size, 32px); pointer-events: auto; }
+/* 收藏按钮槽（add-cosmos-constellation-favorites 3.2/D4）：标牌组**右缘收尾位**——方形槽与
+   模板工具同高对齐，边长消费同一 --cos-ws-tool-size 令牌；槽内无引擎内容（引擎只建槽，
+   ★ 按钮本体由 client React portal 渲染）。pointer-events:auto 让命中有落点（组级
+   pointer-events:none）；容器级缩放/捏合绑定沿祖先链覆盖本槽 ⇒ 与标牌组同口径的
+   **无缩放死区**（MUST NOT 在本槽上拦截/停止 wheel·pointerdown 传播）。 */
+.cos-fav-slot { position: relative; flex: none; display: flex; width: var(--cos-ws-tool-size, 32px);
+  height: var(--cos-ws-tool-size, 32px); pointer-events: auto; }
+/* ★ 收藏按钮两态（实心 = 已收藏 / 空心 = 未收藏）：视觉尺寸吃满槽（随令牌）、取色全部走皮肤
+   CSS 变量（--cos-accent-rgb 通道令牌 + --cos-hover），MUST NOT 硬编码色值。
+   **触屏纪律**：视觉尺寸可低于 40px（与模板工具同高对齐），命中热区经 ::after 透明扩展垫到
+   ≥40×40（视觉呈现不变；令牌 ≥40 时热区自然满足——两条约束不互斥）。 */
+.cos-fav-btn { box-sizing: border-box; position: relative; display: flex; align-items: center;
+  justify-content: center; width: 100%; height: 100%; margin: 0; padding: 0;
+  color: rgb(var(--cos-accent-rgb, 255 210 140) / .5); background: transparent;
+  border: 1px solid transparent; border-radius: 0; cursor: pointer;
+  transition: color .15s, background .15s, border-color .15s; }
+.cos-fav-btn::after { content: ""; position: absolute; left: 50%; top: 50%; width: 40px; height: 40px;
+  transform: translate(-50%, -50%); } /* 透明命中热区（≥40×40，零视觉影响） */
+.cos-fav-btn svg { display: block; width: 62%; height: 62%; fill: none; stroke: currentColor;
+  stroke-width: 1.7; stroke-linejoin: round; stroke-linecap: round; }
+/* 空心态（未收藏）= 描边 + 低 α：基色即上条 color 的半透明 accent，svg fill:none 只留描边。 */
+.cos-fav-btn:hover { color: rgb(var(--cos-accent-rgb, 255 210 140) / .85);
+  background: var(--cos-hover, rgba(255,210,140,.12)); }
+/* 实心态（已收藏）= accent 填充 + 轻量高亮（glow 光晕同为令牌链，浅/深色皮肤同源）。 */
+.cos-fav-btn[data-on="true"] { color: rgb(var(--cos-accent-rgb, 255 210 140) / .95); }
+.cos-fav-btn[data-on="true"] svg { fill: currentColor;
+  filter: drop-shadow(0 0 5px rgb(var(--cos-accent-rgb, 255 210 140) / .75)); }
+.cos-fav-btn:focus-visible { outline: 1px solid rgb(var(--cos-accent-rgb, 255 210 140) / .85);
+  outline-offset: 2px; }
 /* 两侧条目槽（D1 支点）：**固定对称宽度**——标牌移右上后，切换条目仍以页面中心为支点
    左右成对；min-width:0 允许容器收窄时条目文本先行省略；槽自身不接收指针（条目可见时才可点）。 */
 .cos-wsbar-side { flex: 0 1 var(--cos-wsbar-side-w, 170px); width: var(--cos-wsbar-side-w, 170px); min-width: 0;
@@ -2111,17 +2143,24 @@ function compareTextOf(a, b) {
 }
 
 /**
- * 钻取态可切换星座清单（step2-add-constellation-switcher D2；纯函数，冒烟直测）。
+ * 钻取态可切换星座清单（step2-add-constellation-switcher D2；add-cosmos-constellation-favorites
+ * 2.1/D3 判据扩展；纯函数，冒烟直测）。
  *
  * **可切换星座判据**（本 capability 专属，与 step1 星座活力判据刻意分离）：`stars` 非空
- * ——正式提案 ∪ 星胚（`lifecycle === "proto"`，merge 层已并入 `stars`）。仅会话
- * （`planets` / `comets`）而**无提案/星胚**的星座 MUST NOT 入列（不再视为可切换活跃）；
- * 仅星云（`archives`）/ 全空 / 孤儿卫星同样不入列。step1 的 `constellationVitalityOf`
- * （存在口径，含会话）继续服务 chip 与标牌两态，**不因本判据改变**。
+ * **∪ 已收藏**——正式提案 ∪ 星胚（`lifecycle === "proto"`，merge 层已并入 `stars`），或
+ * 该星座 id 在收藏集合内。**未收藏的**仅会话（`planets` / `comets`）而**无提案/星胚**的星座
+ * MUST NOT 入列；仅星云（`archives`）/ 全空 / 孤儿卫星同样不入列。step1 的
+ * `constellationVitalityOf`（存在口径，含会话）继续服务 chip 与标牌两态，**不因本判据改变**。
+ *
+ * 收藏集合判据的容错（D3）：第三参缺省 / null / 非集合 → 空集（既有两参调用逐字节等价）；
+ * 集合成员与 `ws.id` 双向归一化为字符串后比较（与下方焦点比较纪律一致）——收藏集合经设置面
+ * 净房恒为字符串、场景 `ws.id` 形态由宿主投影决定，归一化消除非字符串形态的静默失配。
+ * 失效收藏（场景查无此 id）天然不入环：本函数只遍历场景星座，持久条目保留不清。
  *
  * 环 = 可切换星座全集（**含当前**），按星座名字典序（同名以 id 兜底，码点序）排序后首尾
  * 相接；左槽 = 当前星座的环上前驱、右槽 = 后继。条目清单 = 可切换星座 ∖ 当前
- * （spec「切换条目清单 MUST 为有提案或星胚的星座排除当前钻取星座」）。
+ * （spec「切换条目清单 MUST 为该判据下的星座排除当前钻取星座」）。收藏座只是**入环**——
+ * 与判据其余成员合并进同一环按既有排序参与环绕，MUST NOT 单独成组或置顶。
  *
  * 边界档位（确定性，无歧义分支）：
  *  - 其他可切换星座 0 个 → `[]`（两槽零内容，槽宽保留）；
@@ -2134,15 +2173,26 @@ function compareTextOf(a, b) {
  *
  * @param {{ws?: object[]}|object[]|null} scene 场景 body（`{ws:[...]}`；兼容裸数组）
  * @param {string|null|undefined} focusWsId 当前钻取星座 id
+ * @param {Set<string>|string[]|null} [favoriteIds] 已收藏的 ws.id 集合（缺省/null/非集合 → 空集）
  * @returns {Array<{wsId: string, name: string, side: "left"|"right"}>} 左槽在前、右槽在后的条目
  */
-export function wsSwitcherItemsOf(scene, focusWsId) {
+export function wsSwitcherItemsOf(scene, focusWsId, favoriteIds) {
   const list = Array.isArray(scene) ? scene : (Array.isArray(scene?.ws) ? scene.ws : []);
+  /* 收藏集合归一（D3）：只认 Set / 数组，其余（含 null / 数字 / 字符串 / 普通对象）按空集；
+     成员一律 `String()` 归一，与下方 `String(ws.id ?? '')` 同口径。 */
+  const favorites = new Set();
+  if (favoriteIds instanceof Set) {
+    for (const id of favoriteIds) favorites.add(String(id ?? ''));
+  } else if (Array.isArray(favoriteIds)) {
+    for (const id of favoriteIds) favorites.add(String(id ?? ''));
+  }
   const switchable = [];
   for (const ws of list) {
     if (!ws || typeof ws !== 'object') continue;
-    /* 有提案或星胚 = stars 非空（proto 星胚由 merge 并入 stars）；仅会话星座不视为可切换。 */
-    if (!Array.isArray(ws.stars) || ws.stars.length === 0) continue;
+    /* 有提案或星胚 = stars 非空（proto 星胚由 merge 并入 stars）；已收藏的星座无论有无
+       提案/星胚同样入列（并集判据）；未收藏的仅会话星座仍不视为可切换。 */
+    const hasStars = Array.isArray(ws.stars) && ws.stars.length > 0;
+    if (!hasStars && !favorites.has(String(ws.id ?? ''))) continue;
     switchable.push(ws);
   }
   if (switchable.length === 0) return [];
@@ -2716,6 +2766,12 @@ export function createCosmosEngine(opts) {
     patLast: [], // 最近一帧图样连线段快照（inspectPatternLines 观测面，帧重建，{wsId, segIndex, alpha}）
     patDotLast: [], // 最近一帧空槽装饰点快照（inspectPatternDots 观测面，帧重建，{wsId, slotIndex, alpha}）
     filter: null, // 搜索过滤态（2.2）：null = 关闭 | {matched: Set<wsId>, pos: Map<wsId,[x,y,z]>}
+    /* 星座收藏镜像（add-cosmos-constellation-favorites 2.2/D2）：`ws.id` 字符串集合，**引擎级
+       状态**（不进 `E.tuning` / `getTuning()`——不属于平移调参面）；唯一写入口 = 公共面
+       `setFavorites`（`Set|string[]` 归一 + 逐项相等短路；构造期空集，客户端 attach 后首推
+       持久值续接）。消费点只有切换条目判据（`updateOverlay` → `wsSwitcherItemsOf` 第三参）；
+       更新后**不主动失效**——`updateOverlay` 本就每帧跑，条目清单下一帧自然收敛，零新增轮询。 */
+    favorites: new Set(),
     filterRamp: new Map(), // wsId → {from, to, t0}（α 坡道；**引擎级**：跨 rebuild 存活，MUST NOT 挂 ws body）
     filterFitPending: false, // 「过滤排除」flyOut 收尾补 fit 标志（2.5/D3）
     lastFilterFit: null, // 最近一次 camera-fit 参数快照（观测面）
@@ -4567,7 +4623,8 @@ export function createCosmosEngine(opts) {
        右下常驻「回到银河」按钮（触屏）两条等价路径承担；顶部中央位置改由钻取态行容器
        `.cos-wsbar` 占用（step2-add-constellation-switcher D1：两侧 = 可切换星座切换条目槽；
        add-cosmos-template-reassign 返工：星座标牌与两枚方形模板工具整组移到右上角
-       `.cos-badge-cluster`，仅 `data-drilled="true"` 呈现）。标牌、标牌组、工具槽与条目
+       `.cos-badge-cluster`，仅 `data-drilled="true"` 呈现；add-cosmos-constellation-favorites
+       起该组右缘追加收藏按钮槽 `.cos-fav-slot`）。标牌、标牌组、工具槽、收藏槽与条目
        均在此建一次，MUST NOT 逐帧重建（吞 click）。 */
     root.innerHTML =
       '<canvas class="cos-canvas"></canvas>' +
@@ -4585,6 +4642,10 @@ export function createCosmosEngine(opts) {
       '    <div class="cos-badge"></div>' +
       '    <div class="cos-wsbar-tools" data-side="left"></div>' +
       '    <div class="cos-wsbar-tools" data-side="right"></div>' +
+      /* 收藏按钮槽（add-cosmos-constellation-favorites 3.1/D4）：标牌组**右缘收尾**位
+         （模板工具之后）；随组 `data-drilled` 门控（银河态整组 display:none → 零呈现/零命中）。
+         按钮本体由 client React portal 渲染（i18n 与状态镜像都在 React 侧，同模板工具模式）。 */
+      '    <div class="cos-fav-slot"></div>' +
       '  </div>' +
       '  <div class="cos-card"></div>' +
       '  <div class="cos-empty" style="display:none"><b>COSMOS</b></div>' +
@@ -4596,7 +4657,9 @@ export function createCosmosEngine(opts) {
     E.el.overlay = root.querySelector('.cos-overlay');
     E.el.tipCanvas = root.querySelector('.cos-tiplines');
     E.el.wsbar = root.querySelector('.cos-wsbar');
-    /* 右上星座标牌组（add-cosmos-template-reassign 返工 D8）：badge + 两枚方形工具。 */
+    /* 右上星座标牌组（add-cosmos-template-reassign 返工 D8）：badge + 两枚方形工具 + 收藏槽。
+       add-cosmos-constellation-favorites 3.1：`.cos-fav-slot` 位于模板工具之后、组右缘——
+       引擎只建槽、显隐与尺寸令牌，按钮本体由 client portal 渲染（同工具槽模式）。 */
     E.el.badgeCluster = root.querySelector('.cos-badge-cluster');
     /* 顶部模板工具槽（add-cosmos-template-reassign 返工）：client 以 querySelector 取同一
        节点做 React portal 挂载；引擎只负责左右槽位、显隐与尺寸令牌消费。 */
@@ -4604,6 +4667,9 @@ export function createCosmosEngine(opts) {
       left: root.querySelector('.cos-wsbar-tools[data-side="left"]'),
       right: root.querySelector('.cos-wsbar-tools[data-side="right"]')
     };
+    /* 星座收藏按钮槽（add-cosmos-constellation-favorites 3.1）：client 经同一
+       MutationObserver 面取本节点渲染 ★ 按钮（引擎不自绘、不持有收藏态呈现）。 */
+    E.el.favSlot = root.querySelector('.cos-fav-slot');
     E.el.wsbarSides = {
       left: root.querySelector('.cos-wsbar-side[data-side="left"]'),
       right: root.querySelector('.cos-wsbar-side[data-side="right"]')
@@ -5177,12 +5243,14 @@ export function createCosmosEngine(opts) {
     }
     if (E.el.badge.dataset.html !== badge) { E.el.badge.innerHTML = badge; E.el.badge.dataset.html = badge; }
 
-    /* 钻取态可切换星座切换条目（step2-add-constellation-switcher 3.1 / D2/D4/D5）：清单 =
-       有提案/星胚的星座 ∖ 当前（导航铬件——MUST NOT 与搜索过滤求交集；过滤把当前星座排除触发
+    /* 钻取态可切换星座切换条目（step2-add-constellation-switcher 3.1 / D2/D4/D5；
+       add-cosmos-constellation-favorites 2.2：判据并入已收藏集合）：清单 = 有提案/星胚**或
+       已收藏**的星座 ∖ 当前（导航铬件——MUST NOT 与搜索过滤求交集；过滤把当前星座排除触发
        flyOut 时切换器随钻取态整体退场）。显隐与标牌同一阈值（focusMix > 0.4）；银河态 / 阈值
-       下传空清单 → 条目淡出退场（零布局呈现）。内容差分与 `.on` 过渡由 syncWsbarItems 单点维护。 */
+       下传空清单 → 条目淡出退场（零布局呈现）。内容差分与 `.on` 过渡由 syncWsbarItems 单点维护。
+       收藏变更不在此处订阅——`setFavorites` 只换 `E.favorites`，本帧调用自然读到新集合。 */
     syncWsbarItems(uiChromeSafeItemsOf(
-      wsbarDrilled ? wsSwitcherItemsOf(E.scene, E.focusWs.id) : []
+      wsbarDrilled ? wsSwitcherItemsOf(E.scene, E.focusWs.id, E.favorites) : []
     ));
 
     /* 引擎自建 HUD 兜底（polish-cosmos-tip-ui-avoidance D3「回到银河 / 拖拽开关」）：
@@ -6842,6 +6910,50 @@ export function createCosmosEngine(opts) {
         内部单实现 `diveToWsById` 的公共面——钻取态切换条目点击与本方法同源（1300ms 补间、
         钻取态下替换焦点、补间可 retarget）；未命中（星座尚未注入 / 已注销）→ false 不抛错。 */
     diveToWs: diveToWsById,
+    /**
+     * 星座收藏推送（add-cosmos-constellation-favorites 2.2/D2 公共面；仿 `setFilter` 推送模式）：
+     *  - 入参 `Set|string[]`，逐项 `String()` 归一（空串丢弃）；其余形态 / 缺省 → 空集；
+     *  - 与当前 `E.favorites` **逐项相等则短路 no-op**（防 storage 事件重放 / React 重渲染
+     *    反复触达；`false` = 未应用）；
+     *  - 应用后不派生任何呈现动作：`updateOverlay` 每帧从 `E.favorites` 现读，可切换条目下一帧
+     *    自然收敛（差分守卫兜住重渲染成本，零新增轮询）；
+     *  - 引擎已销毁 → `false`（静默，不抛错）；场景未注入也照常记录（收藏与场景无关，
+     *    冷启动先推再 setScene 的顺序安全）。
+     * @param {Set<string>|string[]} ids 已收藏的 ws.id 集合
+     * @returns {boolean} 是否真正应用（false = 短路 / 已销毁）
+     */
+    setFavorites(ids) {
+      if (E.disposed) return false;
+      const next = new Set();
+      if (ids instanceof Set) {
+        for (const id of ids) {
+          const text = String(id ?? '');
+          if (text !== '') next.add(text);
+        }
+      } else if (Array.isArray(ids)) {
+        for (const id of ids) {
+          const text = String(id ?? '');
+          if (text !== '') next.add(text);
+        }
+      }
+      /* 逐项相等短路（集合语义：顺序无关、重复已由 Set 归一）。 */
+      if (next.size === E.favorites.size) {
+        let equal = true;
+        for (const id of next) {
+          if (!E.favorites.has(id)) {
+            equal = false;
+            break;
+          }
+        }
+        if (equal) return false;
+      }
+      E.favorites = next;
+      return true;
+    },
+    /** 收藏观测面（add-cosmos-constellation-favorites 2.2；只读快照供冒烟直测）：排序后的 id 数组。 */
+    inspectFavorites() {
+      return E.disposed ? [] : [...E.favorites].sort();
+    },
     /**
      * 搜索过滤应用（add-cosmos-search-filter 2.2 公共面 / design D1）：
      *  - `matchedIds` 为空集 = **过滤关闭**（回到全显 + 骨架原位置）——但查询无匹配时

@@ -60,7 +60,7 @@
  */
 import { Component, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
-import { fetchScene, subscribeCosmosEvents, bindSession, fetchQueue, queueAction, fetchWorks, pickWorks, updateWork, removeWork, openWork, revealWork } from "./api.mjs";
+import { fetchScene, subscribeCosmosEvents, bindSession, fetchQueue, queueAction, fetchWarp, warpAction, fetchWorks, pickWorks, updateWork, removeWork, openWork, revealWork } from "./api.mjs";
 /* 入口分流纯逻辑（add-cosmos-rightbar-dock）：设置枚举 / 入口计划 / 关页裁决全部收敛在
    dock.mjs（可冒烟直测）；本文件只做宿主席位与 DOM 编排。 */
 import {
@@ -86,10 +86,10 @@ import { createCosmosEngine, ENGINE_CSS, FX_PRIORITY, isEditableTarget, isUiChro
    exists 失谐/kind 净房）的唯一投影纯函数，与引擎渲染核共用同一口径。 */
 import { worksFocusListOf } from "./cosmos/works-face.mjs";
 import { cosmosStore } from "./store.mjs";
-import { COSMOS_SETTINGS_BOUNDS, COSMOS_SETTINGS_DEFAULTS, cosmosLayoutTokensOf, loadCosmosSettings, saveCosmosSettings, settingsFromStorageEvent } from "./settings.mjs";
+import { COSMOS_FAVORITES_MAX, COSMOS_SETTINGS_BOUNDS, COSMOS_SETTINGS_DEFAULTS, cosmosLayoutTokensOf, loadCosmosSettings, saveCosmosSettings, settingsFromStorageEvent } from "./settings.mjs";
 import { actionButtonVisible, buttonsSectionOf, isEmbryoDismissButton } from "./buttons.mjs";
 import { constButtonsSectionOf, normalizeConstButtons } from "./const-buttons.mjs";
-import { findCard, isSelectionSurface, projectPanel, projectQueuePanel, projectSessionPanel, proposalKeyOf, queueEnqueuedKeyOf, queuePendingKeysOf, queueScopeOf, sessionKeyOf, cardIsLinkedOf, crossHoverTargets, hoverSourceAlive, rowIsLinkedOf } from "./panel.mjs";
+import { findCard, isSelectionSurface, projectPanel, projectQueuePanel, projectWarpPanel, projectSessionPanel, proposalKeyOf, queueEnqueuedKeyOf, queuePendingKeysOf, queueScopeOf, warpPendingTargetKeysOf, warpScopeOf, warpTargetKeyOf, sessionKeyOf, cardIsLinkedOf, crossHoverTargets, hoverSourceAlive, rowIsLinkedOf } from "./panel.mjs";
 import { assembleEmbryoMessage, assembleMessage, consumePendingAction, createActionExecutor, createActionGate, createEmbryoActionExecutor, createEmbryoDismissExecutor, createPendingActionStore, draftMatches, explorationTargetOf, isBlankDraft, pendingReadinessOf } from "./actions.mjs";
 import { activitySummaryOf, archiveNoticeOf, archiveRequestFailureNotice, isSessionArchiveOutcome } from "./session-archive.mjs";
 import { FLOAT_ATTACH_WATCH_MS, FLOAT_IMAGE_ACCEPT, FLOAT_IMAGE_TYPES, FLOAT_TEXTAREA_MAX_HEIGHT, FLOAT_TEXTAREA_MIN_HEIGHT, clipboardFilesOf, constellationMessageOf, createAttachFace, createConstellationExecutor, createFloatMarkerStore, floatAttachmentsPendingOf, floatPresentationOf, floatSendPlanOf, floatTextareaHeightOf, floatWatchOutcomeOf, intakeFloatImages, promptFailureTextOf, removeFloatAttachment } from "./constellation-actions.mjs";
@@ -108,7 +108,8 @@ import {
 } from "./settings-seam.mjs";
 import { CONSTELLATION_PROFILE, constButtonDraftOf, constButtonIssue, createButtonSettingsController } from "./button-settings.mjs";
 import { createPathsSettingsController } from "./paths-settings.mjs";
-import { COSMOS_SETTINGS_CSS, CosmosActionsPanel, CosmosGeneralPanel, CosmosNavPanel, CosmosPathsSection, CosmosShortcutsPanel, CosmosSkinPanel, CosmosSettingsSection, SETTINGS_TAB_SLOT } from "./settings-ui.jsx";
+import { createWarpPlanSettingsController, resolveWarpPlanEntries, warpPlanSectionOf } from "./warp-plan.mjs";
+import { COSMOS_SETTINGS_CSS, CosmosActionsPanel, CosmosGeneralPanel, CosmosNavPanel, CosmosPathsSection, CosmosShortcutsPanel, CosmosSkinPanel, CosmosWarpPanel, CosmosSettingsSection, SETTINGS_TAB_SLOT } from "./settings-ui.jsx";
 /* 快捷键纯逻辑（add-cosmos-shortcuts）：键位池/规范形/匹配器/净房/跨域查重单一来源——
    外壳分发（关闭链 + 按钮键 + 浮窗语音）与设置面全部经此模块，不散落硬编码。 */
 import {
@@ -215,6 +216,37 @@ const cosmosWorksFaceStore = createSnapshotStore({
   worksContours: loadCosmosSettings().worksContours,
   worksAscii: loadCosmosSettings().worksAscii
 });
+/**
+ * 星座收藏（add-cosmos-constellation-favorites 4.1/D5）：模块级受控镜像——钻取态 ★ 收藏
+ * 按钮的受控读面（与 `cosmosTemplateNamesStore` 同构，冷启动读持久值）。唯一写者 =
+ * `toggleFavorite`（★ 点击：净房持久化 → 本 store → 引擎 `setFavorites` 热更）与
+ * `storage` 事件桥（他窗写入镜像 + 值变才触达引擎）。快照形状 `{ favorites: string[] }`。
+ */
+const cosmosFavoritesStore = createSnapshotStore({ favorites: loadCosmosSettings().favorites });
+
+/**
+ * 收藏 id 列表读取（快照 → 字符串数组；非数组快照一律空数组，SHALL NOT 抛错）。
+ * @param {{favorites?: unknown}|null|undefined} state `cosmosFavoritesStore` 快照或 storage 投影
+ * @returns {string[]}
+ */
+function favoriteIdsOf(state) {
+  return Array.isArray(state?.favorites) ? state.favorites : [];
+}
+
+/**
+ * 两组收藏 id 逐项相等判定（顺序无关；引擎集合语义等价）——storage 桥「值变才动作」判据，
+ * 与 templateNames/patLineDim 的同名纪律同源，避免同值 storage 事件反复触达引擎。
+ * @param {unknown} a
+ * @param {unknown} b
+ * @returns {boolean}
+ */
+function sameFavoriteIds(a, b) {
+  const left = Array.isArray(a) ? a : [];
+  const right = Array.isArray(b) ? b : [];
+  if (left.length !== right.length) return false;
+  const set = new Set(left);
+  return right.every((id) => set.has(id));
+}
 
 /**
  * 启动方式写入（唯一写者链路）：「配置-Cosmos·通用」face.set → 净房持久化 → 受控镜像。
@@ -1523,10 +1555,12 @@ function createCosmosController(ctx, notifyToast, channels) {
   } catch {
     /* 信号不可达 → 降级 idle/busy 两态 */
   }
-  /* 宿主轻帧订阅（add-cosmos-entry；add-cosmos-action-queue 5.1 按帧类型分流）：
+  /* 宿主轻帧订阅（add-cosmos-entry；add-cosmos-action-queue 5.1 按帧类型分流；
+     two-add-cosmos-proposal-warp 6.4 增 `warp-changed`）：
      - `queue-changed` → **只拉队列快照**（帧体无载荷，收到即 `fetchQueue()` 全量对账；
        MUST NOT 触发 scene 重拉——队列状态翻转频率远高于骨架变更，且批量执行期间帧密集，
        轻帧惯例 = 合帧后拉全量）；
+     - `warp-changed` → **只拉曲率快照**（同上纪律；与 queue-changed 并列、互不混用）；
      - `proposals-changed` / `associations-changed` → 重拉 scene（既有行为逐字不变；
        SSE 重订自愈，dock 正文重挂载亦经 attach 的单次 fetch + 本条长连接）。 */
   disposers.push(subscribeCosmosEvents((frame) => {
@@ -1539,6 +1573,10 @@ function createCosmosController(ctx, notifyToast, channels) {
     }
     if (frame?.type === "queue-changed") {
       refreshQueue();
+      return;
+    }
+    if (frame?.type === "warp-changed") {
+      refreshWarp();
       return;
     }
     refreshSkeleton();
@@ -1816,11 +1854,21 @@ function createCosmosController(ctx, notifyToast, channels) {
         }
       });
       if (mergedScene) engine.setScene(mergedScene, "rebuild");
+      /* 收藏续接（add-cosmos-constellation-favorites 4.3/D2）：引擎构造后**首推一次持久值**——
+         冷启动与引擎重建（皮肤热切换重挂等）同一条路径；引擎/持久面不可达静默跳过（与下方
+         `if (filterQuery.trim()) syncFilter()` 的续接纪律同源：重建非返回、状态不清空）。 */
+      try {
+        engine?.setFavorites?.(loadCosmosSettings().favorites);
+      } catch (error) {
+        console.warn("[dsh-v-cosmos] favorites continuation failed:", error);
+      }
       if (filterQuery.trim()) syncFilter(); // 重挂载保持当前查询（引擎重建非返回：守卫不清空，落位 + 坡道续接）
       refreshSkeleton(); // 挂载即拉一次（SSE 重连/首次打开双保险）
       /* 队列快照与骨架同批拉取（spec「持久化与多窗口广播」：GET /queue 供页面加载对账）；
          之后由 `queue-changed` 轻帧驱动增量对账，MUST NOT 轮询。 */
       refreshQueue();
+      /* 曲率快照同批拉取（two-add-cosmos-proposal-warp 6.4；`warp-changed` 驱动增量）。 */
+      refreshWarp();
       /* 星场作品快照随挂载投递（p2 1.1）：已钻取星座立即应用缓存/在途对账；未钻取清空。 */
       syncWorksScope();
       if (open && visible) engine.start();
@@ -2439,32 +2487,46 @@ function SessionPanel({ t, model, open, selectedKey, drill, waiting, onToggle, o
 const QUEUE_CLEAR_CONFIRM_MS = 3000;
 
 /**
- * 提案面板左邻的**自动队列**窄面板（同宽、同视觉语言：风格 D 暖金描边 + 角标）。
+ * 提案面板左邻的**双页签队列面板**（two-add-cosmos-proposal-warp 6.2/6.3 / spec
+ * `cosmos-action-queue`「队列呈现」改写 + `cosmos-proposal-warp`「曲率队列呈现」）。
  *
  * 呈现契约：
- *  - **零布局**：`model.visible !== true`（空队列）→ `return null`——无占位、无空态行
- *    （spec「空队列零布局」：页面 MUST NOT 出现任何占位布局变化）；
- *  - 作用域（显式设计决策，见 panel.mjs `queueScopeOf`）：**钻取态恒显示钻取星座**；
- *    **银河态随选中提案所属星座**显示（队列面板是动作条配套面：无选中即无动作目标，
- *    也就没有该显示的队列）。组件只消费投影，不自行推导作用域（数据面单点在父组件）；
- *  - 头部：`自动队列` + 在途计数（`counts.active` = queued+launching+executing）+
- *    执行指示点（`data-indicator`：running = 呼吸点 / waiting = 琥珀，复用会话行
- *    waiting 视觉语言）+ `⏸/▶`（暂停/继续，图标随态）+ `✕`（清空）；
- *  - 清空**一次确认**（spec「清空 SHALL 经一次确认」）：面板内两击确认（armed 态）——
- *    首击按钮提亮 + 文案变「确认」，约 3s 无操作回弹；**不用 `window.confirm`**——整页
- *    覆盖层内的原生模态会夺焦点并冻结引擎渲染循环，且与既有星胚移除的两击确认语言
- *    不一致。清空只清 queued 与终态残留、executing 保留（由服务端保证，前端不重复判定）；
- *  - 条目行：按钮名 + 提案名（溢出省略）+ 状态徽标（`data-badge`）；hover / 键盘聚焦
- *    浮出 `▲`/`▼`/`✕`（非 queued 或边界禁用 + title 说明，与操作矩阵同口径）；
- *    `executing`（含等待决策）条目**全部禁用**（v1 无中止入口，spec「条目操作矩阵」）；
- *  - 失败 / 跳过残留行显示诊断摘要（`failedDetail`），可移出、可清空；
- *  - 条目 hover → 父组件接 cross-hover（与正式提案卡同款联动，spec「队列条目联动
- *    提案卡」）；行容器另按受体集呈现 `>` 标记（复用 `cardIsLinkedOf` 受体判定）。
+ *  - **零布局**：脉冲与曲率**双队列皆空** → `return null`——无占位、无空态行
+ *    （spec「空队列零布局」）；
+ *  - 页签行「脉冲 / 曲率」（各带计数徽标）：页签仅在对 应队列非空时呈现；当前页签清空
+ *    自动切换到另一非空页签；选中态为纯客户端本地 UI 态（MUST NOT 影响服务端权威状态）；
+ *  - 作用域（显式设计决策，见 panel.mjs `queueScopeOf` / `warpScopeOf`）：**钻取态恒显示
+ *    钻取星座**；**银河态随选中提案所属星座**显示（面板是动作条配套面）；组件只消费
+ *    投影，不自行推导作用域；
+ *  - **脉冲页签**：既有全部呈现语义逐字保留（标题 + 在途计数 + 指示点 + ⏸/▶ + ✕ 清空
+ *    + 条目行 ▲/▼/✕ 与失败诊断）；
+ *  - **曲率页签**：头部 = 条目计数 + 指示点（executing 呼吸 / 等待决策琥珀）+ `⏸/▶`
+ *    （**无清空钮、无排序钮**——用户裁决 2026-11-23）；条目行 = 动作条名 + 目标名
+ *    （溢出省略）+ 状态徽标，`grayed` 整行降饱和（CSS `data-state=grayed`），hover 浮出
+ *    单条 `✕`（仅 `grayed | ready | failed | skipped`；锁定态禁用 + title），`ready` 的
+ *    「等待会话空闲」子态经徽标呈现；条目 hover 联动目标卡/星体（cross-hover）。
  */
-function QueuePanel({ t, model, drilled, crossHover, onPause, onClear, onReorder, onRemove, onHoverEntry }) {
+function QueuePanel({
+  t,
+  model,
+  warpModel,
+  drilled,
+  crossHover,
+  onPause,
+  onClear,
+  onReorder,
+  onRemove,
+  onHoverEntry,
+  onWarpPause,
+  onWarpRemove,
+  onHoverWarpEntry
+}) {
   const [clearArmed, setClearArmed] = useState(false);
   const clearTimerRef = useRef(0);
-  const modelVisible = model !== null && model !== undefined && model.visible === true;
+  const [activeTab, setActiveTab] = useState(null);
+  const pulseVisible = model !== null && model !== undefined && model.visible === true;
+  const warpVisible = warpModel !== null && warpModel !== undefined && warpModel.visible === true;
+  const modelVisible = pulseVisible || warpVisible;
   /** 确认态复位（幂等；同时清掉回弹定时器）。 */
   const disarmClear = () => {
     if (clearTimerRef.current) {
@@ -2481,11 +2543,27 @@ function QueuePanel({ t, model, drilled, crossHover, onPause, onClear, onReorder
   /* 队列离屏（全部移出 / 清空 / 作用域切换）→ 确认态复位：避免下次出现时已处于
      armed（两击确认的语义前提是「这一眼看到的两击」，spec「误触清空不可恢复」）。 */
   useEffect(() => {
-    if (!modelVisible) disarmClear();
-  }, [modelVisible]);
+    if (!pulseVisible) disarmClear();
+  }, [pulseVisible]);
+  /* 页签选择合法化：当前页签消失 → 自动切到另一非空页签；双空 → 复位（组件随即隐藏）。 */
+  useEffect(() => {
+    if (!pulseVisible && !warpVisible) {
+      setActiveTab((current) => (current === null ? current : null));
+      return;
+    }
+    setActiveTab((current) => {
+      if (current === "pulse" && pulseVisible) return current;
+      if (current === "warp" && warpVisible) return current;
+      const next = pulseVisible ? "pulse" : "warp";
+      return current === next ? current : next;
+    });
+  }, [pulseVisible, warpVisible]);
   /* 空队列整面板不渲染（零布局）；hooks 已在 return 之前无条件调用完毕。 */
   if (!modelVisible) return null;
-  const pauseTitle = model.paused
+  const tab = activeTab === "warp" && warpVisible ? "warp" : activeTab === "pulse" && pulseVisible ? "pulse" : (pulseVisible ? "pulse" : "warp");
+  const pulse = pulseVisible ? model : null;
+  const warp = warpVisible ? warpModel : null;
+  const pauseTitle = pulse?.paused
     ? t("cosmos.queue.resume", "继续队列")
     : t("cosmos.queue.pause", "暂停队列");
   const clearTitle = clearArmed
@@ -2494,7 +2572,7 @@ function QueuePanel({ t, model, drilled, crossHover, onPause, onClear, onReorder
   const handleClear = () => {
     if (clearArmed) {
       disarmClear();
-      onClear?.(model.wsId);
+      onClear?.(pulse.wsId);
       return;
     }
     setClearArmed(true);
@@ -2504,113 +2582,228 @@ function QueuePanel({ t, model, drilled, crossHover, onPause, onClear, onReorder
       setClearArmed(false);
     }, QUEUE_CLEAR_CONFIRM_MS);
   };
+  const warpPauseTitle = warp?.paused
+    ? t("cosmos.warp.resume", "继续曲率队列")
+    : t("cosmos.warp.pause", "暂停曲率队列");
   return (
     <aside
       className="dsh-cosmos-queue"
       data-drill={drilled ? "true" : undefined}
-      data-paused={model.paused ? "true" : undefined}
+      data-paused={((tab === "pulse" ? pulse?.paused : warp?.paused) === true) ? "true" : undefined}
+      data-tab={tab}
       data-plugin-anchor="dsh-v-cosmos:queue"
-      aria-label={t("cosmos.queue.aria", "自动队列")}
+      aria-label={t("cosmos.queue.aria", "队列面板")}
     >
-      <div className="dsh-cosmos-queue-head">
-        <span className="dsh-cosmos-queue-title">{t("cosmos.queue.title", "自动队列")}</span>
-        <span
-          className="dsh-cosmos-queue-count"
-          title={t("cosmos.queue.countTitle", "在途条目数（等待 + 执行中）")}
-          aria-hidden="true"
-        >{model.counts.active}</span>
-        {model.indicator ? (
-          <span
-            className="dsh-cosmos-queue-dot"
-            data-indicator={model.indicator}
-            title={model.indicator === "waiting"
-              ? t("cosmos.queue.indicatorWaiting", "有会话等待决策")
-              : t("cosmos.queue.indicatorRunning", "队列执行中")}
-            aria-hidden="true"
-          />
-        ) : null}
-        {model.paused ? (
-          <span className="dsh-cosmos-queue-paused">{t("cosmos.queue.paused", "已暂停")}</span>
-        ) : null}
-        {/* 恒自动发送标注（spec「队列执行恒自动发送」：条目呈现标注；不占行内宽度）。 */}
-        <span
-          className="dsh-cosmos-queue-auto"
-          title={t("cosmos.queue.autoTitle", "队列执行恒为自动发送：不打开会话、不写草稿")}
-        >{t("cosmos.queue.auto", "自动发送")}</span>
-        <button
-          type="button"
-          className="dsh-cosmos-queue-pause"
-          data-cosmos-queue-pause="true"
-          aria-label={pauseTitle}
-          title={pauseTitle}
-          onClick={() => onPause?.(model.wsId)}
-        >{model.paused ? "▶" : "⏸"}</button>
-        <button
-          type="button"
-          className="dsh-cosmos-queue-clear"
-          data-cosmos-queue-clear="true"
-          data-armed={clearArmed ? "true" : undefined}
-          aria-label={clearTitle}
-          title={clearTitle}
-          onClick={handleClear}
-        >{clearArmed ? t("cosmos.queue.confirm", "确认") : "✕"}</button>
-      </div>
-      <div className="dsh-cosmos-queue-list">
-        {model.rows.map((row) => (
-          <div
-            className="dsh-cosmos-queue-row"
-            key={row.rowKey}
-            data-state={row.state}
-            data-badge={row.badgeKey}
-            data-locked={row.locked ? "true" : undefined}
-            data-cosmos-queue={row.id}
-            data-cosmos-ws={row.wsId}
-            data-linked={row.proposalId && cardIsLinkedOf(crossHover, { wsId: row.wsId, id: row.proposalId }) ? "true" : undefined}
-            title={row.rowTitle}
-            onMouseEnter={() => onHoverEntry?.(row, true)}
-            onMouseLeave={() => onHoverEntry?.(row, false)}
+      <div className="dsh-cosmos-queue-tabs" role="tablist" aria-label={t("cosmos.queue.tabsAria", "队列页签")}>
+        {pulseVisible ? (
+          <button
+            type="button"
+            role="tab"
+            className="dsh-cosmos-queue-tab"
+            data-cosmos-queue-tab="pulse"
+            aria-selected={tab === "pulse" ? "true" : "false"}
+            onClick={() => setActiveTab("pulse")}
           >
-            <span className="dsh-cosmos-queue-main">
-              <span className="dsh-cosmos-queue-name">{row.buttonName || row.proposalId}</span>
-              <span className="dsh-cosmos-queue-proposal">{row.proposalId}</span>
-              {/* 失败 / 跳过残留的可见诊断行（spec「留下可见记录」）：无诊断时零布局。 */}
-              {row.failedDetail ? (
-                <span className="dsh-cosmos-queue-detail">{row.failedDetail}</span>
-              ) : null}
-            </span>
-            <span className="dsh-cosmos-queue-badge" data-badge={row.badgeKey}>{row.badgeLabel}</span>
-            <span className="dsh-cosmos-queue-ops">
-              <button
-                type="button"
-                className="dsh-cosmos-queue-op"
-                data-cosmos-queue-op="up"
-                aria-label={t("cosmos.queue.moveUp", "前移")}
-                title={row.orderTitle}
-                disabled={!row.canMoveUp}
-                onClick={() => onReorder?.(row, "up")}
-              >▲</button>
-              <button
-                type="button"
-                className="dsh-cosmos-queue-op"
-                data-cosmos-queue-op="down"
-                aria-label={t("cosmos.queue.moveDown", "后移")}
-                title={row.orderTitle}
-                disabled={!row.canMoveDown}
-                onClick={() => onReorder?.(row, "down")}
-              >▼</button>
-              <button
-                type="button"
-                className="dsh-cosmos-queue-op"
-                data-cosmos-queue-op="remove"
-                aria-label={t("cosmos.queue.remove", "移出队列")}
-                title={row.removeTitle}
-                disabled={!row.canRemove}
-                onClick={() => onRemove?.(row)}
-              >✕</button>
-            </span>
-          </div>
-        ))}
+            {t("cosmos.queue.title", "脉冲队列")}
+            <span className="dsh-cosmos-queue-tab-count">{pulse.counts.active}</span>
+          </button>
+        ) : null}
+        {warpVisible ? (
+          <button
+            type="button"
+            role="tab"
+            className="dsh-cosmos-queue-tab"
+            data-cosmos-queue-tab="warp"
+            aria-selected={tab === "warp" ? "true" : "false"}
+            onClick={() => setActiveTab("warp")}
+          >
+            {t("cosmos.warp.title", "曲率队列")}
+            <span className="dsh-cosmos-queue-tab-count">{warp.counts.total}</span>
+          </button>
+        ) : null}
       </div>
+      {tab === "pulse" && pulse ? (
+        <>
+          <div className="dsh-cosmos-queue-head">
+            <span className="dsh-cosmos-queue-title">{t("cosmos.queue.title", "脉冲队列")}</span>
+            <span
+              className="dsh-cosmos-queue-count"
+              title={t("cosmos.queue.countTitle", "在途条目数（等待 + 执行中）")}
+              aria-hidden="true"
+            >{pulse.counts.active}</span>
+            {pulse.indicator ? (
+              <span
+                className="dsh-cosmos-queue-dot"
+                data-indicator={pulse.indicator}
+                title={pulse.indicator === "waiting"
+                  ? t("cosmos.queue.indicatorWaiting", "有会话等待决策")
+                  : t("cosmos.queue.indicatorRunning", "队列执行中")}
+                aria-hidden="true"
+              />
+            ) : null}
+            {pulse.paused ? (
+              <span className="dsh-cosmos-queue-paused">{t("cosmos.queue.paused", "已暂停")}</span>
+            ) : null}
+            {/* 恒自动发送标注（spec「队列执行恒自动发送」：条目呈现标注；不占行内宽度）。 */}
+            <span
+              className="dsh-cosmos-queue-auto"
+              title={t("cosmos.queue.autoTitle", "队列执行恒为自动发送：不打开会话、不写草稿")}
+            >{t("cosmos.queue.auto", "自动发送")}</span>
+            <button
+              type="button"
+              className="dsh-cosmos-queue-pause"
+              data-cosmos-queue-pause="true"
+              aria-label={pauseTitle}
+              title={pauseTitle}
+              onClick={() => onPause?.(pulse.wsId)}
+            >{pulse.paused ? "▶" : "⏸"}</button>
+            <button
+              type="button"
+              className="dsh-cosmos-queue-clear"
+              data-cosmos-queue-clear="true"
+              data-armed={clearArmed ? "true" : undefined}
+              aria-label={clearTitle}
+              title={clearTitle}
+              onClick={handleClear}
+            >{clearArmed ? t("cosmos.queue.confirm", "确认") : "✕"}</button>
+          </div>
+          <div className="dsh-cosmos-queue-list">
+            {pulse.rows.map((row) => (
+              <div
+                className="dsh-cosmos-queue-row"
+                key={row.rowKey}
+                data-state={row.state}
+                data-badge={row.badgeKey}
+                data-locked={row.locked ? "true" : undefined}
+                data-cosmos-queue={row.id}
+                data-cosmos-ws={row.wsId}
+                data-linked={row.proposalId && cardIsLinkedOf(crossHover, { wsId: row.wsId, id: row.proposalId }) ? "true" : undefined}
+                title={row.rowTitle}
+                onMouseEnter={() => onHoverEntry?.(row, true)}
+                onMouseLeave={() => onHoverEntry?.(row, false)}
+              >
+                <span className="dsh-cosmos-queue-main">
+                  <span className="dsh-cosmos-queue-name">{row.buttonName || row.proposalId}</span>
+                  <span className="dsh-cosmos-queue-proposal">{row.proposalId}</span>
+                  {/* 失败 / 跳过残留的可见诊断行（spec「留下可见记录」）：无诊断时零布局。 */}
+                  {row.failedDetail ? (
+                    <span className="dsh-cosmos-queue-detail">{row.failedDetail}</span>
+                  ) : null}
+                </span>
+                <span className="dsh-cosmos-queue-badge" data-badge={row.badgeKey}>{row.badgeLabel}</span>
+                <span className="dsh-cosmos-queue-ops">
+                  <button
+                    type="button"
+                    className="dsh-cosmos-queue-op"
+                    data-cosmos-queue-op="up"
+                    aria-label={t("cosmos.queue.moveUp", "前移")}
+                    title={row.orderTitle}
+                    disabled={!row.canMoveUp}
+                    onClick={() => onReorder?.(row, "up")}
+                  >▲</button>
+                  <button
+                    type="button"
+                    className="dsh-cosmos-queue-op"
+                    data-cosmos-queue-op="down"
+                    aria-label={t("cosmos.queue.moveDown", "后移")}
+                    title={row.orderTitle}
+                    disabled={!row.canMoveDown}
+                    onClick={() => onReorder?.(row, "down")}
+                  >▼</button>
+                  <button
+                    type="button"
+                    className="dsh-cosmos-queue-op"
+                    data-cosmos-queue-op="remove"
+                    aria-label={t("cosmos.queue.remove", "移出队列")}
+                    title={row.removeTitle}
+                    disabled={!row.canRemove}
+                    onClick={() => onRemove?.(row)}
+                  >✕</button>
+                </span>
+              </div>
+            ))}
+          </div>
+        </>
+      ) : null}
+      {tab === "warp" && warp ? (
+        <>
+          <div className="dsh-cosmos-queue-head" data-warp-head="true">
+            <span className="dsh-cosmos-queue-title">{t("cosmos.warp.title", "曲率队列")}</span>
+            <span
+              className="dsh-cosmos-queue-count"
+              title={t("cosmos.warp.countTitle", "曲率条目数")}
+              aria-hidden="true"
+            >{warp.counts.total}</span>
+            {warp.indicator ? (
+              <span
+                className="dsh-cosmos-queue-dot"
+                data-indicator={warp.indicator}
+                title={warp.indicator === "waiting"
+                  ? t("cosmos.warp.indicatorWaiting", "有会话等待决策")
+                  : t("cosmos.warp.indicatorRunning", "曲率执行中")}
+                aria-hidden="true"
+              />
+            ) : null}
+            {warp.paused ? (
+              <span className="dsh-cosmos-queue-paused">{t("cosmos.warp.paused", "已暂停")}</span>
+            ) : null}
+            <span className="dsh-cosmos-queue-auto" aria-hidden="true" />
+            {/* 曲率页签**无清空钮、无排序钮**（用户裁决 2026-11-23）。 */}
+            <button
+              type="button"
+              className="dsh-cosmos-queue-pause"
+              data-cosmos-warp-pause="true"
+              aria-label={warpPauseTitle}
+              title={warpPauseTitle}
+              onClick={() => onWarpPause?.(warp.wsId)}
+            >{warp.paused ? "▶" : "⏸"}</button>
+          </div>
+          <div className="dsh-cosmos-queue-list">
+            {warp.rows.map((row) => {
+              const linked = row.targetKind === "embryo"
+                ? cardIsLinkedOf(crossHover, { wsId: row.wsId, isEmbryo: true, slugs: row.anchorSlugs })
+                : cardIsLinkedOf(crossHover, { wsId: row.wsId, id: row.targetKey });
+              return (
+                <div
+                  className="dsh-cosmos-queue-row"
+                  key={row.rowKey}
+                  data-state={row.state}
+                  data-badge={row.badgeKey}
+                  data-locked={row.locked ? "true" : undefined}
+                  data-cosmos-warp={row.id}
+                  data-cosmos-ws={row.wsId}
+                  data-cosmos-warp-target={row.targetKey}
+                  data-linked={linked ? "true" : undefined}
+                  title={row.rowTitle}
+                  onMouseEnter={() => onHoverWarpEntry?.(row, true)}
+                  onMouseLeave={() => onHoverWarpEntry?.(row, false)}
+                >
+                  <span className="dsh-cosmos-queue-main">
+                    <span className="dsh-cosmos-queue-name">{row.buttonName || row.targetLabel}</span>
+                    <span className="dsh-cosmos-queue-proposal">{row.targetLabel}</span>
+                    {/* 失败 / 跳过残留的可见诊断行（spec「留下可见记录」）：无诊断时零布局。 */}
+                    {row.failedDetail ? (
+                      <span className="dsh-cosmos-queue-detail">{row.failedDetail}</span>
+                    ) : null}
+                  </span>
+                  <span className="dsh-cosmos-queue-badge" data-badge={row.badgeKey}>{row.badgeLabel}</span>
+                  <span className="dsh-cosmos-queue-ops">
+                    <button
+                      type="button"
+                      className="dsh-cosmos-queue-op"
+                      data-cosmos-warp-op="remove"
+                      aria-label={t("cosmos.warp.remove", "移出曲率队列")}
+                      title={row.removeTitle}
+                      disabled={!row.canRemove}
+                      onClick={() => onWarpRemove?.(row)}
+                    >✕</button>
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        </>
+      ) : null}
     </aside>
   );
 }
@@ -2665,6 +2858,12 @@ const WS_EDIT_ICON_SVG =
   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20h4L19 9l-4-4L4 16v4z"/><path d="M13.5 6.5l4 4"/></svg>';
 const WS_DICE_ICON_SVG =
   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="3"/><circle cx="8.6" cy="8.6" r="1.25" fill="currentColor" stroke="none"/><circle cx="15.4" cy="8.6" r="1.25" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.25" fill="currentColor" stroke="none"/><circle cx="8.6" cy="15.4" r="1.25" fill="currentColor" stroke="none"/><circle cx="15.4" cy="15.4" r="1.25" fill="currentColor" stroke="none"/></svg>';
+
+/* 收藏按钮图标（add-cosmos-constellation-favorites 4.2/D4）：五角星**单形态**路径——两态视觉
+   完全由引擎 CSS 按 `[data-on]` 切换（空心 = fill:none 描边 + 低 α / 实心 = currentColor 填充
+   + 光晕），图标本体不参与状态判定（换态零 DOM 重写）。取色 currentColor（皮肤令牌族跟随）。 */
+const FAV_STAR_ICON_SVG =
+  '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.4l2.62 5.3 5.85.85-4.23 4.13 1 5.83-5.24-2.75-5.24 2.75 1-5.83L3.53 9.55l5.85-.85z"/></svg>';
 
 /* ------------------------------------------------------------------ *
  * 星座模板指定选择器（add-cosmos-template-reassign 3.2/D5）
@@ -2816,7 +3015,7 @@ function TemplatePicker({ t, wsName, currentId, query, onQuery, onPick, onReset,
  * 滚轮缩放由外层（页面）经 ref 绑定非被动监听转发 `engine.zoomBy`（动作条非滚动区；
  * 携带指针原始坐标 → 引擎侧换算后参与聚焦收敛，缩放按钮仍无坐标、保持屏心）。
  */
-function ActionBar({ t, buttons, enabled, onRun, barRef, stateOf, onEnqueue, enqueueStateOf }) {
+function ActionBar({ t, buttons, enabled, onRun, barRef, stateOf, onEnqueue, enqueueStateOf, warpState, onWarpAttach }) {
   if (!Array.isArray(buttons) || buttons.length === 0) return null;
   /* 成对布局（按用户反馈改版）：每个动作按钮右侧配一个**完全同尺寸**的「＋ 入队」按钮，
      一对占一个网格单元；每行最多 4 对（= 原 8 列的满宽），动作条最大宽度不变。 */
@@ -2839,7 +3038,7 @@ function ActionBar({ t, buttons, enabled, onRun, barRef, stateOf, onEnqueue, enq
            「请求在途」两条（重复入队拒绝的前端禁用先行，服务端 400 兜底）。 */
         const enqueue = typeof enqueueStateOf === "function" ? enqueueStateOf(button) : null;
         const enqueueDisabled = disabled || enqueue?.disabled === true;
-        const enqueueTitle = enqueue?.title || t("cosmos.actions.enqueue", "加入自动队列");
+        const enqueueTitle = enqueue?.title || t("cosmos.actions.enqueue", "加入脉冲队列");
         return (
           /* 成对容器（add-cosmos-action-queue 5.3 改版）：主按钮与「＋ 入队」各占一半
              （网格 1fr 1fr → 两钮完全同宽同高），整对占原动作条一个列宽×2；不独立换行，
@@ -2877,6 +3076,25 @@ function ActionBar({ t, buttons, enabled, onRun, barRef, stateOf, onEnqueue, enq
           </span>
         );
       })}
+      {/* 曲率按钮（two-add-cosmos-proposal-warp 6.1）：动作条容器右侧**独立一枚**
+          （成对布局之外，绝对定位于条右缘外）；附着不是执行——零导航、不触碰动作条
+          点击冷却门。门控：无选中 / 计划为空 / 计划无适用条目 / 已托管 / 请求在途。 */}
+      <button
+        type="button"
+        className="dsh-cosmos-warp"
+        data-cosmos-warp="true"
+        disabled={warpState?.disabled === true}
+        title={warpState?.title || t("cosmos.warp.attach", "曲率：附着曲率计划并自动接力推进")}
+        aria-label={warpState?.title || t("cosmos.warp.attach", "曲率：附着曲率计划并自动接力推进")}
+        onClick={(event) => {
+          event.stopPropagation();
+          event.preventDefault();
+          if (warpState?.disabled === true) return;
+          onWarpAttach?.();
+        }}
+      >
+        <span className="dsh-cosmos-action-label">{t("cosmos.warp.button", "曲率")}</span>
+      </button>
     </div>
   );
 }
@@ -4532,6 +4750,10 @@ function setSessionPanelOpen(value) {
 
 const cosmosQueueStore = createSnapshotStore({ status: "idle", revisedAt: 0, queues: {} });
 
+/** 曲率计划只读镜像（two-add-cosmos-proposal-warp 6.1）：曲率按钮门控（计划为空禁用）
+    与设置页保存后的热更数据面；由 apply 作用域订阅设置快照后发布（不与草稿混用）。 */
+const cosmosWarpPlanStore = createSnapshotStore({ bars: [] });
+
 /** 在途快照拉取序号（乱序响应丢弃：只认最后一次 `refreshQueue` 的结果）。 */
 let queueFetchSeq = 0;
 
@@ -4586,6 +4808,76 @@ async function refreshQueue() {
     revisedAt: current.revisedAt,
     queues: current.queues,
     error: String(result?.error || "queue fetch failed")
+  });
+}
+
+/* ------------------------------------------------------------------ *
+ * 曲率队列投影 store（two-add-cosmos-proposal-warp 6.4 / spec「持久化与多窗口广播」）
+ *
+ * 曲率权威在插件服务端（门控接力引擎 + JSON 持久化 + SSE 轻帧）；浏览器端**只做投影**：
+ *  - 快照形状 `{status, revisedAt, warps, error?}`——`warps` 原样透传服务端
+ *    `GET /api/dsh-v-cosmos/warp` 的映射（每星座 `{paused, pausedAt, counts, entries}`）；
+ *  - 写入唯一链路 = `refreshWarp()`：页面加载 / SSE `warp-changed` 轻帧 / 操作成功后主动
+ *    对账；MUST NOT 轮询；
+ *  - 拉取失败保留旧快照并记录 `error`（面板继续呈现上一份有效投影），绝不抛错；
+ *  - 快照内容等价 → 不 set（稳定引用防线，与 queue store 同款）。
+ * ------------------------------------------------------------------ */
+
+const cosmosWarpStore = createSnapshotStore({ status: "idle", revisedAt: 0, warps: {} });
+
+/** 在途快照拉取序号（乱序响应丢弃：只认最后一次 `refreshWarp` 的结果）。 */
+let warpFetchSeq = 0;
+
+/** 服务端全量快照 → 本层快照形状（`warps` 防御归一；缺省空映射）。 */
+function warpSnapshotOf(warp) {
+  const warps = warp?.warps !== null
+    && typeof warp?.warps === "object"
+    && !Array.isArray(warp.warps)
+    ? warp.warps
+    : {};
+  return { status: "ready", revisedAt: Number(warp?.revisedAt) || 0, warps };
+}
+
+/** 快照内容等价判定（稳定引用防线：等价 → 不 set，订阅者零重渲染）。 */
+function sameWarpSnapshot(a, b) {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  if (a.status !== b.status || a.revisedAt !== b.revisedAt || (a.error ?? null) !== (b.error ?? null)) return false;
+  try {
+    return JSON.stringify(a.warps ?? {}) === JSON.stringify(b.warps ?? {});
+  } catch {
+    return false;
+  }
+}
+
+/** 发布快照（等价短路；返回发布后的当前快照引用）。 */
+function publishWarpSnapshot(next) {
+  const current = cosmosWarpStore.getSnapshot();
+  if (sameWarpSnapshot(current, next)) return current;
+  cosmosWarpStore.set(next);
+  return next;
+}
+
+/**
+ * 曲率快照刷新（唯一写者；幂等、容错、不抛）。
+ * @returns {Promise<object>} 发布后的快照（失败时 = 保留旧投影 + `error` 记录）
+ */
+async function refreshWarp() {
+  const seq = ++warpFetchSeq;
+  let result;
+  try {
+    result = await fetchWarp();
+  } catch (error) {
+    result = { ok: false, error: String(error?.message || error) };
+  }
+  if (seq !== warpFetchSeq) return cosmosWarpStore.getSnapshot(); // 乱序响应：丢弃
+  if (result?.ok === true) return publishWarpSnapshot(warpSnapshotOf(result.warp));
+  const current = cosmosWarpStore.getSnapshot();
+  return publishWarpSnapshot({
+    status: current.status === "ready" ? "ready" : "error",
+    revisedAt: current.revisedAt,
+    warps: current.warps,
+    error: String(result?.error || "warp fetch failed")
   });
 }
 
@@ -4982,39 +5274,103 @@ function CosmosSurface(props) {
     return list.filter((button) => actionButtonVisible(button, selectedCard));
   }, [buttons, selectedCard]);
 
-  /* ── 动作执行队列（add-cosmos-action-queue 5.1–5.4 / spec cosmos-action-queue
-     「队列呈现（面板与配套入队钮）」「持久化与多窗口广播」）──
-     数据源 = 模块级 `cosmosQueueStore`（服务端全量快照的只读投影；浏览器 MUST NOT 持有
-     权威队列状态）；写入唯一链路 = `refreshQueue()`（页面挂载 / SSE `queue-changed`
-     轻帧 / 队列操作成功后对账）。
-     **作用域（显式设计决策，见 panel.mjs `queueScopeOf`）**：`drillWsId ?? selectedWsId`
-     ——钻取态恒显示钻取星座的队列；银河态随**选中提案所属星座**显示（队列面板是动作条
-     的配套面，无选中即无动作目标）；两者皆无或该星座队列为空 → 不渲染（零布局）。 */
+  /* ── 动作执行队列 + 曲率队列（add-cosmos-action-queue 5.1–5.4 / two-add-cosmos-proposal-warp
+     6.2–6.4）──
+     数据源 = 模块级 `cosmosQueueStore` / `cosmosWarpStore`（服务端全量快照的只读投影；
+     浏览器 MUST NOT 持有权威状态）；写入唯一链路 = `refreshQueue()` / `refreshWarp()`
+     （页面挂载 / 对应轻帧 / 操作成功后对账）。
+     **作用域（显式设计决策，见 panel.mjs `queueScopeOf` / `warpScopeOf`）**：
+     `drillWsId ?? selectedWsId` —— 钻取态恒显示钻取星座；银河态随**选中提案所属星座**
+     显示（面板是动作条的配套面，无选中即无动作目标）；两者皆无或**双队列皆空** →
+     整面板不渲染（零布局）。 */
   const queueSnapshot = useSyncExternalStore(cosmosQueueStore.subscribe, cosmosQueueStore.getSnapshot);
-  const queueScope = useMemo(
-    () => queueScopeOf({
-      drillWsId: drill?.wsId ?? null,
-      selectedWsId: selectedCard?.wsId ?? null,
-      queues: queueSnapshot?.queues ?? {}
-    }),
-    [queueSnapshot, drill?.wsId, selectedCard?.wsId]
-  );
+  const warpSnapshot = useSyncExternalStore(cosmosWarpStore.subscribe, cosmosWarpStore.getSnapshot);
+  const warpPlanSnapshot = useSyncExternalStore(cosmosWarpPlanStore.subscribe, cosmosWarpPlanStore.getSnapshot);
+  const panelWsId = useMemo(() => {
+    const wsId = drill?.wsId ?? selectedCard?.wsId ?? null;
+    if (!wsId) return null;
+    const pulseEntries = Array.isArray(queueSnapshot?.queues?.[wsId]?.entries)
+      ? queueSnapshot.queues[wsId].entries.length
+      : 0;
+    const warpEntries = Array.isArray(warpSnapshot?.warps?.[wsId]?.entries)
+      ? warpSnapshot.warps[wsId].entries.length
+      : 0;
+    return pulseEntries + warpEntries > 0 ? wsId : null;
+  }, [queueSnapshot, warpSnapshot, drill?.wsId, selectedCard?.wsId]);
   const queueModel = useMemo(
-    () => (queueScope === null
+    () => (panelWsId === null
       ? null
       : projectQueuePanel({
-        queue: queueSnapshot?.queues?.[queueScope] ?? null,
-        wsId: queueScope,
+        queue: queueSnapshot?.queues?.[panelWsId] ?? null,
+        wsId: panelWsId,
         now: Date.now()
       })),
-    [queueSnapshot, queueScope]
+    [queueSnapshot, panelWsId]
+  );
+  const warpModel = useMemo(
+    () => (panelWsId === null
+      ? null
+      : projectWarpPanel({
+        warp: warpSnapshot?.warps?.[panelWsId] ?? null,
+        wsId: panelWsId,
+        now: Date.now()
+      })),
+    [warpSnapshot, panelWsId]
   );
   /* 「已在队列中」键集（入队钮禁用判定；仅 queued 命中——终态残留不构成重复）。 */
   const queuePendingKeys = useMemo(() => queuePendingKeysOf(queueSnapshot), [queueSnapshot]);
+  /* 「已托管」目标键集（曲率按钮禁用判定；非终态条目命中——failed/skipped 残留不构成重复）。 */
+  const warpPendingKeys = useMemo(() => warpPendingTargetKeysOf(warpSnapshot), [warpSnapshot]);
   /* 入队请求在途门（按 wsId/proposalId/buttonName 三元组）：ref = 同步权威判定（防同一帧
      连点双发），state 副本 = 声明式禁用/重渲染触发。 */
   const enqueueBusyRef = useRef(new Set());
   const [enqueueBusy, setEnqueueBusy] = useState({});
+  /* 曲率附着请求在途门（单飞：同一时刻只允许一次 attach；成功后快照对账收口）。 */
+  const warpAttachBusyRef = useRef(false);
+  const [warpAttachBusy, setWarpAttachBusy] = useState(false);
+
+  /* 曲率按钮目标（spec「计划附着与曲率按钮」）：提案卡 targetKey = 提案名；星胚合并卡
+     targetKey = 组键（卡 key 的第三段，sessionId 或 solo slug），并快照 slug 清单与探索会话。 */
+  const warpTarget = useMemo(() => {
+    if (!selectedCard) return null;
+    if (selectedCard.isEmbryo === true) {
+      const parts = String(selectedCard.key ?? "").split("\u0000");
+      return {
+        targetKind: "embryo",
+        targetKey: parts[2] ?? selectedCard.id,
+        anchorSlugs: Array.isArray(selectedCard.slugs) ? selectedCard.slugs : [],
+        explorerSessionId: typeof selectedCard.sessionId === "string" ? selectedCard.sessionId : ""
+      };
+    }
+    return {
+      targetKind: "proposal",
+      targetKey: selectedCard.id,
+      anchorSlugs: [],
+      explorerSessionId: ""
+    };
+  }, [selectedCard]);
+  /* 曲率按钮门控：无选中 / 计划为空 / 计划无适用条目 → 禁用 + title 引导；已托管 → 禁用；
+     附着请求在途 → 禁用。 */
+  const warpButtonState = useMemo(() => {
+    if (!selectedCard || !warpTarget) {
+      return { disabled: true, title: tr("cosmos.warp.noSelection", "先选中提案或星胚组合并卡片") };
+    }
+    const planBars = Array.isArray(warpPlanSnapshot?.bars) ? warpPlanSnapshot.bars : [];
+    if (planBars.length === 0) {
+      return { disabled: true, title: tr("cosmos.warp.planEmpty", "曲率计划为空：请到「曲率引擎」设置添加动作条") };
+    }
+    const applicable = resolveWarpPlanEntries({ bars: planBars }, buttons, warpTarget.targetKind);
+    if (applicable.length === 0) {
+      return { disabled: true, title: tr("cosmos.warp.planUnmatched", "曲率计划中没有可应用于该目标的动作条") };
+    }
+    if (warpPendingKeys.has(warpTargetKeyOf(selectedCard.wsId, warpTarget.targetKey))) {
+      return { disabled: true, title: tr("cosmos.warp.attached", "已托管") };
+    }
+    if (warpAttachBusy) {
+      return { disabled: true, title: tr("cosmos.warp.attaching", "正在附着…") };
+    }
+    return { disabled: false, title: tr("cosmos.warp.attach", "曲率：附着曲率计划并自动接力推进") };
+  }, [selectedCard, warpTarget, warpPlanSnapshot, buttons, warpPendingKeys, warpAttachBusy]);
 
   const panelModel = useMemo(() => {
     const scene = controllerRef.current?.getScene?.() ?? null;
@@ -5187,18 +5543,23 @@ function CosmosSurface(props) {
      顶部模板工具与选择器均不可达（MUST NOT 呈现死入口）。 */
   const drillFigure = drillGroup !== null ? templateForFigure(drillGroup.wsId) : null;
 
-  /* 顶部模板工具 portal 槽（add-cosmos-template-reassign 返工 D8）：引擎在钻取态标牌两侧
-     建 `.cos-wsbar-tools` 空槽（银河态 display:none），React 以 portal 渲染两枚文字按钮。
-     引擎根可能晚于本 effect 挂载（整页 attach 时序）→ MutationObserver 兜住引擎重建/重挂载。 */
-  const [wsToolSlots, setWsToolSlots] = useState({ left: null, right: null });
+  /* 钻取态右上标牌组 portal 槽（add-cosmos-template-reassign 返工 D8；
+     add-cosmos-constellation-favorites 4.2 扩展收藏槽）：引擎建 `.cos-wsbar-tools`（左右两枚
+     模板工具）与 `.cos-fav-slot`（★ 收藏）空槽（银河态整组 display:none），React 以 portal 渲染。
+     引擎根可能晚于本 effect 挂载（整页 attach 时序）→ MutationObserver 兜住引擎重建/重挂载
+     （三个槽同源解析：引擎一次重建即整体换引用，槽位不混用旧节点）。 */
+  const [wsToolSlots, setWsToolSlots] = useState({ left: null, right: null, fav: null });
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return undefined;
     const resolve = () => {
       const left = host.querySelector('.cos-wsbar-tools[data-side="left"]');
       const right = host.querySelector('.cos-wsbar-tools[data-side="right"]');
-      if (!left || !right) return false;
-      setWsToolSlots((prev) => (prev.left === left && prev.right === right ? prev : { left, right }));
+      const fav = host.querySelector('.cos-fav-slot');
+      if (!left || !right || !fav) return false;
+      setWsToolSlots((prev) => (
+        prev.left === left && prev.right === right && prev.fav === fav ? prev : { left, right, fav }
+      ));
       return true;
     };
     resolve();
@@ -5235,6 +5596,70 @@ function CosmosSurface(props) {
           dangerouslySetInnerHTML={{ __html: assign ? WS_EDIT_ICON_SVG : WS_DICE_ICON_SVG }}
         />
       </button>
+    );
+  };
+
+  /* ── 星座收藏（add-cosmos-constellation-favorites 4.1–4.3 / D4/D5/D6）──
+     受控读面 = 模块级 `cosmosFavoritesStore`（`useSyncExternalStore` 订阅：按钮两态 / aria /
+     title 随 store 即时翻转）；写入唯一链路 = `toggleFavorite`（净房持久化 → store 镜像 →
+     引擎 `setFavorites` 热更）。按钮状态源 = favorites 快照 ∪ 当前钻取星座（`drillGroup.wsId`）。 */
+  const favoritesState = useSyncExternalStore(cosmosFavoritesStore.subscribe, cosmosFavoritesStore.getSnapshot);
+  const favoriteIds = favoriteIdsOf(favoritesState);
+
+  /**
+   * 收藏切换（D5 写入唯一链路；满上限拒绝见 D6）：
+   *  - 已收藏 → 移除；未收藏 → 追加（顺序 = 追加序，净房保序去重）；
+   *  - 满 `COSMOS_FAVORITES_MAX` 且为**新增** → toast 拒绝、**不保存**（已收藏集合与按钮态
+   *    不变；MUST NOT 以静默截断替代用户可感知的拒绝）；
+   *  - 保存 → store set（本窗 React 立即随态）→ `engine.setFavorites`（下一帧切换条目收敛，
+   *    零新增轮询）。引擎不可达静默（下次 attach 首推持久值兜底）。
+   * @param {string} wsId 当前钻取星座 id
+   * @returns {string[]|null} 写入后的净房收藏集合；拒绝 / 非法入参 → null
+   */
+  const toggleFavorite = (wsId) => {
+    const id = typeof wsId === "string" ? wsId : "";
+    if (!id) return null;
+    const current = favoriteIdsOf(cosmosFavoritesStore.getSnapshot());
+    const has = current.includes(id);
+    if (!has && current.length >= COSMOS_FAVORITES_MAX) {
+      try {
+        controllerRef.current?.getEngine?.()?.toast?.(
+          tr("cosmos.fav.limit", "收藏已达上限（64），请先取消其中一个星座")
+        );
+      } catch {
+        /* 引擎 toast 不可达：拒绝语义仍成立（未保存、集合不变） */
+      }
+      return null;
+    }
+    const next = has ? current.filter((item) => item !== id) : [...current, id];
+    const merged = saveCosmosSettings({ favorites: next }); // 净房持久化（唯一落盘口）
+    cosmosFavoritesStore.set({ favorites: merged.favorites }); // 本窗镜像（按钮两态即时翻转）
+    try {
+      controllerRef.current?.getEngine?.()?.setFavorites?.(merged.favorites); // 引擎热更（下一帧生效）
+    } catch (error) {
+      console.warn("[dsh-v-cosmos] favorites hot update failed:", error);
+    }
+    return merged.favorites;
+  };
+
+  /** 收藏按钮（4.2；钻取态右上标牌组末位）：实心 = 已收藏 / 空心 = 未收藏，aria/title 随态翻转。 */
+  const favButton = (wsId) => {
+    const on = typeof wsId === "string" && wsId !== "" && favoriteIds.includes(wsId);
+    const label = on
+      ? tr("cosmos.fav.remove", "取消收藏")
+      : tr("cosmos.fav.add", "收藏该星座");
+    return (
+      <button
+        type="button"
+        className="cos-fav-btn"
+        data-cosmos-fav={on ? "on" : "off"}
+        data-on={on ? "true" : "false"}
+        aria-pressed={on}
+        aria-label={label}
+        title={label}
+        onClick={() => toggleFavorite(wsId)}
+        dangerouslySetInnerHTML={{ __html: FAV_STAR_ICON_SVG }}
+      />
     );
   };
 
@@ -5362,7 +5787,7 @@ function CosmosSurface(props) {
         buttonName: button.name
       });
       if (result?.ok === true) {
-        queueToast(tr("cosmos.queue.enqueued", "已加入自动队列"));
+        queueToast(tr("cosmos.queue.enqueued", "已加入脉冲队列"));
       } else {
         queueToast(queueFailureText(result, tr("cosmos.queue.enqueueFailed", "加入队列失败")));
       }
@@ -5441,6 +5866,116 @@ function CosmosSurface(props) {
       queueToast(queueFailureText(result, tr("cosmos.queue.removeFailed", "移出队列失败")));
     }
     await refreshQueue();
+  };
+
+  /* ── 曲率操作（two-add-cosmos-proposal-warp 6.1/6.3）──
+     全部经 `warpAction` 单点动词；成功 toast + `refreshWarp()` 对账（服务端同时广播
+     `warp-changed`，双重安全）；失败按契约错误码映射 toast（MUST NOT 静默吞错）。
+     附着不是执行：零导航、零会话创建、不触碰动作条点击冷却门。 */
+
+  /** 曲率提示（引擎 toast 单文本通道；控制器缺席 → 静默 no-op）。 */
+  const warpToast = (text) => {
+    if (!text) return;
+    try {
+      controllerRef.current?.getEngine?.()?.toast?.(text);
+    } catch {
+      /* 引擎不可达：静默（状态仍由 refreshWarp 对账呈现） */
+    }
+  };
+
+  /** 曲率失败码 → 提示文案（契约错误族逐一映射；未知码透出 reason/原文）。 */
+  const warpFailureText = (result, fallback) => {
+    const code = typeof result?.error === "string" ? result.error : "";
+    if (code === "duplicate") return tr("cosmos.warp.alreadyManaged", "该目标已托管（已附着曲率计划）");
+    if (code === "plan-empty") return tr("cosmos.warp.planEmpty", "曲率计划为空：请到「曲率引擎」设置添加动作条");
+    if (code === "plan-unmatched") return tr("cosmos.warp.planUnmatched", "曲率计划中没有可应用于该目标的动作条");
+    if (code === "locked") return tr("cosmos.warp.locked", "执行中条目不可移出");
+    if (code === "missing") return tr("cosmos.warp.missing", "条目已不在曲率队列中（可能已被其他窗口移出）");
+    if (code === "workspace/unknown" || code === "proposal/unknown") {
+      return tr("cosmos.warp.targetStale", "目标已不在册（可能已被归档或移除）");
+    }
+    if (code === "unknown route") {
+      return tr("cosmos.queue.hostStale", "宿主半区未加载队列接口：请重启 DSH 后重试");
+    }
+    const detail = typeof result?.reason === "string" && result.reason
+      ? result.reason
+      : (typeof result?.message === "string" ? result.message : "");
+    return detail ? fallback + "：" + detail : fallback;
+  };
+
+  /** 附着曲率计划（spec「计划附着与曲率按钮」）：服务端按当前计划落快照并立即复查。 */
+  const attachWarpPlan = async () => {
+    if (!selectedCard || !warpTarget || warpButtonState.disabled === true) return;
+    if (warpAttachBusyRef.current) return;
+    warpAttachBusyRef.current = true;
+    setWarpAttachBusy(true);
+    try {
+      const body = {
+        wsId: selectedCard.wsId,
+        targetKind: warpTarget.targetKind,
+        targetKey: warpTarget.targetKey,
+        targetLabel: warpTarget.targetKind === "embryo"
+          ? (warpTarget.anchorSlugs.length > 0 ? warpTarget.anchorSlugs.join("/") : warpTarget.targetKey)
+          : warpTarget.targetKey
+      };
+      if (warpTarget.targetKind === "embryo") {
+        body.anchorSlugs = warpTarget.anchorSlugs;
+        if (warpTarget.explorerSessionId) body.explorerSessionId = warpTarget.explorerSessionId;
+      }
+      const result = await warpAction("attach", body);
+      if (result?.ok === true) {
+        warpToast(tr("cosmos.warp.attachOk", "已附着曲率计划：曲率将自动接力推进"));
+      } else {
+        warpToast(warpFailureText(result, tr("cosmos.warp.attachFailed", "附着曲率计划失败")));
+      }
+      await refreshWarp();
+    } finally {
+      warpAttachBusyRef.current = false;
+      setWarpAttachBusy(false);
+    }
+  };
+
+  /** 暂停 / 继续（暂停只挡点火，复查照常、在途不干预——服务端语义）。 */
+  const toggleWarpPaused = async () => {
+    if (!warpModel) return;
+    const wasPaused = warpModel.paused === true;
+    const result = await warpAction(wasPaused ? "resume" : "pause", { wsId: warpModel.wsId });
+    if (result?.ok === true) {
+      warpToast(wasPaused
+        ? tr("cosmos.warp.resumed", "曲率队列已继续")
+        : tr("cosmos.warp.pausedNotice", "曲率队列已暂停（复查照常进行，在途条目不打断）"));
+    } else {
+      warpToast(warpFailureText(result, tr("cosmos.warp.opFailed", "曲率操作失败")));
+    }
+    await refreshWarp();
+  };
+
+  /** 单条移出（grayed/ready/failed/skipped；launching/executing 服务端拒绝）。 */
+  const removeWarpEntry = async (row) => {
+    if (!row || !row.id) return;
+    const result = await warpAction("remove", { wsId: row.wsId, entryId: row.id });
+    if (result?.ok !== true) {
+      warpToast(warpFailureText(result, tr("cosmos.warp.removeFailed", "移出曲率队列失败")));
+    }
+    await refreshWarp();
+  };
+
+  /* 曲率条目 hover → 复用既有 cross-hover：提案目标与提案卡/星体联动；星胚目标联动
+     star 胚合并卡（`kind:"proto"` + slug 清单）。离场清空 + 引擎注入 null。 */
+  const hoverWarpEntry = (row, entering) => {
+    if (!row) return;
+    if (!entering) {
+      setPanelHover(null);
+      controllerRef.current?.setExternalHover?.(null);
+      return;
+    }
+    if (row.targetKind === "embryo") {
+      setPanelHover({ source: "warp", wsId: row.wsId, kind: "proto", slugs: row.anchorSlugs });
+      controllerRef.current?.setExternalHover?.(null);
+      return;
+    }
+    setPanelHover({ source: "warp", wsId: row.wsId, kind: "star", id: row.targetKey });
+    controllerRef.current?.setExternalHover?.({ wsId: row.wsId, kind: "star", id: row.targetKey });
   };
 
   /* 队列条目 hover → 复用既有 cross-hover（spec「队列条目联动提案卡」）：悬停描述与
@@ -5973,12 +6508,13 @@ function CosmosSurface(props) {
         onRunConst={runConstAction}
         closeKey={shortcuts.closePage}
       />
-      {/* 自动执行队列面板（add-cosmos-action-queue 5.2 / design D7）：提案面板左邻、同宽
-          同视觉语言；空队列 `visible=false` → 组件 return null（零布局，MUST NOT 占位）。
-          作用域 = 钻取星座优先 / 选中提案所属星座兜底（见上方 `queueScopeOf` 注释）。 */}
+      {/* 双页签队列面板（two-add-cosmos-proposal-warp 6.2/6.3）：提案面板左邻、同宽
+          同视觉语言；双队列皆空 → 组件 return null（零布局，MUST NOT 占位）。
+          作用域 = 钻取星座优先 / 选中提案所属星座兜底（见上方 `panelWsId` 注释）。 */}
       <QueuePanel
         t={tr}
         model={queueModel}
+        warpModel={warpModel}
         drilled={drill !== null && drill !== undefined}
         crossHover={crossHover}
         onPause={toggleQueuePaused}
@@ -5986,6 +6522,9 @@ function CosmosSurface(props) {
         onReorder={reorderQueueEntry}
         onRemove={removeQueueEntry}
         onHoverEntry={hoverQueueEntry}
+        onWarpPause={toggleWarpPaused}
+        onWarpRemove={removeWarpEntry}
+        onHoverWarpEntry={hoverWarpEntry}
       />
       {/* 左缘会话列表面板（add-cosmos-session-list-panel；swap-cosmos-panel-sides 移至左缘；
           swap-cosmos-session-toggle-titlebar 把手退役）：overlay 式，不参与布局流（画布零扰动）；
@@ -6180,6 +6719,8 @@ function CosmosSurface(props) {
         stateOf={actionButtonStateOf}
         onEnqueue={enqueueAction}
         enqueueStateOf={enqueueStateOf}
+        warpState={warpButtonState}
+        onWarpAttach={attachWarpPlan}
       />
       {/* 模板选择器（add-cosmos-template-reassign 3.2/D5）：body portal 模态，仅钻取态
           + 开合态渲染；`drillFigure` 为当前 figure 命中（高亮行），选中/恢复默认经
@@ -6201,6 +6742,10 @@ function CosmosSurface(props) {
           （drillFigure null）→ 不渲染。 */}
       {wsToolSlots.left !== null && drillFigure !== null ? createPortal(wsToolButtons("left"), wsToolSlots.left) : null}
       {wsToolSlots.right !== null && drillFigure !== null ? createPortal(wsToolButtons("right"), wsToolSlots.right) : null}
+      {/* 星座收藏按钮（add-cosmos-constellation-favorites 4.2）：portal 到引擎标牌组末位
+          `.cos-fav-slot`——钻取态随组呈现、银河态（drillGroup null）不渲染（与引擎
+          data-drilled 门控同向，零呈现/零命中；触屏热区由引擎 CSS 透明扩展 ≥40×40）。 */}
+      {wsToolSlots.fav !== null && drillGroup !== null ? createPortal(favButton(drillGroup.wsId), wsToolSlots.fav) : null}
     </div>
   );
 }
@@ -6926,6 +7471,68 @@ ${ENGINE_CSS}
   border-top:7px solid transparent;border-bottom:7px solid transparent;
   border-left:8px solid rgb(var(--cos-accent-rgb,255 210 140) / .95);
   filter:drop-shadow(0 0 5px rgb(var(--cos-accent-rgb,255 210 140) / .55))}
+/* ── 双页签队列面板（two-add-cosmos-proposal-warp 6.2/6.3 / spec cosmos-action-queue
+      「队列呈现」改写 + cosmos-proposal-warp「曲率队列呈现」）：页签行「脉冲 / 曲率」
+      各带计数徽标；页签仅在对 应队列非空时呈现（组件层不渲染空页签）；选中态为
+      客户端本地 UI 态。曲率页签复用脉冲视觉语言（暖金描边/呼吸点/琥珀等待点），
+      条目行 grayed 整行降饱和（置灰即视觉语义），等待会话空闲子态用琥珀徽标。 ── */
+.dsh-cosmos-queue-tabs{flex:none;display:flex;align-items:flex-end;gap:2px;padding:4px 6px 0;
+  border-bottom:1px solid rgb(var(--cos-accent-rgb,255 210 140) / .22)}
+.dsh-cosmos-queue-tab{position:relative;flex:1 1 0;min-width:0;padding:4px 2px 5px;border:0;background:0 0;cursor:pointer;
+  font:inherit;font-size:11px;line-height:15px;letter-spacing:1px;color:var(--cos-ink-dim,rgba(255,233,207,.55));
+  display:inline-flex;align-items:center;justify-content:center;gap:4px;white-space:nowrap}
+.dsh-cosmos-queue-tab:hover{color:var(--cos-accent-ink,#ffe3b8)}
+.dsh-cosmos-queue-tab[aria-selected=true]{color:var(--cos-accent-ink,#ffe3b8)}
+.dsh-cosmos-queue-tab[aria-selected=true]::after{content:"";position:absolute;left:4px;right:4px;bottom:-1px;height:2px;
+  border-radius:2px;background:var(--cos-line-strong,#ffd28a)}
+.dsh-cosmos-queue-tab:focus-visible{outline:1px solid rgb(var(--cos-accent-rgb,255 210 140) / .85);outline-offset:1px}
+.dsh-cosmos-queue-tab-count{font-size:10px;line-height:14px;padding:0 4px;border-radius:999px;
+  color:rgb(var(--cos-accent-ink-rgb,255 227 184) / .8);border:1px solid rgb(var(--cos-accent-rgb,255 210 140) / .35)}
+/* 曲率条目：grayed 整行降饱和（置灰即视觉语义；HUD 仍可读，非隐藏）。 */
+.dsh-cosmos-queue-row[data-state=grayed]{opacity:.55;filter:saturate(.35)}
+.dsh-cosmos-queue-row[data-state=grayed]:hover{opacity:.8}
+.dsh-cosmos-queue-badge[data-badge=waiting-session]{color:var(--dsw-alias-state-warn-primary,var(--cos-waiting,#ffaa4a));
+  border-color:var(--dsw-alias-state-warn-primary,var(--cos-waiting,#ffaa4a))}
+/* 曲率按钮（two-add-cosmos-proposal-warp 6.1；按用户反馈加宽加高并强化辨识）：
+   独立一枚悬在动作条右缘外，**与主按钮同高**（top/bottom 6 对齐条内容区）、宽度接近
+   一个主按钮；暖金渐变填充 + 左侧轨道弧 + 双层描边 + 外辉光，与「实心主按钮 / 虚线
+   入队钮」形成第三种视觉语汇。禁用态与主按钮族同透明度；窄屏收窄但仍高于旧版。 */
+.dsh-cosmos-warp{position:absolute;top:6px;bottom:6px;left:calc(100% + 10px);box-sizing:border-box;
+  min-width:88px;padding:0 14px 0 26px;display:flex;align-items:center;justify-content:center;
+  font:inherit;font-size:14px;line-height:1;letter-spacing:4px;font-weight:600;
+  color:var(--cos-accent-ink,#ffe3b8);
+  background:
+    linear-gradient(135deg,rgb(var(--cos-accent-rgb,255 210 140) / .30) 0%,
+      rgb(var(--cos-accent-rgb,255 210 140) / .10) 46%,rgb(var(--cos-accent-rgb,255 210 140) / .20) 100%),
+    var(--cos-panel-strong,rgba(10,8,18,.92));
+  border:1px solid rgb(var(--cos-accent-rgb,255 210 140) / .75);
+  border-left:2px solid var(--cos-accent,#ffd28a);
+  box-shadow:inset 0 0 0 1px rgb(var(--cos-accent-rgb,255 210 140) / .16),
+    inset 0 0 18px rgb(var(--cos-accent-rgb,255 210 140) / .10),
+    0 0 14px rgb(var(--cos-accent-rgb,255 210 140) / .16);
+  cursor:pointer;transition:background .16s,border-color .16s,box-shadow .16s,opacity .16s}
+/* 左侧轨道弧（warp 语义图形）：一小段圆弧 + 弧心点，纯装饰、不参与命中。 */
+.dsh-cosmos-warp::before{content:"";position:absolute;left:9px;top:50%;width:11px;height:11px;
+  margin-top:-5.5px;border:1px solid rgb(var(--cos-accent-rgb,255 210 140) / .85);border-radius:50%;
+  border-right-color:transparent;border-bottom-color:transparent;transform:rotate(35deg);pointer-events:none;
+  transition:transform .55s cubic-bezier(.22,.61,.36,1)}
+.dsh-cosmos-warp:hover:not(:disabled)::before{transform:rotate(215deg)}
+.dsh-cosmos-warp::after{content:"";position:absolute;left:13px;top:50%;width:3px;height:3px;margin-top:-1.5px;
+  border-radius:50%;background:var(--cos-accent,#ffd28a);opacity:.9;pointer-events:none}
+.dsh-cosmos-warp:hover:not(:disabled){
+  background:
+    linear-gradient(135deg,rgb(var(--cos-accent-rgb,255 210 140) / .44) 0%,
+      rgb(var(--cos-accent-rgb,255 210 140) / .18) 46%,rgb(var(--cos-accent-rgb,255 210 140) / .30) 100%),
+    var(--cos-panel-strong,rgba(10,8,18,.92));
+  border-color:var(--cos-accent,#ffd28a);
+  box-shadow:inset 0 0 0 1px rgb(var(--cos-accent-rgb,255 210 140) / .32),
+    inset 0 0 22px rgb(var(--cos-accent-rgb,255 210 140) / .16),
+    0 0 22px rgb(var(--cos-accent-rgb,255 210 140) / .30)}
+.dsh-cosmos-warp:focus-visible{outline:1px solid rgb(var(--cos-accent-rgb,255 210 140) / .9);outline-offset:3px}
+.dsh-cosmos-warp:disabled{opacity:.35;cursor:not-allowed}
+@media (prefers-reduced-motion:reduce){.dsh-cosmos-warp::before{transition:none}
+  .dsh-cosmos-warp:hover:not(:disabled)::before{transform:rotate(35deg)}}
+@media (max-width:900px){.dsh-cosmos-warp{min-width:74px;padding:0 10px 0 22px;font-size:13px;letter-spacing:2px}}
 /* ── 状态描边层（p2-add-cosmos-card-state-chrome 2.3–2.6；polish-cosmos-state-chrome-flow
       1.1–1.6）：会话行与正式提案卡的整卡描边随状态呈现——叠加于既有行内点/loader 与
       提案卡左缘生命周期色条之上（MUST NOT 替代）：busy（含 delegatedBusy）与 act>0 =
@@ -7428,6 +8035,7 @@ ${ENGINE_CSS}
 [data-cos-mode="light"] .dsh-cosmos-session-row,
 [data-cos-mode="light"] .dsh-cosmos-queue-row,
 [data-cos-mode="light"] .dsh-cosmos-actions,
+[data-cos-mode="light"] .dsh-cosmos-warp,
 [data-cos-mode="light"] .dsh-cosmos-const-actions,
 [data-cos-mode="light"] .cos-search,
 [data-cos-mode="light"] .cos-add-btn,
@@ -7610,12 +8218,13 @@ export function apply(ctx) {
   const sectionT = ctx.locale.bind(NS);
 
   /* ── 设置跨窗口桥（add-cosmos-rightbar-dock 4.1；add-cosmos-template-name-toggle 1.2 /
-     add-cosmos-figure-line-alpha 3.2 扩展）：
+     add-cosmos-figure-line-alpha 3.2 / add-cosmos-constellation-favorites 4.4 扩展）：
      同源 localStorage 是全部窗口共享的唯一设置面——他窗写入 `launchMode` /
-     `templateNames` / `patLineDim` 后经 `storage` 事件同步进受控镜像（入口文案/设置页
-     单选/开关/滑杆即时跟随）；入口按钮点击另现读持久值（双保险）。整页在本窗存活时，
-     模板名开关与图样连线亮度另经 `engine.setTuning` 热更（值变才动作，见引擎分支）。
-     与本面无关的 storage 键 → `settingsFromStorageEvent` 返回 null，静默忽略。 */
+     `templateNames` / `patLineDim` / 星场两开关 / `favorites` 后经 `storage` 事件同步进受控
+     镜像（入口文案/设置页单选/开关/滑杆/★ 收藏按钮即时跟随）；入口按钮点击另现读持久值
+     （双保险）。整页在本窗存活时，模板名开关、图样连线亮度、星场两开关与收藏集合另经引擎
+     热更（值变才动作，见下各分支）。与本面无关的 storage 键 →
+     `settingsFromStorageEvent` 返回 null，静默忽略。 */
   ctx.effect(() => {
     if (typeof window === "undefined" || typeof window.addEventListener !== "function") return () => {};
     const onStorage = (event) => {
@@ -7625,10 +8234,12 @@ export function apply(ctx) {
       const prevPatLineDim = cosmosPatLineDimStore.getSnapshot()?.patLineDim;
       const prevWorksContours = cosmosWorksFaceStore.getSnapshot()?.worksContours !== false;
       const prevWorksAscii = cosmosWorksFaceStore.getSnapshot()?.worksAscii !== false;
+      const prevFavorites = cosmosFavoritesStore.getSnapshot()?.favorites;
       cosmosLaunchStore.set({ launchMode: next.launchMode });
       cosmosTemplateNamesStore.set({ templateNames: next.templateNames });
       cosmosPatLineDimStore.set({ patLineDim: next.patLineDim });
       cosmosWorksFaceStore.set({ worksContours: next.worksContours, worksAscii: next.worksAscii });
+      cosmosFavoritesStore.set({ favorites: next.favorites });
       /* 已打开的整页热更（add-cosmos-template-name-toggle 1.2/D4）：仅本键真实翻转时才触达
          引擎——MUST NOT 借同源桥顺带热更其它调参键（那属本提案范围外的行为变更）。 */
       if (prevTemplateNames !== (next.templateNames === true)) {
@@ -7658,6 +8269,17 @@ export function apply(ctx) {
           });
         } catch (error) {
           console.warn("[dsh-v-cosmos] works face hot update failed:", error);
+        }
+      }
+      /* 收藏集合跨窗热更（add-cosmos-constellation-favorites 4.4/D5）：仅本键**真实值变**时
+         触达引擎（逐项相等判定，顺序无关——同值重放/多窗同时开关退化 no-op）；他窗写入后
+         本窗按钮态由上面的 store 镜像即时跟随，切换条目下一帧收敛。失败不阻断镜像同步
+         （下次开页/attach 首推持久值兜底）。 */
+      if (!sameFavoriteIds(prevFavorites, next.favorites)) {
+        try {
+          controllerRef.current?.getEngine?.()?.setFavorites?.(next.favorites);
+        } catch (error) {
+          console.warn("[dsh-v-cosmos] favorites storage sync failed:", error);
         }
       }
     };
@@ -7720,6 +8342,18 @@ export function apply(ctx) {
      unset）。web bundle 无 fs 通道 → 不注入 checkDir：存在性检查跳过（MAY 语义、
      非阻断），端点不可达时仅路径区禁用降级（launch 单选走 localStorage 面不受牵连）。 */
   const pathsSettings = createPathsSettingsController(activeScope);
+  /* 曲率计划面（two-add-cosmos-proposal-warp 5.2/6.1）：暂存-保存控制器只读写 `warpPlan`
+     对象节；`cosmosWarpPlanStore` = **生效值**只读镜像（曲率按钮门控数据面——不与设置页
+     草稿混用；保存成功经作用域订阅热更）。 */
+  const warpPlanSettings = createWarpPlanSettingsController(activeScope);
+  const publishWarpPlan = () => {
+    const plan = warpPlanSectionOf(activeScope.getSnapshot()?.value?.warpPlan);
+    const current = cosmosWarpPlanStore.getSnapshot();
+    const same = JSON.stringify(current?.bars ?? []) === JSON.stringify(plan.bars);
+    if (!same) cosmosWarpPlanStore.set({ bars: plan.bars });
+  };
+  const offWarpPlan = activeScope.subscribe(publishWarpPlan);
+  publishWarpPlan();
   /* 跨域唯一性（add-cosmos-shortcuts 3.3/5.3/D9）：两个控制器实例的 `crossIssue` 在保存门
      并集查重（本侧草稿 + 另一侧当前草稿 + 全局四键生效值）。侧别经闭包固定；「另一侧」
      经惰性 holder 读取——控制器构造期即会 publish（此时对侧尚未创建，按空列表处理，
@@ -7954,9 +8588,12 @@ export function apply(ctx) {
     buttonsStore.dispose();
     constButtonsStore.dispose();
     pathsSettings.dispose();
+    warpPlanSettings.dispose();
+    offWarpPlan?.();
     activeScope.dispose();
     cosmosButtonsFace.set({ buttons: [] });
     cosmosConstButtonsFace.set({ constellationButtons: [] });
+    cosmosWarpPlanStore.set({ bars: [] });
     cosmosButtonDraftsStore.set({ proposals: [], constellations: [] });
   }, "dsh-v-cosmos: settings scope");
 
@@ -8323,6 +8960,24 @@ export function apply(ctx) {
     )
   );
 
+  /* 3f. 「曲率引擎」标签页（two-add-cosmos-proposal-warp 5.2）：同一标签目录、order 5
+     （「快捷键」之后，成为 Cosmos 设置节第 7 个页签）；注入曲率计划控制器 face——暂存-
+     保存模型、覆盖标记/重置、writable/saving 禁用门与按钮页签同骨架。行清单 = 当前
+     提案动作条（`face.rows`，含 preState 徽标），规则下拉「曲率直航 / 转入脉冲队列」。 */
+  ctx.slots.inject(SETTINGS_TAB_SLOT, () =>
+    ctx.slots.register(
+      {
+        name: SETTINGS_TAB_SLOT,
+        id: "warp-engine",
+        order: 5,
+        label: () => sectionT("cosmos.settings.tabWarp"),
+        locale: NS,
+        inject: () => ({ face: warpPlanSettings })
+      },
+      CosmosWarpPanel
+    )
+  );
+
   /* 5. hero 接力消费条目（add-cosmos-proposal-actions 4.4/4.5）：`conversation.input.dock`
      的 session 作用域列表条目，渲染 null，仅作新 blank 会话首屏的相位钩子。 */
   ctx.slots.inject("conversation.input.dock", () =>
@@ -8390,7 +9045,7 @@ export function apply(ctx) {
 
 /* 冒烟测试观测面（hive exports 先例）：只读镜像 + 纯函数引用，供 bundle 级冒烟
    直测导出面与推导口径；运行时行为不受影响。 */
-export { cosmosOpenStore, cosmosLaunchStore, cosmosDockStore, cosmosTemplateNamesStore, cosmosPatLineDimStore, applyLaunchMode, currentLaunchMode, launchCosmosEntry, CosmosDockBody, dockEntryPlanOf, findDockTabOf, dockPresenceOf, pageCloseActionOf, dockFallbackNoticeKeyOf, COSMOS_DOCK_TAB_ID, COSMOS_DOCK_TAB_KIND, CosmosGeneralPanel, CosmosPathsSection, createPathsSettingsController, sceneVersionStore, filterStore, drillStore, engineSelectStore, engineHoverStore, cosmosButtonsFace, cosmosConstButtonsFace, cosmosSkinStore, cosmosNavStore, cosmosShortcutsStore, cosmosButtonDraftsStore, cosmosSessionPanelStore, cosmosQueueStore, refreshQueue, cosmosSelectHealthOf, currentShortcuts, buttonDraftsOf, floatOpenOf, COSMOS_SKINS, COSMOS_SKIN_IDS, COSMOS_DEFAULT_SKIN, createSkin, applySkinTokens, mergeScene, sceneDiffLevel, planetStateOf, relativeTime, matchWorkspaces, filteredPositions, findRegisteredWorkspace, normalizeWorkspacePath, isWindowsPlatform, isEmptyConstellation, projectPanel, projectQueuePanel, queueScopeOf, queuePendingKeysOf, queueEnqueuedKeyOf, projectSessionPanel, sessionKeyOf, findCard, proposalKeyOf, assembleMessage, assembleEmbryoMessage, actionButtonVisible, draftMatches, isBlankDraft, pendingReadinessOf, createActionGate, createPendingActionStore, createActionExecutor, createEmbryoActionExecutor, consumePendingAction, explorationTargetOf, createModelBridge, ProposalPanel, SessionPanel, QueuePanel, ActionBar, ConstActionBar, TemplatePicker, ActionHeroDock, ConstellationFloatDock, EmbryoActionDock, CosmosSettingsSection, CosmosActionsPanel, CosmosSkinPanel, CosmosNavPanel, CosmosShortcutsPanel, SKIN_D_PALETTE, createSkinD, createCosmosEngine, isUiChromeTarget, fetchScene, subscribeCosmosEvents, bindSession, fetchQueue, queueAction, loadCosmosSettings, saveCosmosSettings, COSMOS_SETTINGS_DEFAULTS, COSMOS_SETTINGS_BOUNDS, PENDING_DIVE_WAIT_MS, normalizeConstButtons, constButtonsSectionOf, constellationMessageOf, createFloatMarkerStore, createConstellationExecutor, floatPresentationOf, floatTextareaHeightOf, createButtonSettingsController, constButtonDraftOf, constButtonIssue, CONSTELLATION_PROFILE, isSessionArchiveOutcome, activitySummaryOf, archiveNoticeOf, archiveRequestFailureNotice, SHORTCUT_DEFAULTS, SHORTCUT_FIELDS, SHORTCUT_UI_ORDER, SHORTCUT_GLOBAL_KEYS, SHORTCUT_BUTTON_KEYS, shortcutLabelOf, shortcutMatches, shortcutsOf, shortcutConflictOf, shortcutsIssue, currentSessionIdOf, wsIdBySessionId, createHostSessionFollow, FLOAT_IMAGE_TYPES, FLOAT_IMAGE_ACCEPT, FLOAT_ATTACH_WATCH_MS, clipboardFilesOf, createAttachFace, floatSendPlanOf, floatWatchOutcomeOf, floatAttachmentsPendingOf, intakeFloatImages, removeFloatAttachment };
+export { cosmosOpenStore, cosmosLaunchStore, cosmosDockStore, cosmosTemplateNamesStore, cosmosPatLineDimStore, applyLaunchMode, currentLaunchMode, launchCosmosEntry, CosmosDockBody, dockEntryPlanOf, findDockTabOf, dockPresenceOf, pageCloseActionOf, dockFallbackNoticeKeyOf, COSMOS_DOCK_TAB_ID, COSMOS_DOCK_TAB_KIND, CosmosGeneralPanel, CosmosPathsSection, createPathsSettingsController, sceneVersionStore, filterStore, drillStore, engineSelectStore, engineHoverStore, cosmosButtonsFace, cosmosConstButtonsFace, cosmosSkinStore, cosmosNavStore, cosmosShortcutsStore, cosmosButtonDraftsStore, cosmosSessionPanelStore, cosmosQueueStore, refreshQueue, cosmosWarpStore, cosmosWarpPlanStore, refreshWarp, cosmosSelectHealthOf, currentShortcuts, buttonDraftsOf, floatOpenOf, COSMOS_SKINS, COSMOS_SKIN_IDS, COSMOS_DEFAULT_SKIN, createSkin, applySkinTokens, mergeScene, sceneDiffLevel, planetStateOf, relativeTime, matchWorkspaces, filteredPositions, findRegisteredWorkspace, normalizeWorkspacePath, isWindowsPlatform, isEmptyConstellation, projectPanel, projectQueuePanel, projectWarpPanel, queueScopeOf, warpScopeOf, warpPendingTargetKeysOf, queuePendingKeysOf, queueEnqueuedKeyOf, projectSessionPanel, sessionKeyOf, findCard, proposalKeyOf, assembleMessage, assembleEmbryoMessage, actionButtonVisible, draftMatches, isBlankDraft, pendingReadinessOf, createActionGate, createPendingActionStore, createActionExecutor, createEmbryoActionExecutor, consumePendingAction, explorationTargetOf, createModelBridge, ProposalPanel, SessionPanel, QueuePanel, ActionBar, ConstActionBar, TemplatePicker, ActionHeroDock, ConstellationFloatDock, EmbryoActionDock, CosmosSettingsSection, CosmosActionsPanel, CosmosSkinPanel, CosmosNavPanel, CosmosShortcutsPanel, CosmosWarpPanel, SKIN_D_PALETTE, createSkinD, createCosmosEngine, isUiChromeTarget, fetchScene, subscribeCosmosEvents, bindSession, fetchQueue, queueAction, fetchWarp, warpAction, loadCosmosSettings, saveCosmosSettings, COSMOS_SETTINGS_DEFAULTS, COSMOS_SETTINGS_BOUNDS, PENDING_DIVE_WAIT_MS, normalizeConstButtons, constButtonsSectionOf, constellationMessageOf, createFloatMarkerStore, createConstellationExecutor, floatPresentationOf, floatTextareaHeightOf, createButtonSettingsController, constButtonDraftOf, constButtonIssue, CONSTELLATION_PROFILE, isSessionArchiveOutcome, activitySummaryOf, archiveNoticeOf, archiveRequestFailureNotice, SHORTCUT_DEFAULTS, SHORTCUT_FIELDS, SHORTCUT_UI_ORDER, SHORTCUT_GLOBAL_KEYS, SHORTCUT_BUTTON_KEYS, shortcutLabelOf, shortcutMatches, shortcutsOf, shortcutConflictOf, shortcutsIssue, currentSessionIdOf, wsIdBySessionId, createHostSessionFollow, FLOAT_IMAGE_TYPES, FLOAT_IMAGE_ACCEPT, FLOAT_ATTACH_WATCH_MS, clipboardFilesOf, createAttachFace, floatSendPlanOf, floatWatchOutcomeOf, floatAttachmentsPendingOf, intakeFloatImages, removeFloatAttachment };
 
 /* 文案（zh/en 成对；引擎内嵌中文提示为 demo 语言的既定呈现）。 */
 const DICT = {
@@ -8484,8 +9139,8 @@ const DICT = {
     "cosmos.actions.embryoKeepOpen": "已在探索会话填入消息，Cosmos 保持打开",
     "cosmos.actions.embryoSendFailed": "发送到探索会话失败：",
     /* 自动执行队列（add-cosmos-action-queue 5.2–5.4）：面板 / 配套入队钮 / 操作与错误码文案。 */
-    "cosmos.queue.title": "自动队列",
-    "cosmos.queue.aria": "自动队列",
+    "cosmos.queue.title": "脉冲队列",
+    "cosmos.queue.aria": "脉冲队列",
     "cosmos.queue.countTitle": "在途条目数（等待 + 执行中）",
     "cosmos.queue.auto": "自动发送",
     "cosmos.queue.autoTitle": "队列执行恒为自动发送：不打开会话、不写草稿",
@@ -8500,7 +9155,7 @@ const DICT = {
     "cosmos.queue.moveUp": "前移",
     "cosmos.queue.moveDown": "后移",
     "cosmos.queue.remove": "移出队列",
-    "cosmos.queue.enqueued": "已加入自动队列",
+    "cosmos.queue.enqueued": "已加入脉冲队列",
     "cosmos.queue.enqueueFailed": "加入队列失败",
     "cosmos.queue.enqueuing": "正在加入…",
     "cosmos.queue.pending": "已在队列中",
@@ -8519,8 +9174,36 @@ const DICT = {
     "cosmos.queue.clearFailed": "清空队列失败",
     "cosmos.queue.reorderFailed": "调整顺序失败",
     "cosmos.queue.removeFailed": "移出队列失败",
-    "cosmos.actions.enqueue": "加入自动队列",
+    "cosmos.actions.enqueue": "加入脉冲队列",
     "cosmos.actions.enqueueLabel": "＋ 入队",
+    /* 曲率队列 / 曲率按钮 / 曲率引擎页签（two-add-cosmos-proposal-warp 6.1–6.4 / 5.2）。 */
+    "cosmos.queue.tabsAria": "脉冲 / 曲率队列页签",
+    "cosmos.warp.title": "曲率队列",
+    "cosmos.warp.button": "曲率",
+    "cosmos.warp.attach": "曲率：附着曲率计划并自动接力推进",
+    "cosmos.warp.noSelection": "先选中提案或星胚组合并卡片",
+    "cosmos.warp.planEmpty": "曲率计划为空：请到「曲率引擎」设置添加动作条",
+    "cosmos.warp.planUnmatched": "曲率计划中没有可应用于该目标的动作条",
+    "cosmos.warp.attached": "已托管",
+    "cosmos.warp.attaching": "正在附着…",
+    "cosmos.warp.attachOk": "已附着曲率计划：曲率将自动接力推进",
+    "cosmos.warp.attachFailed": "附着曲率计划失败",
+    "cosmos.warp.alreadyManaged": "该目标已托管（已附着曲率计划）",
+    "cosmos.warp.countTitle": "曲率条目数",
+    "cosmos.warp.pause": "暂停曲率队列",
+    "cosmos.warp.resume": "继续曲率队列",
+    "cosmos.warp.paused": "已暂停",
+    "cosmos.warp.pausedNotice": "曲率队列已暂停（复查照常进行，在途条目不打断）",
+    "cosmos.warp.resumed": "曲率队列已继续",
+    "cosmos.warp.indicatorRunning": "曲率执行中",
+    "cosmos.warp.indicatorWaiting": "有会话等待决策",
+    "cosmos.warp.remove": "移出曲率队列",
+    "cosmos.warp.removeFailed": "移出曲率队列失败",
+    "cosmos.warp.locked": "执行中条目不可移出",
+    "cosmos.warp.missing": "条目已不在曲率队列中（可能已被其他窗口移出）",
+    "cosmos.warp.targetStale": "目标已不在册（可能已被归档或移除）",
+    "cosmos.warp.opFailed": "曲率操作失败",
+    "cosmos.settings.tabWarp": "曲率引擎",
     "cosmos.constActions.aria": "星座动作",
     /* 模板指定（add-cosmos-template-reassign 3.5/D5）：动作条两项 + 选择器全量文案。
        提示行明示「位置与图样解耦」（星座位置由星图分布决定，不随模板变化）。 */
@@ -8537,6 +9220,11 @@ const DICT = {
     "cosmos.tplPicker.reset": "恢复默认（星图分布）",
     "cosmos.tplPicker.resetHint": "清除该星座的模板指定，回落星图分布（哈希分配）",
     "cosmos.tplPicker.empty": "无匹配模板",
+    /* 星座收藏（add-cosmos-constellation-favorites 4.3/D4/D6）：★ 按钮 aria/title 随态翻转
+       （「收藏该星座」/「取消收藏」）与满上限拒绝 toast 文案。 */
+    "cosmos.fav.add": "收藏该星座",
+    "cosmos.fav.remove": "取消收藏",
+    "cosmos.fav.limit": "收藏已达上限（64），请先取消其中一个星座",
     "cosmos.constFloat.title": "星座动作",
     "cosmos.constFloat.inputAria": "消息内容",
     "cosmos.constFloat.placeholder": "补写或修改消息，发送后进入当前星座工作区的会话…",
@@ -8622,6 +9310,22 @@ const DICT = {
     "cosmos.settings.title": "Cosmos",
     "cosmos.settings.intro": "两套动作按钮：提案动作在 Cosmos 整页选中提案后，一键把「提示词 + @提案目录」发进该提案所属工作区的新会话；星座动作在钻取某星座时，把纯提示词（不含 @引用）发进当前星座对应工作区的新会话——勾选自动发送则点击即发；未勾选时按「发送前编辑」设置分流：浮窗补写（缺省，星空保持），或跳转会话页由原生输入区承载。",
     "cosmos.settings.tabsAria": "Cosmos 设置分区",
+    /* 曲率引擎页签（two-add-cosmos-proposal-warp 5.2） */
+    "cosmos.settings.warpPlanLabel": "曲率引擎动作（附着到目标后自动接力）",
+    "cosmos.settings.warpPlanHint": "从已保存的提案动作条中多选组成曲率计划：附着到选中提案（或星胚组）后，前置状态一满足即自动执行并逐级接力；规则缺省「曲率直航」，「转入脉冲队列」把该动作交给脉冲队列（转投落定即在曲率侧完成）。计划变更不影响已附着目标在途条目。",
+    "cosmos.settings.warpPlanNoBars": "还没有可用的提案动作条：请先到「动作」页签配置按钮。",
+    "cosmos.settings.warpPlanReset": "重置",
+    "cosmos.settings.warpPlanResetTitle": "清除用户覆盖，回落默认曲率计划",
+    "cosmos.settings.warpPlanOverridden": "已覆盖默认曲率计划",
+    "cosmos.settings.warpPlanCount": "曲率计划动作条：",
+    "cosmos.settings.warpRuleLabel": "规则",
+    "cosmos.settings.warpRuleDirect": "曲率直航（缺省）",
+    "cosmos.settings.warpRuleQueue": "转入脉冲队列",
+    "cosmos.settings.warpPreStateProto": "待创建（星胚）",
+    "cosmos.settings.warpPreStateCreated": "已创建",
+    "cosmos.settings.warpPreStateReviewed": "已审核",
+    "cosmos.settings.warpPreStateExecuted": "已执行",
+    "cosmos.settings.warpPreStateAny": "不限",
     "cosmos.settings.buttonsLabel": "动作按钮（作用于选中提案）",
     "cosmos.settings.buttonsHint": "点击按钮在选中提案所属工作区创建新会话：消息 = 提示词与 @提案目录（按「提示词在前」决定先后）；勾选自动发送则经 hero 相位自动提交首回合。保存后立即生效，无需重启。",
     "cosmos.settings.prependDiffHint": "「提示词在前」= 消息里提示词位于 @提案引用之前（与 dsh-v-skill-links 的同名字段语义不同：那里指把提示词前插进既有草稿）。",
@@ -8861,9 +9565,9 @@ const DICT = {
     "cosmos.actions.embryoDraftNotEmpty": "Exploration session already has unsent input; left untouched",
     "cosmos.actions.embryoKeepOpen": "Message pre-filled in the exploration session; Cosmos stays open",
     "cosmos.actions.embryoSendFailed": "Failed to send to the exploration session: ",
-    /* Automated action queue (add-cosmos-action-queue 5.2–5.4): panel / enqueue button / operation and error-code copy. */
-    "cosmos.queue.title": "Auto queue",
-    "cosmos.queue.aria": "Automated action queue",
+    /* Impulse queue (add-cosmos-action-queue 5.2–5.4): panel / enqueue button / operation and error-code copy. */
+    "cosmos.queue.title": "Impulse queue",
+    "cosmos.queue.aria": "Impulse queue",
     "cosmos.queue.countTitle": "In-flight entries (queued + running)",
     "cosmos.queue.auto": "Auto-send",
     "cosmos.queue.autoTitle": "Queued runs are always auto-sent: no session navigation, no draft writes",
@@ -8878,7 +9582,7 @@ const DICT = {
     "cosmos.queue.moveUp": "Move up",
     "cosmos.queue.moveDown": "Move down",
     "cosmos.queue.remove": "Remove from queue",
-    "cosmos.queue.enqueued": "Added to the auto queue",
+    "cosmos.queue.enqueued": "Added to the impulse queue",
     "cosmos.queue.enqueueFailed": "Could not enqueue",
     "cosmos.queue.enqueuing": "Adding…",
     "cosmos.queue.pending": "Already queued",
@@ -8897,8 +9601,36 @@ const DICT = {
     "cosmos.queue.clearFailed": "Could not clear the queue",
     "cosmos.queue.reorderFailed": "Could not reorder",
     "cosmos.queue.removeFailed": "Could not remove from the queue",
-    "cosmos.actions.enqueue": "Add to auto queue",
+    "cosmos.actions.enqueue": "Add to impulse queue",
     "cosmos.actions.enqueueLabel": "＋ Queue",
+    /* Warp queue / warp button / warp engine tab (two-add-cosmos-proposal-warp). */
+    "cosmos.queue.tabsAria": "Impulse / warp queue tabs",
+    "cosmos.warp.title": "Warp queue",
+    "cosmos.warp.button": "Warp",
+    "cosmos.warp.attach": "Warp: attach the warp plan and let it hand off automatically",
+    "cosmos.warp.noSelection": "Select a proposal or an embryo merged card first",
+    "cosmos.warp.planEmpty": "Warp plan is empty: add action bars in the Warp engine settings",
+    "cosmos.warp.planUnmatched": "The warp plan has no action bars applicable to this target",
+    "cosmos.warp.attached": "Already managed",
+    "cosmos.warp.attaching": "Attaching…",
+    "cosmos.warp.attachOk": "Warp plan attached: hand-off will proceed automatically",
+    "cosmos.warp.attachFailed": "Could not attach the warp plan",
+    "cosmos.warp.alreadyManaged": "This target is already managed by a warp plan",
+    "cosmos.warp.countTitle": "Warp entries",
+    "cosmos.warp.pause": "Pause the warp queue",
+    "cosmos.warp.resume": "Resume the warp queue",
+    "cosmos.warp.paused": "Paused",
+    "cosmos.warp.pausedNotice": "Warp queue paused (reviews continue; in-flight entries are untouched)",
+    "cosmos.warp.resumed": "Warp queue resumed",
+    "cosmos.warp.indicatorRunning": "Warp is running",
+    "cosmos.warp.indicatorWaiting": "A session is waiting for a decision",
+    "cosmos.warp.remove": "Remove from the warp queue",
+    "cosmos.warp.removeFailed": "Could not remove from the warp queue",
+    "cosmos.warp.locked": "Running entries cannot be removed",
+    "cosmos.warp.missing": "Entry is no longer in the warp queue (removed in another window?)",
+    "cosmos.warp.targetStale": "Target is no longer registered (archived or removed?)",
+    "cosmos.warp.opFailed": "Warp operation failed",
+    "cosmos.settings.tabWarp": "Warp engine",
     "cosmos.constActions.aria": "Constellation actions",
     /* Template assignment (add-cosmos-template-reassign 3.5/D5). */
     "cosmos.tplActions.assign": "Assign template",
@@ -8914,6 +9646,10 @@ const DICT = {
     "cosmos.tplPicker.reset": "Restore default (sky map)",
     "cosmos.tplPicker.resetHint": "Clear this constellation's template override and fall back to the sky-map hash",
     "cosmos.tplPicker.empty": "No matching templates",
+    /* Constellation favorites (add-cosmos-constellation-favorites 4.3/D4/D6). */
+    "cosmos.fav.add": "Favorite this constellation",
+    "cosmos.fav.remove": "Remove from favorites",
+    "cosmos.fav.limit": "Favorites limit reached (64). Remove one first.",
     "cosmos.constFloat.title": "Constellation action",
     "cosmos.constFloat.inputAria": "Message",
     "cosmos.constFloat.placeholder": "Extend or edit the message; sending starts the session in the current constellation's workspace…",
@@ -8991,6 +9727,22 @@ const DICT = {
     "cosmos.settings.title": "Cosmos",
     "cosmos.settings.intro": "Two action families: proposal actions send \"prompt + @proposal directory\" into a new session of the selected proposal's workspace; constellation actions send a plain prompt (no @references) into the current constellation's workspace — with auto-send the click fires immediately; otherwise \"pre-send editing\" decides: a floating native composer window (default; the galaxy stays visible), or the legacy floating composer for edits.",
     "cosmos.settings.tabsAria": "Cosmos settings tabs",
+    /* Warp engine tab (two-add-cosmos-proposal-warp 5.2). */
+    "cosmos.settings.warpPlanLabel": "Warp engine actions (hand off automatically once attached)",
+    "cosmos.settings.warpPlanHint": "Select several proposal action bars to form the warp plan: after attaching to a proposal (or an embryo group), matching preconditions execute automatically and hand off level by level. Rule defaults to \"Warp direct\"; \"Hand off to impulse queue\" delegates that action to the impulse queue (it counts as done on the warp side once handed off). Plan edits never touch in-flight entries of already-attached targets.",
+    "cosmos.settings.warpPlanNoBars": "No proposal action bars yet: configure buttons in the Actions tab first.",
+    "cosmos.settings.warpPlanReset": "Reset",
+    "cosmos.settings.warpPlanResetTitle": "Remove the user override and fall back to the default warp plan",
+    "cosmos.settings.warpPlanOverridden": "Default warp plan overridden",
+    "cosmos.settings.warpPlanCount": "Warp plan action bars: ",
+    "cosmos.settings.warpRuleLabel": "Rule",
+    "cosmos.settings.warpRuleDirect": "Warp direct (default)",
+    "cosmos.settings.warpRuleQueue": "Hand off to impulse queue",
+    "cosmos.settings.warpPreStateProto": "To be created (embryo)",
+    "cosmos.settings.warpPreStateCreated": "Created",
+    "cosmos.settings.warpPreStateReviewed": "Reviewed",
+    "cosmos.settings.warpPreStateExecuted": "Executed",
+    "cosmos.settings.warpPreStateAny": "Any",
     "cosmos.settings.buttonsLabel": "Action buttons (apply to the selected proposal)",
     "cosmos.settings.buttonsHint": "Click creates a new session in the selected proposal's workspace: message = prompt and @proposal directory (order decided by \"prompt first\"); with auto-send the hero phase submits the first turn. Changes apply immediately on save.",
     "cosmos.settings.prependDiffHint": "\"Prompt first\" = the prompt precedes the @proposal reference in the message (different from the same-named field in dsh-v-skill-links, where it prepends into an existing draft).",

@@ -867,6 +867,102 @@ const engineSource = readFileSync(new URL("../src/cosmos/engine.mjs", import.met
   assert.ok(engineSource.includes("tplZh: typeof w.tplZh === \"string\" && w.tplZh ? w.tplZh : null,"), "引擎消费面 ws.tplZh 形状不变");
 }
 
+/* ── 9c. 源码锚点：星座收藏（add-cosmos-constellation-favorites 4.5 / 4.1–4.4）──
+   按钮两态（实心/空心 + aria/title 随态）、点击切换调用链（保存 → store → setFavorites）、
+   上限满 toast 拒绝（不保存）、storage 桥跨窗同步（值变才动作）、失效收藏静默（无清理路径）、
+   引擎热更续接与轴槽解析。React 组件树在 Node 侧不可挂载，两态视觉契约由 render-smoke
+   对 ENGINE_CSS 的断言覆盖，本块按 house style 固化 client 接线与词典成对。 ── */
+{
+  const engineSource = readFileSync(new URL("../src/cosmos/engine.mjs", import.meta.url), "utf8");
+
+  /* ① 受控镜像 store 与纯判定助手（单一实现；冷启动读持久值） */
+  assert.ok(
+    clientSource.includes("const cosmosFavoritesStore = createSnapshotStore({ favorites: loadCosmosSettings().favorites });"),
+    "favorites 快照 store（模块级受控镜像，冷启动读持久值）"
+  );
+  assert.ok(clientSource.includes("function favoriteIdsOf(state) {"), "快照 → id 列表的单一读取面（非数组回落空数组）");
+  assert.ok(clientSource.includes("function sameFavoriteIds(a, b) {"), "集合逐项相等判定（storage 桥「值变才动作」同源）");
+  assert.ok(
+    clientSource.indexOf("if (left.length !== right.length) return false;") > 0
+      && clientSource.indexOf("return right.every((id) => set.has(id));") > 0,
+    "逐项相等判定与顺序无关（引擎集合语义等价）"
+  );
+
+  /* ② 写入唯一链路：净房持久化 → store 镜像 → 引擎热更（顺序即链路） */
+  assert.ok(clientSource.includes("const toggleFavorite = (wsId) => {"), "写入唯一链路 toggleFavorite(wsId)");
+  const saveAt = clientSource.indexOf("const merged = saveCosmosSettings({ favorites: next }); // 净房持久化（唯一落盘口）");
+  const storeAt = clientSource.indexOf("cosmosFavoritesStore.set({ favorites: merged.favorites }); // 本窗镜像（按钮两态即时翻转）");
+  const engineAt = clientSource.indexOf("controllerRef.current?.getEngine?.()?.setFavorites?.(merged.favorites); // 引擎热更（下一帧生效）");
+  assert.ok(saveAt > 0 && storeAt > saveAt && engineAt > storeAt, "链路顺序：净房持久化 → store → 引擎 setFavorites");
+  assert.ok(clientSource.includes("const current = favoriteIdsOf(cosmosFavoritesStore.getSnapshot());"), "当前集合现读 store（无陈旧闭包）");
+  assert.ok(clientSource.includes("const next = has ? current.filter((item) => item !== id) : [...current, id];"),
+    "切换语义：已收藏移除 / 未收藏追加");
+  assert.equal((clientSource.match(/cosmosFavoritesStore\.set\(/g) ?? []).length, 2,
+    "favorites store 恰两处写者（本窗写入链路 + storage 桥）——MUST NOT 有清理/剪枝路径");
+
+  /* ③ 上限满拒绝（D6）：先判后存 + toast + 不落盘（已收藏集合与按钮态不变） */
+  const limitAt = clientSource.indexOf("if (!has && current.length >= COSMOS_FAVORITES_MAX) {");
+  assert.ok(limitAt > 0, "满上限分支先行判定（仅在新增时）");
+  assert.ok(limitAt < saveAt, "满上限判定先于保存（拒绝时 MUST NOT 落盘）");
+  assert.ok(clientSource.includes('tr("cosmos.fav.limit", "收藏已达上限（64），请先取消其中一个星座")'), "满上限 toast 文案走词典");
+  assert.ok(clientSource.includes("COSMOS_FAVORITES_MAX"), "上限常量消费自 settings.mjs（单一来源，不写字面量比较）");
+
+  /* ④ 按钮两态（实心/空心）与 a11y：状态源 = favorites 快照 ∪ 当前钻取星座 */
+  assert.ok(clientSource.includes("const favoritesState = useSyncExternalStore(cosmosFavoritesStore.subscribe, cosmosFavoritesStore.getSnapshot);"),
+    "按钮状态经 useSyncExternalStore 订阅（store 变更即时重渲染）");
+  assert.ok(clientSource.includes("const favoriteIds = favoriteIdsOf(favoritesState);"), "状态源 = favorites 快照");
+  assert.ok(clientSource.includes("const favButton = (wsId) => {"), "收藏按钮渲染面");
+  assert.ok(clientSource.includes("const on = typeof wsId === \"string\" && wsId !== \"\" && favoriteIds.includes(wsId);"),
+    "按钮态 = 当前钻取星座是否在收藏集合内（favorites ∪ drillGroup.wsId）");
+  assert.ok(clientSource.includes("data-cosmos-fav={on ? \"on\" : \"off\"}") && clientSource.includes("data-on={on ? \"true\" : \"false\"}"),
+    "两态稳定钩子（data-on 驱动引擎 CSS 实心/空心）");
+  assert.ok(clientSource.includes("aria-pressed={on}"), "aria-pressed 随态（切换按钮语义）");
+  assert.ok(clientSource.includes("aria-label={label}") && clientSource.includes("title={label}"), "icon-only 按钮 aria-label + title（可访问名）");
+  assert.ok(
+    clientSource.includes('tr("cosmos.fav.remove", "取消收藏")\n      : tr("cosmos.fav.add", "收藏该星座");'),
+    "aria/title 随态翻转（已收藏 → 「取消收藏」；未收藏 → 「收藏该星座」）"
+  );
+  assert.ok(clientSource.includes("const FAV_STAR_ICON_SVG ="), "五角星图标常量（单形态，两态由 CSS 切换）");
+  assert.ok(clientSource.includes("dangerouslySetInnerHTML={{ __html: FAV_STAR_ICON_SVG }}"), "按钮渲染 SVG 五角星");
+  assert.ok(clientSource.includes("className=\"cos-fav-btn\""), "按钮类名 = 引擎 CSS 两态视觉契约挂点");
+  assert.ok(clientSource.includes("onClick={() => toggleFavorite(wsId)}"), "点击 → 唯一写链路（无旁路）");
+
+  /* ⑤ portal 槽解析与显隐门控：引擎槽同源 MutationObserver；银河态不渲染 */
+  assert.ok(clientSource.includes("const [wsToolSlots, setWsToolSlots] = useState({ left: null, right: null, fav: null });"),
+    "槽位状态含收藏槽（三槽同源解析）");
+  assert.ok(clientSource.includes("const fav = host.querySelector('.cos-fav-slot');"), "收藏槽 portal 目标 = 引擎标牌组末位槽");
+  assert.ok(clientSource.includes("if (!left || !right || !fav) return false;"), "引擎根未就绪 → 不解析（MutationObserver 兜住重挂载）");
+  assert.ok(clientSource.includes("prev.left === left && prev.right === right && prev.fav === fav ? prev : { left, right, fav }"),
+    "引用未变 → 不重渲染（槽位解析幂等）");
+  assert.ok(clientSource.includes("{wsToolSlots.fav !== null && drillGroup !== null ? createPortal(favButton(drillGroup.wsId), wsToolSlots.fav) : null}"),
+    "收藏按钮 portal 到标牌组末位槽；银河态（drillGroup null）不渲染（零呈现/零命中）");
+
+  /* ⑥ 引擎续接（4.3）与 storage 跨窗桥（4.4） */
+  assert.ok(clientSource.includes("engine?.setFavorites?.(loadCosmosSettings().favorites);"),
+    "引擎构造后首推持久值（attach / 重挂续接，与 setFilter 续接同纪律）");
+  assert.ok(clientSource.includes("const prevFavorites = cosmosFavoritesStore.getSnapshot()?.favorites;"), "storage 桥取本键前值");
+  assert.ok(clientSource.includes("cosmosFavoritesStore.set({ favorites: next.favorites });"), "他窗写入 → 本窗镜像即时跟随");
+  assert.ok(clientSource.includes("if (!sameFavoriteIds(prevFavorites, next.favorites)) {"), "仅本键真实值变时触达引擎（值变才动作纪律）");
+  assert.ok(clientSource.includes("controllerRef.current?.getEngine?.()?.setFavorites?.(next.favorites);"), "跨窗热更 → setFavorites");
+  assert.ok(clientSource.includes('"dsh-v-cosmos: settings storage bridge"'), "同一条 storage 桥承载收藏（无第二条监听）");
+
+  /* ⑦ 引擎侧接线（判据并集 + 通道 + 槽）：client 只消费公共面，无私有耦合 */
+  assert.ok(engineSource.includes("export function wsSwitcherItemsOf(scene, focusWsId, favoriteIds) {"), "纯函数第三参（收藏集合）");
+  assert.ok(engineSource.includes("favorites: new Set(),"), "引擎收藏镜像（E.favorites）");
+  assert.ok(engineSource.includes("setFavorites(ids) {"), "公共面 setFavorites");
+  assert.ok(engineSource.includes("wsSwitcherItemsOf(E.scene, E.focusWs.id, E.favorites)"), "切换清单消费点传入收藏集合");
+  assert.ok(engineSource.includes('class="cos-fav-slot"'), "引擎建收藏槽（DOM 一次）");
+
+  /* ⑧ 词典 zh/en 成对（按钮两态 + 上限 toast） */
+  for (const key of ["cosmos.fav.add", "cosmos.fav.remove", "cosmos.fav.limit"]) {
+    assert.equal(
+      (clientSource.match(new RegExp('"' + key.replace(/\./g, "\\.") + '": ', "g")) ?? []).length,
+      2,
+      "词典 zh/en 成对：" + key
+    );
+  }
+}
+
 /** 浮窗组件源码切片（段注释定界；供挂载落稿/门控锚点统计）。 */
 function constFloatBody(source) {
   return source.slice(
@@ -1494,7 +1590,13 @@ function goldLiteralsOutsideVarFallback(source) {
   assert.ok(settingsSource.includes("key !== \"ArrowRight\""), "方向键在网格内移动焦点（键盘可达）");
   assert.ok(settingsSource.includes("min-height:44px"), "卡片触屏目标 ≥44px");
   assert.ok(settingsSource.includes("face?.select?.(id);"), "点选即生效（无保存钮）");
-  assert.ok(!/face\.save\(\)/.test(settingsSource.slice(settingsSource.indexOf("export function CosmosSkinPanel"))), "皮肤页签无「保存」按钮（即时生效语义）");
+  {
+    const skinSection = settingsSource.slice(
+      settingsSource.indexOf("export function CosmosSkinPanel"),
+      settingsSource.indexOf("export function CosmosShortcutsPanel")
+    );
+    assert.ok(!/face\.save\(\)/.test(skinSection), "皮肤页签无「保存」按钮（即时生效语义）");
+  }
   /* DICT zh/en 成对 */
   assert.ok(clientSource.includes('"cosmos.settings.tabSkins": "皮肤"'), "词典 zh：页签名");
   assert.ok(clientSource.includes('"cosmos.settings.tabSkins": "Skins"'), "词典 en：页签名");
@@ -2194,7 +2296,8 @@ function goldLiteralsOutsideVarFallback(source) {
   assert.ok(clientSource.includes("const layoutTokens = cosmosLayoutTokensOf(navPrefs);"), "投影结果在页根计算");
   assert.ok(clientSource.includes("...layoutTokens"), "令牌展开进页根 style（继承链下发到引擎与面板层）");
   assert.ok(
-    clientSource.indexOf("import { COSMOS_SETTINGS_BOUNDS") >= 0 && clientSource.includes("cosmosLayoutTokensOf, loadCosmosSettings"),
+    clientSource.includes('from "./settings.mjs"') && clientSource.includes("COSMOS_SETTINGS_BOUNDS, COSMOS_SETTINGS_DEFAULTS")
+      && clientSource.includes("cosmosLayoutTokensOf, loadCosmosSettings"),
     "settings.mjs 导入投影函数（单一实现，不在 client 复制映射）"
   );
   /* 尺寸 CSS 消费点（替代字面量，全部带现值 fallback） */

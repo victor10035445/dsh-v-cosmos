@@ -336,8 +336,8 @@ const clientSource = readFileSync(new URL("../src/client.jsx", import.meta.url),
 {
   /* 12a. api 桥与投影 store */
   assert.ok(
-    clientSource.includes('import { fetchScene, subscribeCosmosEvents, bindSession, fetchQueue, queueAction, fetchWorks, pickWorks, updateWork, removeWork, openWork, revealWork } from "./api.mjs";'),
-    "api 桥导入 fetchQueue / queueAction"
+    clientSource.includes('import { fetchScene, subscribeCosmosEvents, bindSession, fetchQueue, queueAction, fetchWarp, warpAction, fetchWorks, pickWorks, updateWork, removeWork, openWork, revealWork } from "./api.mjs";'),
+    "api 桥导入 fetchQueue / queueAction（并含曲率 fetchWarp / warpAction）"
   );
   assert.ok(
     clientSource.includes("projectQueuePanel") && clientSource.includes("queuePendingKeysOf") && clientSource.includes("queueScopeOf"),
@@ -358,7 +358,7 @@ const clientSource = readFileSync(new URL("../src/client.jsx", import.meta.url),
   /* 12b. 队列面板 DOM 钩子与零布局门控 */
   assert.ok(clientSource.includes('className="dsh-cosmos-queue"'), "队列面板容器 JSX");
   assert.ok(clientSource.includes('data-plugin-anchor="dsh-v-cosmos:queue"'), "队列面板插件锚点");
-  assert.ok(clientSource.includes("data-indicator={model.indicator}"), "执行指示点 data-indicator");
+  assert.ok(clientSource.includes("data-indicator={pulse.indicator}"), "执行指示点 data-indicator");
   assert.ok(clientSource.includes('data-cosmos-queue-pause="true"'), "暂停/继续钮钩子");
   assert.ok(clientSource.includes('data-cosmos-queue-clear="true"'), "清空钮钩子");
   assert.ok(clientSource.includes('data-armed={clearArmed ? "true" : undefined}'), "清空两击确认 armed 态");
@@ -372,7 +372,8 @@ const clientSource = readFileSync(new URL("../src/client.jsx", import.meta.url),
   assert.ok(clientSource.includes("{row.failedDetail ? ("), "失败 / 跳过残留显示可见诊断行（message + reason）");
   assert.ok(clientSource.includes(".dsh-cosmos-queue-detail{"), "残留诊断行 CSS（单行省略）");
   assert.ok(
-    clientSource.includes("const modelVisible = model !== null && model !== undefined && model.visible === true;")
+    clientSource.includes("const pulseVisible = model !== null && model !== undefined && model.visible === true;")
+      && clientSource.includes("const warpVisible = warpModel !== null && warpModel !== undefined && warpModel.visible === true;")
       && clientSource.includes("if (!modelVisible) return null;"),
     "空队列整面板不渲染（visible 门控 = 零布局）"
   );
@@ -458,8 +459,14 @@ const clientSource = readFileSync(new URL("../src/client.jsx", import.meta.url),
       && clientSource.includes('tr("cosmos.queue.hostStale", "宿主半区未加载队列接口：请重启 DSH 后重试")'),
     "unknown route（宿主半区未重启）→ 明确重启指引"
   );
-  assert.ok(clientSource.includes('"cosmos.queue.title": "自动队列"'), "词典 zh：队列面板标题");
-  assert.ok(clientSource.includes('"cosmos.queue.title": "Auto queue"'), "词典 en：队列面板标题");
+  assert.ok(clientSource.includes('"cosmos.queue.title": "脉冲队列"'), "词典 zh：队列面板标题（脉冲队列）");
+  assert.ok(clientSource.includes('"cosmos.queue.aria": "脉冲队列"'), "词典 zh：队列面板 aria 与标题同值");
+  assert.ok(clientSource.includes('"cosmos.queue.title": "Impulse queue"'), "词典 en：队列面板标题（Impulse queue）");
+  assert.ok(clientSource.includes('"cosmos.queue.aria": "Impulse queue"'), "词典 en：队列面板 aria 与标题同值（旧命名族清零）");
+  assert.ok(clientSource.includes('"cosmos.actions.enqueue": "加入脉冲队列"'), "词典 zh：入队钮 title（加入脉冲队列）");
+  assert.ok(clientSource.includes('"cosmos.actions.enqueue": "Add to impulse queue"'), "词典 en：入队钮 title（Add to impulse queue）");
+  assert.ok(clientSource.includes('"cosmos.queue.enqueued": "已加入脉冲队列"'), "词典 zh：入队成功 toast（已加入脉冲队列）");
+  assert.ok(clientSource.includes('"cosmos.queue.enqueued": "Added to the impulse queue"'), "词典 en：入队成功 toast（Added to the impulse queue）");
 
   /* 12g. 导出面（bundle 级冒烟观测点） */
   assert.ok(clientSource.includes("ProposalPanel, SessionPanel, QueuePanel, ActionBar"), "QueuePanel 进入导出清单");

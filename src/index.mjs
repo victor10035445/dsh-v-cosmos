@@ -5,9 +5,9 @@
  *  - GET  /api/dsh-v-cosmos/scene  星空骨架 JSON（星座/恒星/连线/星云/关联边；
  *                                 **会话不在其列**——会话事实走浏览器半区官方镜像）
  *  - GET  /api/dsh-v-cosmos/events SSE 轻帧广播：`proposals-changed` /
- *                                 `associations-changed` / `queue-changed` / `works-changed`
- *                                 （帧体不带载荷，客户端收到后自行重拉 scene / queue / works
- *                                 ——hive 同款；心跳注释防代理断连）。
+ *                                 `associations-changed` / `queue-changed` / `warp-changed` /
+ *                                 `works-changed`（帧体不带载荷，客户端收到后自行重拉
+ *                                 scene / queue / warp / works——hive 同款；心跳注释防代理断连）。
  *  - 提案动作自动执行队列（add-cosmos-action-queue 4.1 / design D6）：
  *                                 `GET /queue` 全量快照（每星座 `{paused, pausedAt, counts,
  *                                 entries}`；条目投影不含 prompt 正文，executing 子态
@@ -24,6 +24,19 @@
  *                                 完成判定用宿主 agent 事件面 + 冷读双源（活体 agents.get
  *                                 优先 → sessionController.list 摘要）。
  *                                 会话服务不可用 → 条目 failed + 队列暂停，**不回落** hero。
+ *  - 曲率引擎 / 曲率队列（two-add-cosmos-proposal-warp 4.1 / design D1、D7、D8）：
+ *                                 `GET /warp` 全量快照（每星座 `{paused, pausedAt, counts,
+ *                                 entries}`；条目投影不含 prompt 正文；executing 子态
+ *                                 `running|waiting`、ready 的 `waiting-session` 由会话活动推导）；
+ *                                 `POST /warp/attach` `{wsId, targetKind, targetKey,
+ *                                 targetLabel?, anchorSlugs?, explorerSessionId?}` 按**当前
+ *                                 曲率计划**落快照（计划悬空引用丢弃、星胚目标仅 proto 条目、
+ *                                 重复附着 400 duplicate；星胚组已点燃 slug 立即展开）；
+ *                                 `POST /warp/remove|pause|resume`（操作矩阵：launching/
+ *                                 executing 锁定；无排序/无清空）。变更后广播 `warp-changed`
+ *                                 轻帧。持久化 `$DSH_HOME/storages/dsh-v-cosmos.warp.json`；
+ *                                 触发沿 = 目标相关动作任务完整结束（关联会话活动计数下降沿），
+ *                                 直航走新建会话通道、proto 走既有探索会话直投（零 create）。
  *  - GET/PUT /api/dsh-v-cosmos/config 动作按钮配置（add-cosmos-proposal-actions）：
  *                                 GET 返回 `{status, revision, value, base, user, writable}`
  *                                 （base = 补丁层 entry config，user = 共享存储节，
@@ -153,13 +166,27 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildSkeleton, scanProposal, assignmentProposalSlugs } from "./scan.mjs";
-import { actionButtonVisible } from "./buttons.mjs";
+import { actionButtonVisible, normalizeButtons } from "./buttons.mjs";
 import {
   createQueueStore,
   proposalDirPath,
   publicEntryOf,
   publicSnapshotOf
 } from "./queue-store.mjs";
+/* 曲率队列（two-add-cosmos-proposal-warp）：独立存储 + 门控接力状态机；曲率计划模型与
+   设置页控制器在纯逻辑模块（configstore 节归一化 / 客户端共用同一实现）。 */
+import {
+  createWarpStore,
+  hasActiveWarpTarget,
+  publicWarpEntryOf,
+  publicWarpSnapshotOf
+} from "./warp-store.mjs";
+import { createWarpScheduler } from "./warp-scheduler.mjs";
+import {
+  normalizeWarpPlan,
+  resolveWarpPlanEntries,
+  sanitizeWarpPlan
+} from "./warp-plan.mjs";
 /* 星座作品存储（p1-add-cosmos-works-service 1.1–1.3）：纯逻辑 + 原子写在独立模块，
    本文件只做端点接线与文件系统裁决（包含性/符号链接/文件类型）。 */
 import {
@@ -169,7 +196,11 @@ import {
   publicWorkOf
 } from "./works-store.mjs";
 import { createQueueScheduler } from "./queue-scheduler.mjs";
-import { createQueueDeliverer, createSessionReader } from "./session-executor.mjs";
+import {
+  createQueueDeliverer,
+  createSessionReader,
+  createWarpProtoDeliverer
+} from "./session-executor.mjs";
 import { normalizeView, createConfigStore, resolveConfigStorePath } from "./configstore.mjs";
 import {
   normalizeArchiveRequest,
@@ -988,6 +1019,314 @@ export function apply(ctx, config, options = {}) {
     revisedAt: queueStore.revisedAt
   });
 
+  /* ── 曲率队列（two-add-cosmos-proposal-warp 4.1–4.4）：服务端权威 ──
+     曲率 = 附着在目标上的计划 + 反应式门控接力引擎（design D1：独立存储/独立调度器，
+     不寄生脉冲队列）。状态与调度器是服务端单例；浏览器半区纯投影（`warp-changed`
+     轻帧 → 客户端拉 `GET /warp` 对账）。
+
+     触发沿（design D2）= 「与目标相关的动作任务完整结束」：与服务端关联存储 × 共享会话
+     态缓存（脉冲调度器的 `sessionStateOf`，**零第二份缓存**）聚合出每目标的活动计数，
+     计数 >0 → 归 0 的下降沿喂 `warpScheduler.onTaskSettled`；提案状态翻转本身不触发。 */
+
+  /** 曲率存储（`$DSH_HOME/storages/dsh-v-cosmos.warp.json`，原子写）。 */
+  const warpStore = createWarpStore({ logger: ctx.logger ?? null });
+
+  /** 曲率直航投递器（提案目标：新建会话；标题前缀「曲率」，关联绑定与脉冲同口径）。 */
+  const deliverWarpProposal = createQueueDeliverer({
+    sessionController: ctx.sessionController,
+    logger: ctx.logger ?? null,
+    bindAssociation: bindQueuedSession,
+    titlePrefix: "曲率"
+  });
+
+  /** proto 直投器（星胚目标：既有探索会话，零 create/rename/草稿；spike-findings §1.4）。 */
+  const deliverWarpProto = createWarpProtoDeliverer({
+    sessionController: ctx.sessionController,
+    logger: ctx.logger ?? null
+  });
+
+  /** 曲率投递入口：按目标形态分派。 */
+  const deliverWarpEntry = (entry) => {
+    if (entry?.targetKind === "embryo") return deliverWarpProto(entry);
+    return deliverWarpProposal({
+      wsId: entry.wsId,
+      proposalId: entry.targetKey,
+      proposalDir: entry.proposalDir,
+      button: entry.button
+    });
+  };
+
+  /**
+   * 该提案的服务端活动计数（与 `queueActivityActOf` 同口径：关联存储中属于该提案的
+   * 会话里 running ∨ 等待决策的条数；委托忙碌服务端不可见，按 0 计）。
+   */
+  const warpActivityActOf = (wsId, proposalId) => {
+    const workspacePath = workspacePathOf(wsId);
+    if (!workspacePath) return 0;
+    let act = 0;
+    for (const entry of entries) {
+      if (entry.workspace !== workspacePath || entry.proposal !== proposalId) continue;
+      const state = scheduler.sessionStateOf(entry.sessionId);
+      if (state !== null && (state.running === true || state.waiting > 0)) act += 1;
+    }
+    return act;
+  };
+
+  /** 探索会话是否仍被占用（proto 安静投递门：running ∨ 等待决策 → 保持「等待会话空闲」）。 */
+  const explorerBusy = (entry) => {
+    const sessionId = typeof entry?.explorerSessionId === "string" ? entry.explorerSessionId : "";
+    if (!sessionId) return false;
+    const state = scheduler.sessionStateOf(sessionId);
+    return state !== null && (state.running === true || state.waiting > 0);
+  };
+
+  /**
+   * 曲率门控复查（同步）：与动作条渲染同一谓词 + 磁盘重扫。
+   *  - proposal：`preState` 匹配（未设恒过）∧ 沉睡（act === 0）∧ 提案目录存在；
+   *  - embryo：目标锚点仍存在（proto 生命周期由锚点存在性表达）；会话空闲由点火时刻
+   *    安静门另行复验（ready 保留「等待会话空闲」子态）。
+   */
+  const warpGate = (entry) => {
+    const wsPath = workspacePathOf(entry.wsId);
+    if (!wsPath) return { ok: false, reason: "workspace/unknown" };
+    if (entry.targetKind === "embryo") {
+      const anchors = Array.isArray(entry.anchorSlugs) ? entry.anchorSlugs : [];
+      const alive = anchors.some(
+        (slug) => typeof slug === "string" && slug
+          && existsSync(join(wsPath, "openspec", "pending-changes", slug + ".json"))
+      );
+      return alive ? { ok: true } : { ok: false, reason: "target-gone" };
+    }
+    const dir = typeof entry.proposalDir === "string" ? entry.proposalDir : "";
+    if (!dir || !existsSync(dir)) return { ok: false, reason: "proposal/unknown" };
+    const proposal = scanProposal(entry.targetKey, dir, readers.readTasks, readers.readBirthMs, readers.readState);
+    const act = warpActivityActOf(entry.wsId, entry.targetKey);
+    const preState = typeof entry.button?.preState === "string" ? entry.button.preState : "";
+    if (preState && !actionButtonVisible({ preState }, { lifecycle: proposal.lifecycle, act })) {
+      return { ok: false, reason: "prestate-drift" };
+    }
+    if (act > 0) return { ok: false, reason: "busy" };
+    return { ok: true };
+  };
+
+  /** 曲率变更轻帧（帧体不带载荷）。 */
+  const broadcastWarp = () => broadcast({ type: "warp-changed" });
+
+  /**
+   * 星胚展开（design D5）：proto 任务收尾 / 附着时已点燃 slug 即展开——按**展开时刻**
+   * 曲率计划解析非 proto 动作条，为每个已点燃提案（磁盘存在提案目录）附着（grayed 入场）。
+   * 目标已有非终态条目（用户先行附着/另一 proto 已展开）→ 跳过。快照外 slug 不吸入。
+   *
+   * @param {{wsId: string, anchorSlugs: string[]}} input
+   * @returns {{targets: Array<{wsId: string, targetKey: string}>, attached: number}}
+   */
+  const expandWarpEmbryo = (input) => {
+    const wsId = typeof input?.wsId === "string" ? input.wsId : "";
+    const wsPath = workspacePathOf(wsId);
+    const anchors = Array.isArray(input?.anchorSlugs) ? input.anchorSlugs : [];
+    if (!wsPath || anchors.length === 0) return { targets: [], attached: 0 };
+    const ignited = anchors.filter(
+      (slug) => typeof slug === "string" && slug && existsSync(join(wsPath, "openspec", "changes", slug))
+    );
+    if (ignited.length === 0) return { targets: [], attached: 0 };
+    const view = configStore.snapshot(baseView);
+    const plan = view?.value?.warpPlan;
+    const buttons = Array.isArray(view?.value?.buttons) ? view.value.buttons : [];
+    const planEntries = resolveWarpPlanEntries(plan, buttons, "proposal");
+    if (planEntries.length === 0) return { targets: [], attached: 0 };
+    const targets = [];
+    for (const slug of ignited) {
+      if (hasActiveWarpTarget(warpStore.doc, wsId, slug)) continue;
+      const proposalDir = proposalDirPath(wsPath, slug);
+      if (!proposalDir || !existsSync(proposalDir)) continue;
+      const attached = warpStore.attach({
+        wsId,
+        targetKey: slug,
+        targetKind: "proposal",
+        targetLabel: slug,
+        proposalDir,
+        entries: planEntries
+      });
+      if (attached.ok === true) targets.push({ wsId, targetKey: slug });
+    }
+    if (targets.length > 0) broadcastWarp();
+    return { targets, attached: targets.length };
+  };
+
+  /**
+   * 转入脉冲队列（转投即完成）：进程内直调 enqueue，同口径快照与复验。
+   * 返回 `{ok:true}`（转投落定）或显式原因（`limit/busy` → 保持待发；`gate/...` → skipped）。
+   */
+  const transferWarpEntry = (entry) => {
+    if (entry?.targetKind !== "proposal") {
+      return { ok: false, reason: "invalid-target", message: "星胚任务不能转入脉冲队列" };
+    }
+    const wsPath = workspacePathOf(entry.wsId);
+    if (!wsPath) return { ok: false, reason: "workspace/unknown" };
+    const proposalDir = typeof entry.proposalDir === "string" && entry.proposalDir
+      ? entry.proposalDir
+      : proposalDirPath(wsPath, entry.targetKey);
+    if (!proposalDir || !existsSync(proposalDir)) return { ok: false, reason: "proposal/unknown" };
+    const proposal = scanProposal(entry.targetKey, proposalDir, readers.readTasks, readers.readBirthMs, readers.readState);
+    const act = warpActivityActOf(entry.wsId, entry.targetKey);
+    const preState = typeof entry.button?.preState === "string" ? entry.button.preState : "";
+    if (preState) {
+      if (!actionButtonVisible({ preState }, { lifecycle: proposal.lifecycle, act })) {
+        return { ok: false, reason: "gate" };
+      }
+    }
+    if (act > 0) return { ok: false, reason: "gate" };
+    const enqueued = queueStore.enqueue({
+      wsId: entry.wsId,
+      proposalId: entry.targetKey,
+      proposalDir,
+      button: entry.button
+    });
+    if (enqueued.ok !== true) {
+      if (enqueued.error === "duplicate") return { ok: true, duplicate: true };
+      if (enqueued.error === "limit") return { ok: false, reason: "limit" };
+      return { ok: false, reason: enqueued.error || "delivery-failed", message: "脉冲队列拒绝转入" };
+    }
+    broadcastQueue();
+    scheduler.kick(entry.wsId);
+    return { ok: true, duplicate: false };
+  };
+
+  /** 曲率调度器（门控接力 / 并发上限 / 安静门 / 转投即完成 / 重启对账）。 */
+  const warpScheduler = createWarpScheduler({
+    store: warpStore,
+    gate: warpGate,
+    deliver: deliverWarpEntry,
+    transfer: transferWarpEntry,
+    expand: (entry) => expandWarpEmbryo({ wsId: entry.wsId, anchorSlugs: entry.anchorSlugs }),
+    explorerBusy,
+    readSession: readQueueSession,
+    readSessionState: (sessionId) => scheduler.sessionStateOf(sessionId),
+    isArchived: (sessionId) => archivedSessionIds().has(sessionId),
+    onChange: broadcastWarp,
+    notify: (message) => {
+      ctx.logger?.warn?.("[dsh-v-cosmos] 曲率：%s", String(message));
+    },
+    logger: ctx.logger ?? null
+  });
+
+  /** 对外快照（`GET /warp`）：叠加调度器活动子态（executing running/waiting、ready 等待会话空闲）。 */
+  const warpViewSnapshot = () => ({
+    ...publicWarpSnapshotOf(warpStore.doc, (wsId, entry) => warpScheduler.activityOf(wsId, entry)),
+    revisedAt: warpStore.revisedAt
+  });
+
+  /** 目标活动计数基线（下降沿检测；key = wsId\0targetKey）。 */
+  const warpActivityLast = new Map();
+
+  /** 单目标当前活动计数（proposal = 关联会话聚合；embryo = 探索会话）。 */
+  const warpActivityNowOf = (target) => {
+    if (target.targetKind === "embryo") {
+      const sessionId = typeof target.explorerSessionId === "string" ? target.explorerSessionId : "";
+      if (!sessionId) return 0;
+      const state = scheduler.sessionStateOf(sessionId);
+      return state !== null && (state.running === true || state.waiting > 0) ? 1 : 0;
+    }
+    return warpActivityActOf(target.wsId, target.targetKey);
+  };
+
+  /**
+   * 触发沿刷新：对文档内全部去重目标采样活动计数，`>0 → 0` 下降沿喂复查。
+   * 每道会话事件（agent/status、交互瀑布退出）后调用；新附着目标也调用一次建立基线
+   * （避免「附着时会话已忙 → 收尾下降沿」丢失）。
+   */
+  const refreshWarpTriggers = () => {
+    const live = new Set();
+    for (const target of warpStore.targets()) {
+      const key = target.wsId + "\u0000" + target.targetKey;
+      live.add(key);
+      const count = warpActivityNowOf(target);
+      const previous = warpActivityLast.get(key) ?? 0;
+      warpActivityLast.set(key, count);
+      if (previous > 0 && count === 0) {
+        warpScheduler.onTaskSettled(target.wsId, target.targetKey);
+      }
+    }
+    for (const key of [...warpActivityLast.keys()]) {
+      if (!live.has(key)) warpActivityLast.delete(key);
+    }
+  };
+
+  /**
+   * 工作区不在册守卫：清空该星座曲率队列（registry 暂不可达时不误清）。
+   * @returns {boolean} 是否有清理动作（调用方据此广播）
+   */
+  const reconcileWarpWorkspaces = () => {
+    const list = listedWorkspaces();
+    if (list === null) return false;
+    const ids = new Set(list.map(workspaceEntityId));
+    let changed = false;
+    for (const wsId of Object.keys(warpStore.doc?.warps ?? {})) {
+      if (ids.has(wsId)) continue;
+      const result = warpStore.clearWarp({ wsId });
+      if (result.ok === true) changed = true;
+    }
+    if (changed) broadcastWarp();
+    return changed;
+  };
+
+  /**
+   * 提案归档清理（骨架扫描退出活跃清单时调用）：清该提案全部非在途曲率条目。
+   * @param {string} wsId
+   * @param {string} proposalId
+   * @returns {number} 清理条数
+   */
+  const clearWarpForArchivedProposal = (wsId, proposalId) => {
+    const result = warpStore.clearProposal({ wsId, proposalId });
+    if (result.ok === true && result.removed > 0) {
+      broadcastWarp();
+      return result.removed;
+    }
+    return 0;
+  };
+
+  /**
+   * 星胚移除清理（`/dismiss-embryo` 成功/幂等路径调用）：凡锚点清单含该 slug 的星胚
+   * 目标 → 清该目标**全部**曲率条目（含 grayed proto）。已展开的提案目标不受影响。
+   * @returns {number} 清理条数
+   */
+  const clearWarpForDismissedEmbryo = (wsId, slug) => {
+    const result = warpStore.clearEmbryoSlug({ wsId, slug });
+    if (result.ok === true && result.removed > 0) {
+      broadcastWarp();
+      return result.removed;
+    }
+    return 0;
+  };
+
+  /** 曲率计划保存面交叉校验（悬空引用拒绝；spec「曲率计划配置模型」）。 */
+  const warpPlanPatchError = (sections) => {
+    if (sections === null || typeof sections !== "object" || !("warpPlan" in sections)) return null;
+    if (sections.warpPlan === null) return null;
+    let plan;
+    try {
+      plan = normalizeWarpPlan(sections.warpPlan);
+    } catch (error) {
+      return String(error?.message || error);
+    }
+    let buttons;
+    if (Array.isArray(sections.buttons)) {
+      try {
+        buttons = normalizeButtons(sections.buttons);
+      } catch {
+        return null; // 按钮节自身非法 → 交给 configStore.writeSections 统一报 invalid
+      }
+    } else {
+      const snapshot = configStore.snapshot(baseView);
+      buttons = Array.isArray(snapshot?.value?.buttons) ? snapshot.value.buttons : [];
+    }
+    const known = new Set(buttons.map((button) => button.name));
+    for (const bar of plan.bars) {
+      if (!known.has(bar.name)) return `曲率计划引用的动作条不存在：${bar.name}`;
+    }
+    return null;
+  };
+
   /* ── 星座作品（p1-add-cosmos-works-service 2.1–2.8）：作品快捷入口的服务端半区 ──
      存储 = 插件自有第四件 `$DSH_HOME/storages/dsh-v-cosmos.works.json`（与关联/队列/谱系
      互不覆盖）。启动面按 design D3 三层收窄：①端点签名只收 `(wsId, workId)`（裸路径结构上
@@ -1345,13 +1684,15 @@ export function apply(ctx, config, options = {}) {
   };
 
   /**
-   * 宿主 agent 事件面 → 调度器：
-   *  - `agent/status`：running/idle 迁移（`payload.agent.id` = 会话 id）；
+   * 宿主 agent 事件面 → 脉冲调度器 + 曲率引擎（two-add-cosmos-proposal-warp 2.1）：
+   *  - `agent/status`：running/idle 迁移（`payload.agent.id` = 会话 id）——**先**喂脉冲
+   *    调度器（共享会话态缓存的唯一写者），再喂曲率引擎（只读同一缓存），最后刷新曲率
+   *    触发沿（按目标活动计数下降沿）；
    *  - `approval/request` / `user-questions/request`：**prepend** 观察者——`[实证]`
    *    （add-cosmos-action-queue 探索）：有浏览器连接时 `dsh-api-remotes` 的转发监听者
    *    会持有整条链直到人应答，非 prepend 监听者在该路径上永远收不到请求（本插件的主场景
    *    正是浏览器常开）。观察者恒 `next()` 透传、`finally` 配对进出沿，绝不吞链、不改变
-   *    官方应答者行为。
+   *    官方应答者行为。退出沿同时喂曲率完成判定与触发沿刷新。
    * @returns {() => void} 卸载函数
    */
   const installQueueListeners = () => {
@@ -1361,6 +1702,8 @@ export function apply(ctx, config, options = {}) {
       ctx.on("agent/status", (payload) => {
         try {
           scheduler.onAgentStatus({ sessionId: payload?.agent?.id, status: payload?.status });
+          warpScheduler.onAgentStatus({ sessionId: payload?.agent?.id, status: payload?.status });
+          refreshWarpTriggers();
         } catch (error) {
           ctx.logger?.warn?.("[dsh-v-cosmos] 队列 agent/status 归约失败: %s", String(error?.message || error));
         }
@@ -1379,7 +1722,11 @@ export function apply(ctx, config, options = {}) {
             scheduler.interactionExit(sessionId);
             throw error;
           }
-          return Promise.resolve(result).finally(() => scheduler.interactionExit(sessionId));
+          return Promise.resolve(result).finally(() => {
+            scheduler.interactionExit(sessionId);
+            warpScheduler.onInteractionExit(sessionId);
+            refreshWarpTriggers();
+          });
         }, { prepend: true })
       );
     };
@@ -1482,12 +1829,22 @@ export function apply(ctx, config, options = {}) {
       谱系写入/时间线变化 MUST 触发增量广播，否则面板停留兜底块旧序）。 */
   const skeletonFingerprint = (ws) => JSON.stringify({ s: ws.stars, a: ws.archives, p: ws.pending, lin: ws.lineages, l: ws.links, assoc: ws.associations });
 
+  /** 骨架活跃正式提案 id 集合（proto 星胚不入；归档检测用）。 */
+  const activeProposalIdsOf = (ws) => new Set(
+    (Array.isArray(ws?.stars) ? ws.stars : [])
+      .filter((star) => star && star.lifecycle !== "proto" && typeof star.id === "string" && star.id)
+      .map((star) => star.id)
+  );
+
   /**
    * 全量扫描（懒启动/请求期对账/watch 防抖共用入口）：
    * registry 清单 × 目录扫描 → 会话剪除 → 启发式 → 骨架装配（含关联边投影回填）。
    * 骨架变化 → proposals-changed；关联变化 → associations-changed（persist 内广播）。
    * 点燃谱系（add-cosmos-panel-birthline-sort 2.2）：每帧扫描差分观察并入骨架装配，
    * 台账变更落盘一次；谱系入指纹 → 变化走既有 proposals-changed 链。
+   * 曲率生命周期（two-add-cosmos-proposal-warp 4.3）：提案退出活跃清单 → 清其非在途
+   * 曲率条目；工作区不在册 → 清空该星座曲率队列；扫描变更只作**已有触发沿目标**的
+   * 置灰补查（`onScanChanged`，不主动点火新目标——design D3 红线）。
    */
   const scanAll = ({ scope } = {}) => {
     const now = Date.now();
@@ -1531,9 +1888,26 @@ export function apply(ctx, config, options = {}) {
         }
       }
     }
+    /* ── 曲率生命周期清理（仅在任何一次扫描之后；首扫无可比旧态） ── */
+    const wasScanned = scanned;
+    reconcileWarpWorkspaces();
+    if (wasScanned) {
+      for (const ws of next.workspaces) {
+        const prev = skeleton.workspaces.find((old) => old.id === ws.id);
+        if (!prev) continue;
+        const before = activeProposalIdsOf(prev);
+        if (before.size === 0) continue;
+        const after = activeProposalIdsOf(ws);
+        for (const proposalId of before) {
+          if (after.has(proposalId)) continue;
+          clearWarpForArchivedProposal(ws.id, proposalId);
+        }
+      }
+    }
     skeleton = next;
     scanned = true;
     reconcileWatchers();
+    if (wasScanned) warpScheduler.onScanChanged();
     if (skeletonChanged) broadcast({ type: "proposals-changed" });
     return skeleton;
   };
@@ -1737,6 +2111,9 @@ export function apply(ctx, config, options = {}) {
        装载先于挂载（对账必须看到持久化条目）；`scheduler.start()` 冷读在途条目
        （launching/executing）后逐队列推进。失败只告警（路由与投影不受影响）。 */
     queueStore.load();
+    /* 曲率：装载 → 事件面同拍挂接 → 重启对账（executing 冷读续监视 / launching → failed）
+       → 逐星座复查点火。状态回填/广播由 warpScheduler 注入的 onChange 承担。 */
+    warpStore.load();
     /* 作品存储装载（坏档 → 空作品表；首写即建）。装载失败只告警：路由与投影照常。 */
     try {
       worksStore.load();
@@ -1747,6 +2124,11 @@ export function apply(ctx, config, options = {}) {
     void scheduler.start().catch((error) => {
       ctx.logger?.warn?.("[dsh-v-cosmos] 队列启动对账失败: %s", String(error?.message || error));
     });
+    void warpScheduler.start()
+      .then(() => refreshWarpTriggers())
+      .catch((error) => {
+        ctx.logger?.warn?.("[dsh-v-cosmos] 曲率启动对账失败: %s", String(error?.message || error));
+      });
 
     const readJsonBody = async (req) => {
       const chunks = [];
@@ -1804,9 +2186,16 @@ export function apply(ctx, config, options = {}) {
             return;
           }
 
-          /* ── 动作按钮配置：CAS 写入 `{ baseRevision, sections }`（null = unset 该节） ── */
+          /* ── 动作按钮配置：CAS 写入 `{ baseRevision, sections }`（null = unset 该节） ──
+             曲率计划节（two-add-cosmos-proposal-warp 5.1）：保存前交叉校验 `name` 必须命中
+             既有按钮配置（悬空引用拒绝——spec「曲率计划配置模型与曲率引擎设置页签」）。 */
           if (route === "/config" && req.method === "PUT") {
             const body = await readJsonBody(req);
+            const planError = warpPlanPatchError(body?.sections);
+            if (planError !== null) {
+              json(res, 400, { error: "invalid", reason: planError });
+              return;
+            }
             let outcome;
             try {
               outcome = await configStore.writeSections(body);
@@ -1994,6 +2383,8 @@ export function apply(ctx, config, options = {}) {
             const anchorPath = join(workspacePath, "openspec", "pending-changes", slug + ".json");
             /* 锚点存在性：缺失 = 幂等（重复移除 / ff 已清理）。 */
             if (!existsSync(anchorPath)) {
+              /* 星胚移除的曲率清理同样幂等（重复移除时已清空 → removed 0 零广播）。 */
+              clearWarpForDismissedEmbryo(body?.workspaceId, slug);
               json(res, 200, { outcome: "already-missing" });
               return;
             }
@@ -2002,12 +2393,15 @@ export function apply(ctx, config, options = {}) {
             } catch (error) {
               /* 存在性检查与删除之间被 ff / explore 并发清理 → 归幂等（恒 200 不破）。 */
               if (error?.code === "ENOENT") {
+                clearWarpForDismissedEmbryo(body?.workspaceId, slug);
                 json(res, 200, { outcome: "already-missing" });
                 return;
               }
               json(res, 200, { outcome: "failed", reason: String(error?.message || error) });
               return;
             }
+            /* 星胚被移除 → 清该星胚目标全部曲率条目（two-add-cosmos-proposal-warp 4.3）。 */
+            clearWarpForDismissedEmbryo(body?.workspaceId, slug);
             json(res, 200, { outcome: "deleted" });
             return;
           }
@@ -2126,6 +2520,168 @@ export function apply(ctx, config, options = {}) {
               return;
             }
             json(res, 400, { error: "invalid", reason: "未知队列操作" });
+            return;
+          }
+
+          /* ── 曲率队列（two-add-cosmos-proposal-warp 4.1 / design D1、D7、D8） ──
+             `GET /warp` 全量快照（UI 纯投影，投影不含 prompt 正文；工作区不在册守卫在
+             读面同拍清理）；`POST /warp/attach` 按**当前曲率计划**快照附着（悬空引用丢弃、
+             重复附着拒绝、星胚目标仅 proto 条目 + 已点燃 slug 立即展开）；`remove` 走操作
+             矩阵；`pause/resume` 只挡点火不碰在途。每次成功变更广播 `warp-changed` 轻帧。 */
+          if (route === "/warp" && req.method === "GET") {
+            reconcileWarpWorkspaces();
+            json(res, 200, { ok: true, warp: warpViewSnapshot() });
+            return;
+          }
+          if (route.startsWith("/warp/") && req.method === "POST") {
+            const action = route.slice("/warp/".length);
+            const body = await readJsonBody(req);
+            const wsId = typeof body?.wsId === "string" ? body.wsId.trim() : "";
+            if (!wsId) {
+              json(res, 400, { error: "invalid", reason: "缺少 wsId" });
+              return;
+            }
+            const workspacePath = workspacePathOf(wsId);
+            if (!workspacePath) {
+              json(res, 400, { error: "workspace/unknown" });
+              return;
+            }
+            if (action === "attach") {
+              const targetKind = body?.targetKind === "embryo"
+                ? "embryo"
+                : body?.targetKind === "proposal"
+                  ? "proposal"
+                  : "";
+              const targetKey = typeof body?.targetKey === "string" ? body.targetKey.trim() : "";
+              if (!targetKind || !targetKey) {
+                json(res, 400, { error: "invalid", reason: "缺少 targetKind/targetKey" });
+                return;
+              }
+              const view = configStore.snapshot(baseView);
+              const plan = view?.value?.warpPlan;
+              const planBars = sanitizeWarpPlan(plan).bars;
+              const buttons = Array.isArray(view?.value?.buttons) ? view.value.buttons : [];
+              const entries = resolveWarpPlanEntries(plan, buttons, targetKind);
+              if (planBars.length === 0) {
+                json(res, 400, { error: "plan-empty", reason: "曲率计划为空：请先在「曲率引擎」设置中添加动作条" });
+                return;
+              }
+              if (entries.length === 0) {
+                json(res, 400, { error: "plan-unmatched", reason: "曲率计划中没有可应用于该目标的动作条" });
+                return;
+              }
+              const targetLabel = typeof body?.targetLabel === "string" ? body.targetLabel.trim() : "";
+              if (targetKind === "proposal") {
+                const proposalDir = proposalDirPath(workspacePath, targetKey);
+                if (!proposalDir || !existsSync(proposalDir)) {
+                  json(res, 400, { error: "proposal/unknown" });
+                  return;
+                }
+                const attached = warpStore.attach({
+                  wsId,
+                  targetKey,
+                  targetKind,
+                  targetLabel: targetLabel || targetKey,
+                  proposalDir,
+                  entries
+                });
+                if (attached.ok !== true) {
+                  json(res, 400, { error: attached.error, reason: attached.error === "duplicate" ? "已托管" : undefined });
+                  return;
+                }
+                broadcastWarp();
+                /* 附着完成且队列运行中 → 立即复查（门控匹配条目点亮）。 */
+                warpScheduler.reviewTarget(wsId, targetKey);
+                refreshWarpTriggers();
+                json(res, 200, {
+                  ok: true,
+                  targetKey,
+                  entries: attached.entries.map((entry) => publicWarpEntryOf(entry)),
+                  expanded: []
+                });
+                return;
+              }
+              const anchorSlugs = [];
+              for (const item of Array.isArray(body?.anchorSlugs) ? body.anchorSlugs : []) {
+                const slug = typeof item === "string" ? item.trim() : "";
+                if (slug && !anchorSlugs.includes(slug)) anchorSlugs.push(slug);
+              }
+              if (anchorSlugs.length === 0) {
+                json(res, 400, { error: "invalid", reason: "缺少 anchorSlugs" });
+                return;
+              }
+              let explorerSessionId = typeof body?.explorerSessionId === "string" ? body.explorerSessionId.trim() : "";
+              if (!explorerSessionId) {
+                /* 服务端兜底解析：锚点 JSON 的 `sessionId`（客户端未提供时）。 */
+                try {
+                  const anchors = readers.readPendingDir(workspacePath) ?? [];
+                  const found = anchors.find(
+                    (item) => item && anchorSlugs.includes(item.name)
+                      && typeof item.sessionId === "string" && item.sessionId.trim()
+                  );
+                  explorerSessionId = found ? String(found.sessionId).trim() : "";
+                } catch {
+                  explorerSessionId = "";
+                }
+              }
+              const attached = warpStore.attach({
+                wsId,
+                targetKey,
+                targetKind,
+                targetLabel: targetLabel || targetKey,
+                anchorSlugs,
+                explorerSessionId,
+                entries
+              });
+              if (attached.ok !== true) {
+                json(res, 400, { error: attached.error, reason: attached.error === "duplicate" ? "已托管" : undefined });
+                return;
+              }
+              broadcastWarp();
+              /* 附着时已点燃的 slug 立即展开（不等 proto 跑完）。 */
+              const expanded = expandWarpEmbryo({ wsId, anchorSlugs });
+              for (const target of expanded.targets) {
+                warpScheduler.reviewTarget(target.wsId, target.targetKey);
+              }
+              warpScheduler.reviewTarget(wsId, targetKey);
+              refreshWarpTriggers();
+              json(res, 200, {
+                ok: true,
+                targetKey,
+                entries: attached.entries.map((entry) => publicWarpEntryOf(entry)),
+                expanded: expanded.targets.map((target) => target.targetKey)
+              });
+              return;
+            }
+            if (action === "remove") {
+              const entryId = typeof body?.entryId === "string" ? body.entryId : "";
+              if (!entryId) {
+                json(res, 400, { error: "invalid", reason: "缺少 entryId" });
+                return;
+              }
+              const result = warpStore.remove({ wsId, entryId });
+              if (result.ok !== true) {
+                json(res, 400, { error: result.error });
+                return;
+              }
+              broadcastWarp();
+              json(res, 200, { ok: true });
+              return;
+            }
+            if (action === "pause" || action === "resume") {
+              const paused = action === "pause";
+              const result = warpStore.setPaused({ wsId, paused });
+              if (result.ok !== true) {
+                json(res, 400, { error: result.error });
+                return;
+              }
+              broadcastWarp();
+              /* 继续 = 立即尝试点火（暂停期间点亮/待发的条目重新推进）。 */
+              if (!paused) warpScheduler.kick(wsId);
+              json(res, 200, { ok: true, paused: result.paused });
+              return;
+            }
+            json(res, 400, { error: "invalid", reason: "未知曲率操作" });
             return;
           }
 
@@ -2450,6 +3006,7 @@ export function apply(ctx, config, options = {}) {
       dispose();
       disposeQueueListeners(); // 摘除 agent 事件面监听
       scheduler.dispose(); // 清队列定时器（持久化状态不触碰）
+      warpScheduler.dispose(); // 清曲率定时器 / 绑定（持久化状态不触碰）
       stopConfigWatch();
       disposeTokenFallback?.(); // 摘除路径令牌读取兜底监听
       for (const workspaceId of [...watchers.keys()]) dropWatcher(workspaceId);

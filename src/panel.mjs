@@ -721,7 +721,10 @@ export function crossHoverTargets(hover, ws) {
   const canvas = source === "canvas";
   const id = typeof hover.id === "string" ? hover.id : "";
 
-  /* 星胚合并卡源（多 slug；不注入引擎，只参与行标记派生）。 */
+  /* 星胚合并卡源（多 slug；不注入引擎，只参与行标记派生）。
+     `warp` 源额外把 slug 清单注入 `proposalIds`：曲率条目行 hover 时联动**该星胚合并
+     卡本身**（星胚卡受体判定按 slug 命中，见 `cardIsLinkedOf`）——其余源保持仅会话行
+     联动（既有行为逐字不变）。 */
   if (source === "embryo" || hover.kind === "proto") {
     const slugs = Array.isArray(hover.slugs)
       ? hover.slugs
@@ -733,7 +736,10 @@ export function crossHoverTargets(hover, ws) {
       if (typeof slug !== "string" || !slug) continue;
       sessionIds.push(...(starPlanetMap.get(slug) ?? []));
     }
-    return { sessionIds: uniqueIds(sessionIds), proposalIds: [] };
+    return {
+      sessionIds: uniqueIds(sessionIds),
+      proposalIds: source === "warp" ? uniqueIds(slugs) : []
+    };
   }
 
   /* 恒星源（正式卡 / 画布恒星）：关联会话行 `<` + 共享会话星卡 `>`（排除自身）。 */
@@ -841,7 +847,7 @@ export function hoverSourceAlive(scene, hover) {
        ——队列条目可指向星胚提案（`preState: "proto"` 按钮同样可入队），其源实体在册
        判定必须与画布同口径；`card` 源仍不认 proto（星胚在面板走合并卡分支）。 */
     return stars.some((star) => star && star.id === id
-      && (hover.source === "canvas" || hover.source === "queue" || star.lifecycle !== "proto"));
+      && (hover.source === "canvas" || hover.source === "queue" || hover.source === "warp" || star.lifecycle !== "proto"));
   }
   if (hover.kind === "planet") return hasBody(ws.planets);
   if (hover.kind === "comet") return hasBody(ws.comets);
@@ -1199,6 +1205,272 @@ export function projectQueuePanel(options = {}) {
     wsId,
     paused: queue?.paused === true,
     counts: queueCountsOf(queue, entries),
+    indicator: waiting ? "waiting" : running ? "running" : null,
+    rows
+  };
+}
+
+/* ------------------------------------------------------------------ *
+ * 曲率队列投影（two-add-cosmos-proposal-warp 6.2–6.4 / spec
+ * cosmos-proposal-warp「曲率队列呈现（曲率页签与条目行）」）
+ *
+ * 数据源 = 服务端权威曲率快照（`GET /api/dsh-v-cosmos/warp`；多窗口经 SSE
+ * `warp-changed` 轻帧拉全量对账）。本层只做**呈现投影**（浏览器端 MUST NOT 持有
+ * 权威曲率状态）：
+ *  - 条目投影**无 prompt 正文**；`anchorSlugs` 仅用于星胚目标的 cross-hover 派生；
+ *  - 操作矩阵（单条移出可用性）在此单点判定——UI 禁用先行、服务端 400 兜底；
+ *    **无排序语义、无整队列清空**（用户裁决 2026-11-23）；
+ *  - 空队列 → `visible:false`（页签不呈现；双队列皆空由组件整面板隐藏）。
+ * 纯函数：零 DOM、零网络、不修改入参；非法输入一律空投影（MUST NOT 抛错）。
+ * ------------------------------------------------------------------ */
+
+/**
+ * 曲率条目状态 → 徽标。`executing` 的「等待决策」与 `ready` 的「等待会话空闲」两个
+ * **呈现子态**由 `subState` 二次分派（子态不落枚举——spec「门控接力状态机」）。
+ */
+export const WARP_BADGES = Object.freeze({
+  grayed: Object.freeze({ key: "grayed", label: "置灰" }),
+  ready: Object.freeze({ key: "ready", label: "待发" }),
+  launching: Object.freeze({ key: "running", label: "执行中" }),
+  executing: Object.freeze({ key: "running", label: "执行中" }),
+  waiting: Object.freeze({ key: "waiting", label: "等待决策" }),
+  waitingSession: Object.freeze({ key: "waiting-session", label: "等待会话空闲" }),
+  failed: Object.freeze({ key: "failed", label: "失败" }),
+  skipped: Object.freeze({ key: "skipped", label: "跳过" })
+});
+
+/** 未知状态兜底徽标（上游形状漂移时可见、可诊断）。 */
+const WARP_BADGE_UNKNOWN = Object.freeze({ key: "unknown", label: "未知" });
+
+/** 曲率状态域（与 warp-store `WARP_STATES` 同口径）。 */
+const WARP_STATE_KEYS = Object.freeze(["grayed", "ready", "launching", "executing", "failed", "skipped"]);
+/** 曲率计数键全集（服务端 counts 透传的防御归一域）。 */
+const WARP_COUNT_KEYS = Object.freeze([
+  "total", "grayed", "ready", "launching", "executing", "failed", "skipped", "inflight", "pending"
+]);
+
+/** 条目状态归一（未知 → ""，所有判定按保守处理）。 */
+function warpStateOf(entry) {
+  const state = typeof entry?.state === "string" ? entry.state : "";
+  return WARP_STATE_KEYS.includes(state) ? state : "";
+}
+
+/** 徽标解析（executing+waiting → 等待决策；ready+waiting-session → 等待会话空闲）。 */
+function warpBadgeOf(entry) {
+  const state = warpStateOf(entry);
+  if (state === "executing" && entry?.subState === "waiting") return WARP_BADGES.waiting;
+  if (state === "ready" && entry?.subState === "waiting-session") return WARP_BADGES.waitingSession;
+  return WARP_BADGES[state] ?? WARP_BADGE_UNKNOWN;
+}
+
+/**
+ * 条目锁定判定：`launching` / `executing`（含「等待决策」子态）完全锁定（服务端拒绝移出）。
+ * @param {unknown} entry
+ * @returns {boolean}
+ */
+export function warpEntryLockedOf(entry) {
+  const state = warpStateOf(entry);
+  return state === "launching" || state === "executing";
+}
+
+/**
+ * 条目可移出判定（spec「条目操作矩阵（无排序，单条移出）」）：`grayed | ready | failed |
+ * skipped` 可移出；`launching | executing` 锁定；未知状态不可操作。
+ * @param {unknown} entry
+ * @returns {boolean}
+ */
+export function warpEntryRemovableOf(entry) {
+  const state = warpStateOf(entry);
+  return state === "grayed" || state === "ready" || state === "failed" || state === "skipped";
+}
+
+/**
+ * 目标键（跨工作区唯一）：wsId + NUL + targetKey（与 queueEnqueuedKeyOf 同族）。
+ * @param {unknown} wsId
+ * @param {unknown} targetKey
+ * @returns {string}
+ */
+export function warpTargetKeyOf(wsId, targetKey) {
+  return String(wsId ?? "") + "\u0000" + String(targetKey ?? "");
+}
+
+/** 曲率条目读取（防御单星座队列与全量快照两种上游形状）。 */
+function warpEntriesOf(warp) {
+  if (!warp || typeof warp !== "object") return [];
+  if (Array.isArray(warp.entries)) return warp.entries;
+  const warps = warp.warps;
+  if (!warps || typeof warps !== "object" || Array.isArray(warps)) return [];
+  const entries = [];
+  for (const value of Object.values(warps)) {
+    if (value && typeof value === "object" && Array.isArray(value.entries)) entries.push(...value.entries);
+  }
+  return entries;
+}
+
+/**
+ * 「已托管」目标键集（曲率按钮禁用判定）：**非终态**条目（grayed/ready/launching/executing）
+ * 命中——failed/skipped 残留不构成重复（与服务端同口径）。
+ * @param {unknown} warp 单星座曲率队列或全量快照（`{warps}`）
+ * @returns {Set<string>}
+ */
+export function warpPendingTargetKeysOf(warp) {
+  const keys = new Set();
+  for (const entry of warpEntriesOf(warp)) {
+    const state = warpStateOf(entry);
+    if (!state || state === "failed" || state === "skipped") continue;
+    const wsId = typeof entry?.wsId === "string" ? entry.wsId : "";
+    const targetKey = typeof entry?.targetKey === "string" ? entry.targetKey : "";
+    if (!wsId || !targetKey) continue;
+    keys.add(warpTargetKeyOf(wsId, targetKey));
+  }
+  return keys;
+}
+
+/** 单星座曲率解析（单队列对象 / 全量快照 `{warps}` / 裸映射 `{<wsId>: queue}` 三种上游形状）。 */
+function warpQueueOf(warp, wsId) {
+  if (!warp || typeof warp !== "object") return null;
+  if (Array.isArray(warp.entries)) return warp;
+  const id = typeof wsId === "string" && wsId ? wsId : "";
+  const warps = warp.warps;
+  if (warps && typeof warps === "object" && !Array.isArray(warps)) {
+    const found = id ? warps[id] : null;
+    return found && typeof found === "object" ? found : null;
+  }
+  const direct = id ? warp[id] : null;
+  return direct && typeof direct === "object" ? direct : null;
+}
+
+/**
+ * 曲率面板作用域（与脉冲队列同一作用域规则）：`drillWsId ?? selectedWsId`；作用域星座
+ * 曲率队列为空 → null（该页签不呈现；双空整面板隐藏）。
+ * @param {object} [input]
+ * @returns {string|null}
+ */
+export function warpScopeOf(input = {}) {
+  const drillWsId = typeof input?.drillWsId === "string" && input.drillWsId ? input.drillWsId : null;
+  const selectedWsId = typeof input?.selectedWsId === "string" && input.selectedWsId ? input.selectedWsId : null;
+  const wsId = drillWsId ?? selectedWsId ?? null;
+  if (wsId === null) return null;
+  const warp = warpQueueOf(input?.warps, wsId);
+  const entries = Array.isArray(warp?.entries) ? warp.entries : [];
+  return entries.length > 0 ? wsId : null;
+}
+
+/** 按 entries 现算计数（服务端 counts 缺键兜底）。 */
+function warpCountsByEntries(entries) {
+  const counts = { total: entries.length, grayed: 0, ready: 0, launching: 0, executing: 0, failed: 0, skipped: 0 };
+  for (const entry of entries) {
+    const state = warpStateOf(entry);
+    if (state) counts[state] += 1;
+  }
+  counts.inflight = counts.launching + counts.executing;
+  counts.pending = counts.grayed + counts.ready;
+  return counts;
+}
+
+/** 计数归一：服务端 counts 优先，逐键缺失按 entries 现算兜底；派生键按归一后值现算。 */
+function warpCountsOf(warp, entries) {
+  const computed = warpCountsByEntries(entries);
+  const source = warp?.counts !== null && typeof warp?.counts === "object" && !Array.isArray(warp.counts)
+    ? warp.counts
+    : {};
+  const counts = {};
+  for (const key of WARP_COUNT_KEYS) {
+    const value = Number(source?.[key]);
+    counts[key] = Number.isFinite(value) && value >= 0 ? Math.floor(value) : computed[key];
+  }
+  /* 派生键（inflight / pending）以归一后的分项为准：服务端 counts 缺键时不能凭条目现算
+     得到与透传分项不一致的口径。 */
+  counts.inflight = counts.launching + counts.executing;
+  counts.pending = counts.grayed + counts.ready;
+  return counts;
+}
+
+/** 失败 / 跳过残留诊断摘要（与脉冲同口径）。 */
+function warpEntryDetailOf(entry) {
+  const state = warpStateOf(entry);
+  if (state !== "failed" && state !== "skipped") return null;
+  const message = typeof entry?.message === "string" ? entry.message.trim() : "";
+  const reason = typeof entry?.reason === "string" ? entry.reason.trim() : "";
+  const parts = [];
+  if (message) parts.push(message);
+  if (reason) parts.push("(" + reason + ")");
+  return parts.length > 0 ? parts.join(" ") : null;
+}
+
+/** 单行装配（UI 零二次推导）。 */
+function warpRowOf(entry, wsId, now) {
+  const id = typeof entry?.id === "string" ? entry.id : "";
+  const targetKey = typeof entry?.targetKey === "string" ? entry.targetKey : "";
+  const targetKind = entry?.targetKind === "embryo" ? "embryo" : "proposal";
+  const targetLabel = typeof entry?.targetLabel === "string" && entry.targetLabel ? entry.targetLabel : targetKey;
+  const buttonName = typeof entry?.buttonName === "string" ? entry.buttonName : "";
+  const rule = entry?.rule === "queue" ? "queue" : "direct";
+  const state = warpStateOf(entry);
+  const subState = typeof entry?.subState === "string" ? entry.subState : null;
+  const badge = warpBadgeOf(entry);
+  const locked = warpEntryLockedOf(entry);
+  const canRemove = warpEntryRemovableOf(entry);
+  const failedDetail = warpEntryDetailOf(entry);
+  const enqueuedAt = Number(entry?.enqueuedAt) || 0;
+  const rowParts = [badge.label, rule === "queue" ? "转入脉冲队列" : "曲率直航"];
+  if (failedDetail) rowParts.push(failedDetail);
+  if (enqueuedAt > 0) rowParts.push("附着 " + relativeTime(enqueuedAt, now));
+  return {
+    id,
+    rowKey: id ? "warp\u0000" + wsId + "\u0000" + id : "warp\u0000" + wsId + "\u0000" + targetKey + "\u0000" + buttonName,
+    wsId,
+    targetKey,
+    targetKind,
+    targetLabel,
+    buttonName,
+    rule,
+    state,
+    subState,
+    badgeKey: badge.key,
+    badgeLabel: badge.label,
+    locked,
+    canRemove,
+    removeTitle: locked ? "执行中条目不可移出" : canRemove ? "移出曲率队列" : "该条目不可移出",
+    rowTitle: rowParts.join(" · "),
+    failedDetail,
+    anchorSlugs: Array.isArray(entry?.anchorSlugs)
+      ? entry.anchorSlugs.filter((slug) => typeof slug === "string" && slug)
+      : []
+  };
+}
+
+/**
+ * 曲率面板投影（纯函数）。
+ * @param {object} [options]
+ * @param {object|null} [options.warp] 单星座曲率队列或全量快照（`{warps}`）
+ * @param {string} [options.wsId]
+ * @param {number} [options.now]
+ * @returns {{
+ *   visible: boolean, wsId: string, paused: boolean,
+ *   counts: {total: number, grayed: number, ready: number, launching: number,
+ *            executing: number, failed: number, skipped: number, inflight: number, pending: number},
+ *   indicator: "running"|"waiting"|null,
+ *   rows: Array<object>
+ * }}
+ */
+export function projectWarpPanel(options = {}) {
+  const wsId = typeof options?.wsId === "string" ? options.wsId : "";
+  const rawNow = Number(options?.now);
+  const now = Number.isFinite(rawNow) && rawNow > 0 ? rawNow : Date.now();
+  const warp = warpQueueOf(options?.warp, wsId);
+  const entries = Array.isArray(warp?.entries) ? warp.entries : [];
+  const rows = entries.map((entry) => warpRowOf(entry, wsId, now));
+  const waiting = entries.some((entry) => warpStateOf(entry) === "executing" && entry?.subState === "waiting");
+  const running = entries.some((entry) => {
+    const state = warpStateOf(entry);
+    return state === "executing" || state === "launching";
+  });
+  return {
+    visible: entries.length > 0,
+    wsId,
+    paused: warp?.paused === true,
+    counts: warpCountsOf(warp, entries),
     indicator: waiting ? "waiting" : running ? "running" : null,
     rows
   };

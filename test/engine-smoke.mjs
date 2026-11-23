@@ -113,11 +113,13 @@ const near = (v, w, eps = 1e-9) => Math.abs(v - w) < eps;
       wsToolSize: 32,
       /* 星场呈现（p2-add-cosmos-works-face）：等势线 / ASCII 底纹缺省均开。 */
       worksContours: true,
-      worksAscii: true
+      worksAscii: true,
+      /* 星座收藏（add-cosmos-constellation-favorites）：缺省空数组（键序尾部）。 */
+      favorites: []
     },
-    "出厂默认（含默认皮肤、指针聚焦、会话面板展开态、发送前编辑分支 float、拖拽平移关闭、界面尺寸 13 键 = 现值、快捷键四键、入口打开方式 embedded、星座模板名关闭、图样连线亮度 50、顶部工具按钮高 32、星场两开关开；缩放阈值两键已退场）"
+    "出厂默认（含默认皮肤、指针聚焦、会话面板展开态、发送前编辑分支 float、拖拽平移关闭、界面尺寸 13 键 = 现值、快捷键四键、入口打开方式 embedded、星座模板名关闭、图样连线亮度 50、顶部工具按钮高 32、星场两开关开、星座收藏空数组；缩放阈值两键已退场）"
   );
-  assert.equal(COSMOS_SETTINGS_VERSION, 15, "设置面 v15（v14 → v15 新增 worksContours/worksAscii；v13 → v14 新增 wsToolSize；v12 → v13 新增 patLineDim；v10 = launchMode/dock 迁移，v11 = templateNames，v12 = 删缩放阈值两键）");
+  assert.equal(COSMOS_SETTINGS_VERSION, 16, "设置面 v16（v15 → v16 新增 favorites；v14 → v15 新增 worksContours/worksAscii；v13 → v14 新增 wsToolSize；v12 → v13 新增 patLineDim；v10 = launchMode/dock 迁移，v11 = templateNames，v12 = 删缩放阈值两键）");
   assert.equal("zoomDiveRatio" in COSMOS_SETTINGS_DEFAULTS, false, "进入阈值设置键已退场（阈值 = 引擎常量）");
   assert.equal("zoomFlyOutRatio" in COSMOS_SETTINGS_DEFAULTS, false, "返回阈值设置键已退场（距离单判常量）");
   assert.deepEqual(sanitizeCosmosSettings({}), COSMOS_SETTINGS_DEFAULTS, "空配置 → 默认");
@@ -140,7 +142,8 @@ const near = (v, w, eps = 1e-9) => Math.abs(v - w) < eps;
       patLineDim: 50,
       wsToolSize: 32,
       worksContours: true,
-      worksAscii: true
+      worksAscii: true,
+      favorites: []
     },
     "越界落端点 + 未知键剥离"
   );
@@ -1525,6 +1528,82 @@ function regressionPlanetScene() {
     "stars 缺失 / 非数组按不可切换处理（SHALL NOT 抛错）");
 }
 
+/* ── 可切换星座判据并集：已收藏（add-cosmos-constellation-favorites 2.3 / D3）：
+      `stars` 非空 **∪** 收藏集合；收藏的仅会话/仅星云星座入列、未收藏者行为逐字节不变、
+      id 归一化、失效收藏静默不入环、第三参缺省/非集合向后兼容（既有两参调用零改动）。 ── */
+{
+  const star = (id) => ({ id, name: id, lifecycle: "created" });
+  const wsOf = (id, name, over = {}) => ({ id, name, stars: [], planets: [], comets: [], archives: 0, ...over });
+  const proposalOf = (name) => ({ stars: [star(name + "-s")] });
+  const sessionsOnly = { planets: [{ id: "p-session", state: "idle" }], comets: [{ id: "c-session", state: "idle" }] };
+  const idsOf = (items) => items.map((item) => item.wsId);
+  const sideOf = (items, wsId) => (items.find((item) => item.wsId === wsId) ?? {}).side ?? null;
+
+  const scene = {
+    ws: [
+      wsOf("cur", "Current", proposalOf("cur")),
+      wsOf("alpha", "Alpha", proposalOf("alpha")),
+      wsOf("sessions", "Sessions", sessionsOnly),
+      wsOf("nebula", "Nebula", { archives: 2 }),
+      wsOf("empty", "Empty")
+    ]
+  };
+
+  /* ① 未收藏 → 判据与既有完全一致（两参调用 = 空集第三参，逐项等价）。 */
+  const baseline = wsSwitcherItemsOf(scene, "cur");
+  assert.deepEqual(idsOf(baseline), ["alpha"], "两参调用：仅会话/星云/空星座不入列（既有行为不变）");
+  for (const absent of [undefined, null, new Set(), [], 3, "sessions", { has: () => true }]) {
+    assert.deepEqual(wsSwitcherItemsOf(scene, "cur", absent), baseline,
+      "第三参缺省 / null / 空集 / 非集合 → 空集（向后兼容）：" + String(absent));
+  }
+
+  /* ② 收藏的仅会话星座入列（与其余成员合并进同一环、按既有字典序）。 */
+  const favSessions = wsSwitcherItemsOf(scene, "cur", new Set(["sessions"]));
+  assert.deepEqual(idsOf(favSessions), ["alpha", "sessions"], "收藏的仅会话星座入列（环序：Alpha 前驱 / Sessions 后继）");
+  assert.equal(sideOf(favSessions, "alpha"), "left", "环序按字典序：Alpha 仍在左槽");
+  assert.equal(sideOf(favSessions, "sessions"), "right", "收藏座按字典序落右槽（MUST NOT 置顶/单独成组）");
+  assert.deepEqual(idsOf(wsSwitcherItemsOf(scene, "cur", ["sessions"])), idsOf(favSessions),
+    "字符串数组形态与 Set 形态等价");
+
+  /* ③ 收藏的仅星云 / 全空星座同样入列（与提案/星胚判据并集，非替代）。 */
+  assert.deepEqual(idsOf(wsSwitcherItemsOf(scene, "cur", new Set(["nebula"]))), ["alpha", "nebula"],
+    "收藏的仅星云星座入列");
+  assert.deepEqual(idsOf(wsSwitcherItemsOf(scene, "cur", new Set(["empty"]))), ["alpha", "empty"],
+    "收藏的全空星座入列");
+  assert.deepEqual(idsOf(wsSwitcherItemsOf(scene, "cur", new Set(["nebula", "empty", "sessions"]))),
+    ["alpha", "empty"],
+    "多收藏合并进同一环（可切换集 = Alpha/Current/Empty/Nebula/Sessions 字典序，焦点 Current → 左 Alpha / 右 Empty）");
+
+  /* ④ 未收藏的仅会话星座行为不变（负向断言：并集不是「全部入列」）。 */
+  assert.ok(!idsOf(wsSwitcherItemsOf(scene, "cur", new Set(["nebula"]))).includes("sessions"),
+    "未收藏的仅会话星座仍不入列");
+
+  /* ⑤ 失效收藏（场景查无此 id）静默降级：不出现在任何清单、清单按其余成员收敛、不抛错。 */
+  assert.deepEqual(idsOf(wsSwitcherItemsOf(scene, "cur", new Set(["ghost"]))), ["alpha"],
+    "失效收藏静默不入环（清单收敛到其余成员）");
+  assert.deepEqual(idsOf(wsSwitcherItemsOf(scene, "ghost", new Set(["ghost"]))), ["cur", "alpha"],
+    "焦点 = 失效收藏 id（不在场景）→ 可切换清单自身成环降级（左末 Current / 右首 Alpha），不抛错");
+  assert.equal(wsSwitcherItemsOf(scene, "ghost", ["ghost"]).length, 2, "降级环仍遵守两侧必不同目标的档位");
+
+  /* ⑥ 当前星座被收藏：仍在环上（不因收藏改判「排除当前」语义）。 */
+  const favCur = wsSwitcherItemsOf(scene, "cur", new Set(["cur", "sessions"]));
+  assert.ok(!idsOf(favCur).includes("cur"), "当前钻取星座恒被排除（收藏不改变该硬约束）");
+  assert.deepEqual(idsOf(favCur), ["alpha", "sessions"], "收藏当前星座不额外扰动环序");
+
+  /* ⑦ id 归一化（D3）：非字符串 `ws.id` 与字符串收藏条目可匹配（与焦点比较同纪律）。 */
+  const numericId = { ws: [wsOf(42, "Numeric", sessionsOnly), wsOf("other", "Other", proposalOf("other"))] };
+  assert.deepEqual(idsOf(wsSwitcherItemsOf(numericId, "other", new Set(["42"]))), [42],
+    "ws.id 数值 42 与收藏字符串 \"42\" 归一化后匹配（入环，wsId 原样透出）");
+  assert.deepEqual(idsOf(wsSwitcherItemsOf(numericId, "other", new Set(["43"]))), [],
+    "未命中的收藏不误匹配");
+
+  /* ⑧ 入参不被就地改写（纯函数）：冻结 Set / 冻结场景同样可读。 */
+  const frozenFav = Object.freeze(new Set(["sessions"]));
+  assert.deepEqual(idsOf(wsSwitcherItemsOf(scene, "cur", frozenFav)), ["alpha", "sessions"],
+    "冻结 Set 入参可读（不写回）");
+  assert.deepEqual([...frozenFav], ["sessions"], "入参集合内容不变");
+}
+
 /* ── 出生 fx（2.5）：推进/过期/delay 生效 + 卫星 born（2.2）+ 状态色相滑移（3.1） ── */
 {
   const container = stubEl("div");
@@ -2501,6 +2580,84 @@ const EXPECTED_FIT_DIST = FILTER_FIT_MARGIN / Math.tan(Math.PI / 6) * 1.1;
 
   eng.stop();
   eng.dispose();
+}
+
+/* ── 收藏通道运行时（add-cosmos-constellation-favorites 2.2/2.3 / D2）：`setFavorites` 归一
+      （Set / string[] / 其它形态）+ 逐项相等短路 + 销毁态拒绝；收藏变更**不通知、不失效**——
+      钻取态切换条目经 `updateOverlay` 下一帧自然收敛（零新增轮询、零额外渲染）。 ── */
+{
+  const container = stubEl("div");
+  const eng = createCosmosEngine({ container, style: createSkinD() });
+  const rootEl = container.children[0];
+  const leftItem = rootEl._by['.cos-wsbar-side[data-side="left"]'].children[0];
+  const rightItem = rootEl._by['.cos-wsbar-side[data-side="right"]'].children[0];
+  const activeOf = (id, name, pos) => ({
+    id, name, pos,
+    stars: [{ id: id + "-s", name: id + "-s", lifecycle: "created", setBy: null, at: null, tasks: [1, 1], age: "刚刚", act: 0, off: [0, 0, 0] }],
+    links: [], planets: [], comets: [], archives: 0, satelliteCount: 0
+  });
+  const sessionsOf = (id, name, pos) => ({
+    id, name, pos, stars: [], links: [],
+    planets: [{ id: id + "-p", title: id + "-p", state: "idle", pendingKind: null, stars: [], todos: "—", when: "刚刚", satellites: [], satelliteCount: 0, delegatedBusy: false }],
+    comets: [], archives: 0, satelliteCount: 0
+  });
+  eng.setScene({
+    workspaces: [
+      activeOf("cur", "Current", [0, 0, 0]),
+      activeOf("alpha", "Alpha", [120, 0, 0]),
+      sessionsOf("sessions", "Sessions", [0, 0, -200])
+    ]
+  }, "rebuild");
+  rafQ.length = 0;
+  eng.start();
+  let tNow = 70000;
+  const step1 = (n = 1) => { for (let i = 0; i < n; i++) { tNow += 50; stepFrame(tNow); } };
+  step1(30);
+
+  /* ① 构造期空集（冷启动由客户端 attach 后首推持久值续接）。 */
+  assert.deepEqual(eng.inspectFavorites(), [], "构造期收藏集合为空（引擎零持久化依赖）");
+
+  /* ② 归一与短路：string[] / Set 等价；逐项相等 → false（不重锚呈现态）；无关形态 → 空集。 */
+  assert.equal(eng.setFavorites(["sessions"]), true, "首次推送应用（返回 true）");
+  assert.deepEqual(eng.inspectFavorites(), ["sessions"], "观测面反映当前收藏集合");
+  assert.equal(eng.setFavorites(["sessions"]), false, "逐项相等 → 短路 no-op（storage 重放零副作用）");
+  assert.equal(eng.setFavorites(new Set(["sessions", "sessions"])), false, "Set 形态等价（重复项归一后仍相等 → 短路）");
+  assert.equal(eng.setFavorites(["sessions", "ghost"]), true, "新增条目应用");
+  assert.deepEqual(eng.inspectFavorites(), ["ghost", "sessions"], "失效条目照常入集合（失效判定在清单派生侧静默）");
+  assert.equal(eng.setFavorites(3), true, "非集合形态 → 归一为空集（应用）");
+  assert.deepEqual(eng.inspectFavorites(), [], "非集合形态清空集合");
+  assert.equal(eng.setFavorites([]), false, "空集重复推送 → 短路");
+
+  /* ③ 收藏变更经 updateOverlay 下一帧反映：钻取 Current，收藏的仅会话星座次帧入环。 */
+  assert.equal(eng.diveToWs("cur"), true, "钻取 Current");
+  fakeNow += 1300;
+  step1(2);
+  assert.equal(eng.inspectFilter().focus.diving, true, "钻取态成立");
+  assert.ok(!String(rightItem.innerHTML).includes("Sessions"), "未收藏：仅会话星座不在切换条目（基线）");
+  assert.ok(String(rightItem.innerHTML).includes("Alpha"), "基线右槽 = Alpha（唯一其他可切换星座）");
+  assert.equal(eng.setFavorites(["sessions"]), true, "收藏仅会话星座（无提案/星胚）");
+  step1(1); // 下一帧即收敛（无通知、无轮询）
+  assert.ok(String(rightItem.innerHTML).includes("Sessions"), "下一帧：收藏的仅会话星座进入切换条目（右槽）");
+  assert.equal(rightItem.dataset.ws, "sessions", "条目目标 = 收藏星座 id");
+  assert.ok(leftItem.classList.contains("on") && String(leftItem.innerHTML).includes("Alpha"), "环序其余成员不变（左槽 Alpha）");
+
+  /* ④ 取消收藏 → 下一帧退场（环序回退到其余成员）。 */
+  assert.equal(eng.setFavorites([]), true, "取消收藏");
+  step1(1);
+  assert.ok(String(rightItem.innerHTML).includes("Alpha") && rightItem.dataset.ws === "alpha",
+    "下一帧：取消收藏后条目回退（仅会话星座退场）");
+
+  /* ⑤ 失效收藏（场景查无此座）静默：不入环、不报错。 */
+  assert.equal(eng.setFavorites(["ghost"]), true, "收藏一个场景中不存在的 id");
+  step1(1);
+  assert.ok(!String(leftItem.innerHTML).includes("ghost") && !String(rightItem.innerHTML).includes("ghost"),
+    "失效收藏不出现在任何条目槽");
+  assert.deepEqual(eng.inspectFavorites(), ["ghost"], "失效收藏持久条目保留（客户端重登记后复燃）");
+
+  eng.stop();
+  eng.dispose();
+  assert.equal(eng.setFavorites(["x"]), false, "已销毁引擎 → false（静默，不抛错）");
+  assert.deepEqual(eng.inspectFavorites(), [], "已销毁 → 观测面空集（纪律同其他观测面）");
 }
 
 /* ── 覆盖层隐藏必须清内联 opacity（真机「恒星名/星座名残影」回归） ── */

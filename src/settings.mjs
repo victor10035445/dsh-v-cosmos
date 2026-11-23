@@ -12,7 +12,8 @@
  * `zoomFlyOutRatio`（阈值收敛为引擎常量、由顶部缩放标尺呈现），版本 v11 → v12；
  * add-cosmos-figure-line-alpha 1.1：图样连线亮度百分比键 `patLineDim`
  * 版本 v12 → v13；add-cosmos-template-reassign 返工：钻取态顶部模板工具高度键
- * `wsToolSize` 版本 v13 → v14）。
+ * `wsToolSize` 版本 v13 → v14；add-cosmos-constellation-favorites 1.1：星座收藏键
+ * `favorites`（ws.id 字符串数组、上限 64）版本 v15 → v16）。
  *
  * 独立模块——client.jsx 消费（store 装载/引擎注入）、test/engine-smoke.mjs /
  * test/settings-panel-smoke.mjs 冒烟直测。
@@ -20,7 +21,9 @@
  * （Node/隐私模式缺席 → 缺省），键 `dsh-v-cosmos:settings`（旧名 `dsh-cosmos:settings`
  * 存量读取回落迁移，写入恒走新键）。
  *
- * 设置面（version 15，p2-add-cosmos-works-face 引入 v14 → v15：新增星场呈现两开关
+ * 设置面（version 16，add-cosmos-constellation-favorites 1.1 引入 v15 → v16：新增星座
+ * 收藏键 `favorites`（ws.id 字符串数组、上限 64、净房为数组专用分支）；v15 =
+ * p2-add-cosmos-works-face 引入 v14 → v15：新增星场呈现两开关
  * `worksContours`（等势线）/ `worksAscii`（ASCII 底纹），布尔键、缺省均 true、
  * 净房与 dragPan/templateNames 同构；载荷读出缺键补默认，零迁移；v14 =
  * add-cosmos-template-reassign 返工新增顶部模板工具边长键 `wsToolSize`（缺省 32、
@@ -80,8 +83,15 @@
  *    ASCII 底纹，缺省均 **true**（spec「开关默认开」）。写入即时持久化并经既有热更通道
  *    （`engine.setTuning`）同步引擎，下一帧生效、无需重开整页；非布尔值回落缺省（净房）。
  *    呈现于设置面「通用」页签的「星场」组（p2-add-cosmos-works-face 1.2）。
+ *  - favorites：星座收藏（add-cosmos-constellation-favorites 1.1/D1）——`ws.id` 字符串
+ *    数组，缺省 **`[]`**（默认渲染零变化），上限 **64**（`COSMOS_FAVORITES_MAX`，用户裁决）。
+ *    净房口径 = 数组专用分支 `favoritesOf`：非数组/缺失/null → 空数组（v15 及更早载荷读出
+ *    补缺省，零迁移）；条目仅收非空字符串、trim；trim 后去重（先到先得）；数组含非字符串
+ *    等非法形态**逐条剔除**（不整键回落）；读面超限静默截断保前 64（读面容错、写面严格——
+ *    保存路径的满上限拒绝与提示由 client 消费本常量先行判定）。写入链路只有 client 的
+ *    ★ 收藏按钮（`saveCosmosSettings({ favorites })`），引擎经 `engine.setFavorites` 热更。
  * 后续设置 UI 直接调 `saveCosmosSettings`（写侧净房内置），引擎经 `engine.setTuning` /
- * `engine.setShortcuts` / `engine.setSkin` 热更新（无需重开整页）。
+ * `engine.setShortcuts` / `engine.setSkin` / `engine.setFavorites` 热更新（无需重开整页）。
  */
 
 import { COSMOS_DEFAULT_SKIN, COSMOS_SKIN_IDS } from "./cosmos/skin-registry.mjs";
@@ -91,14 +101,19 @@ const SETTINGS_KEY = "dsh-v-cosmos:settings";
 /** 品牌更名前的 localStorage 键（仅读取回落，SHALL NOT 写入）。 */
 const LEGACY_SETTINGS_KEY = "dsh-cosmos:settings";
 export const COSMOS_SETTINGS_KEY = SETTINGS_KEY;
-/** 设置面版本（v14 = add-cosmos-template-reassign 返工：新增顶部模板工具高度
-    `wsToolSize`；v13 = add-cosmos-figure-line-alpha：新增图样连线亮度 `patLineDim`；
+/** 设置面版本（v16 = add-cosmos-constellation-favorites：新增星座收藏数组键
+    `favorites`；v15 = p2-add-cosmos-works-face：新增星场两开关；v14 =
+    add-cosmos-template-reassign 返工：新增顶部模板工具高度 `wsToolSize`；v13 =
+    add-cosmos-figure-line-alpha：新增图样连线亮度 `patLineDim`；
     v12 = add-cosmos-zoom-ruler：删缩放阈值两键；v11 =
     add-cosmos-template-name-toggle：新增 `templateNames` 布尔键；v10 =
     add-cosmos-rightbar-dock：`launchMode` 改 `embedded`/`dock` 两档并迁移历史
     `window` 值；v9 = 历史独立窗口变更新增 `launchMode`；v8 = 快捷键子对象；
-    v1–v13 载荷读出补默认）。 */
-export const COSMOS_SETTINGS_VERSION = 15;
+    v1–v15 载荷读出补默认）。 */
+export const COSMOS_SETTINGS_VERSION = 16;
+/** 星座收藏条数上限（add-cosmos-constellation-favorites D1；用户裁决 64）——写面满限拒绝
+    并提示、读面超限静默截断保前 N，两处共用本常量（MUST NOT 另写字面量）。 */
+export const COSMOS_FAVORITES_MAX = 64;
 
 /**
  * Cosmos 入口打开方式枚举（add-cosmos-rightbar-dock）：
@@ -167,7 +182,12 @@ export const COSMOS_SETTINGS_DEFAULTS = Object.freeze({
   /* ── 星场呈现（p2-add-cosmos-works-face D7）：等势线 / ASCII 底纹，缺省均开（spec
      「开关默认开」）；布尔键净房同 dragPan/templateNames，关页重开保持。 ── */
   worksContours: true,
-  worksAscii: true
+  worksAscii: true,
+  /* ── 星座收藏（add-cosmos-constellation-favorites D1，**键序尾部**——客户端
+     `JSON.stringify` 比较依赖键序稳定，与 const-buttons 同律）：`ws.id` 字符串数组，
+     缺省空数组（v15 及更早载荷读出补缺省，零迁移）；净房走数组专用分支 `favoritesOf`，
+     上限 `COSMOS_FAVORITES_MAX`。 ── */
+  favorites: []
 });
 
 /** 界（写侧 400 的前置净房界；越界值落回界内端点，SHALL NOT 抛错）。
@@ -267,6 +287,33 @@ function launchModeOf(value) {
 }
 
 /**
+ * 星座收藏净房（add-cosmos-constellation-favorites 1.1/D1；**数组专用分支**，与
+ * `boolOf` / `skinOf` 并列、不混入数值界表）：
+ *  - 非数组 / null / 缺失 → `[]`（v15 及更早载荷读出补缺省，零迁移）；
+ *  - 条目仅收**非空字符串**，逐条 `trim`；`trim` 后去重（先到先得——数组语义即顺序）；
+ *  - 数组内含非字符串 / 空串条目 → **逐条剔除**（MUST NOT 因个别坏条目让整键回落）；
+ *  - 读面超限 → 静默截断保前 `COSMOS_FAVORITES_MAX` 条（读面容错；写面满限拒绝并提示
+ *    由 client 侧先行判定，不走本函数）。
+ * 返回值恒为新数组（不暴露 `COSMOS_SETTINGS_DEFAULTS.favorites` 引用），SHALL NOT 抛错。
+ * @param {unknown} value
+ * @returns {string[]}
+ */
+function favoritesOf(value) {
+  if (!Array.isArray(value)) return [];
+  const out = [];
+  const seen = new Set();
+  for (const item of value) {
+    if (typeof item !== "string") continue;
+    const id = item.trim();
+    if (id === "" || seen.has(id)) continue;
+    seen.add(id);
+    out.push(id);
+    if (out.length >= COSMOS_FAVORITES_MAX) break;
+  }
+  return out;
+}
+
+/**
  * 设置净房（纯函数）：未知键剥离、非法/越界值落回缺省或界内端点。
  * @param {unknown} raw 原始设置对象（v1 载荷无 `skin` 键、v2 载荷无缩放导航三键、
  *        v3 载荷无会话面板展开态、v4 载荷无 `constPreflight`、v5 载荷无 `dragPan`、
@@ -274,8 +321,9 @@ function launchModeOf(value) {
  *        v9 载荷的历史独立窗口值守恒重映射为 `dock`、v10 载荷无 `templateNames`；
  *        v11 及更早载荷的 `zoomDiveRatio` / `zoomFlyOutRatio`（v12 已删键）读出即弃
  *        ——净房投影天然不认识两键，无迁移动作；v12 及更早载荷无 `patLineDim`（读出补 50）；
- *        v13 及更早载荷无 `wsToolSize`（读出补 32））
- * @returns {{ panSpeed: number, panShiftBoost: number, skin: string, zoomPointerFocus: boolean, sessionPanelOpen: boolean, constPreflight: "native"|"float", dragPan: boolean, sessionPanelWidth: number, sessionPanelHeight: number, constPanelWidth: number, constPanelHeight: number, addBtnSize: number, hudBtnSize: number, actionBtnWidth: number, actionBtnHeight: number, constActionHeight: number, searchWidth: number, searchHeight: number, wsTitleSize: number, shortcuts: {closePage: string, goHome: string, togglePan: string, voiceToggle: string}, launchMode: "embedded"|"dock", templateNames: boolean, patLineDim: number, wsToolSize: number }}
+ *        v13 及更早载荷无 `wsToolSize`（读出补 32）；v15 及更早载荷无 `favorites`
+ *        （读出补空数组，零迁移））
+ * @returns {{ panSpeed: number, panShiftBoost: number, skin: string, zoomPointerFocus: boolean, sessionPanelOpen: boolean, constPreflight: "native"|"float", dragPan: boolean, sessionPanelWidth: number, sessionPanelHeight: number, constPanelWidth: number, constPanelHeight: number, addBtnSize: number, hudBtnSize: number, actionBtnWidth: number, actionBtnHeight: number, constActionHeight: number, searchWidth: number, searchHeight: number, wsTitleSize: number, shortcuts: {closePage: string, goHome: string, togglePan: string, voiceToggle: string}, launchMode: "embedded"|"dock", templateNames: boolean, patLineDim: number, wsToolSize: number, favorites: string[] }}
  */
 export function sanitizeCosmosSettings(raw) {
   const source = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
@@ -325,7 +373,12 @@ export function sanitizeCosmosSettings(raw) {
     patLineDim: clampTo("patLineDim", source.patLineDim, COSMOS_SETTINGS_DEFAULTS.patLineDim),
     /* 顶部模板工具高度（add-cosmos-template-reassign 返工 D8）：数值界 [28, 48]，缺省 32；
        非数值回落缺省、越界落端点（v13 及更早载荷无该键 → 32）。 */
-    wsToolSize: clampTo("wsToolSize", source.wsToolSize, COSMOS_SETTINGS_DEFAULTS.wsToolSize)
+    wsToolSize: clampTo("wsToolSize", source.wsToolSize, COSMOS_SETTINGS_DEFAULTS.wsToolSize),
+    /* 星座收藏（add-cosmos-constellation-favorites 1.1/D1）：数组专用净房分支
+       `favoritesOf`（非数组 → 空数组、条目 trim 去重、非字符串逐条剔除、读面截断保前
+       COSMOS_FAVORITES_MAX）；**键序尾部**（客户端 JSON.stringify 比较依赖键序稳定）。
+       v15 及更早载荷（无该键）补空数组，呈现零变化。 */
+    favorites: favoritesOf(source.favorites)
   };
 }
 

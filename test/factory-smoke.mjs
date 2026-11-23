@@ -257,20 +257,26 @@ assert.equal(typeof exportsShape.createHostSessionFollow, "function", "跟随器
   assert.equal(typeof section.options.children["settings.v-cosmos.tab"], "object", "子标签槽声明");
   assert.equal(typeof section.options.inject, "function", "节 inject（hooks.tabs）");
   const tabs = registered.filter((entry) => entry.options.name === "settings.v-cosmos.tab");
-  assert.equal(tabs.length, 6, "六条标签页（通用 / 快捷动作 / 星座动作 / 皮肤 / 界面 / 快捷键）");
+  assert.equal(tabs.length, 7, "七条标签页（通用 / 快捷动作 / 星座动作 / 皮肤 / 界面 / 快捷键 / 曲率引擎）");
   const generalTab = tabs.find((entry) => entry.options.id === "general");
   const actionTab = tabs.find((entry) => entry.options.id === "actions");
   const constTab = tabs.find((entry) => entry.options.id === "constellation-actions");
   const skinTab = tabs.find((entry) => entry.options.id === "skins");
   const navTab = tabs.find((entry) => entry.options.id === "nav");
   const shortcutsTab = tabs.find((entry) => entry.options.id === "shortcuts");
-  assert.ok(generalTab && actionTab && constTab && skinTab && navTab && shortcutsTab, "标签页 id 齐备");
+  const warpTab = tabs.find((entry) => entry.options.id === "warp-engine");
+  assert.ok(generalTab && actionTab && constTab && skinTab && navTab && shortcutsTab && warpTab, "标签页 id 齐备");
   assert.equal(generalTab.options.order, -1, "通用 order -1（置于「快捷动作」之前，add-cosmos-rightbar-dock）");
   assert.equal(actionTab.options.order, 0, "快捷动作 order 0");
   assert.equal(constTab.options.order, 1, "星座动作 order 1（排于其后）");
   assert.equal(skinTab.options.order, 2, "皮肤 order 2（add-cosmos-skin-themes 3.4）");
   assert.equal(navTab.options.order, 3, "导航 order 3（add-cosmos-zoom-focus-nav 3.1）");
   assert.equal(shortcutsTab.options.order, 4, "快捷键 order 4（排于「界面」之后，add-cosmos-shortcuts 7.1）");
+  assert.equal(warpTab.options.order, 5, "曲率引擎 order 5（第 7 个页签，two-add-cosmos-proposal-warp 5.2）");
+  const warpInjected = warpTab.options.inject();
+  assert.equal(typeof warpInjected.face?.getSnapshot, "function", "曲率引擎页签注入 warp plan face.getSnapshot");
+  assert.equal(typeof warpInjected.face?.subscribe, "function", "曲率引擎页签注入 warp plan face.subscribe");
+  assert.equal(typeof warpInjected.face?.save, "function", "曲率引擎 face 暴露 save");
   assert.equal(typeof skinTab.options.label, "function", "皮肤标签文案走词典");
   assert.equal(typeof navTab.options.label, "function", "导航标签文案走词典");
   /* 「通用」页签注入面（add-cosmos-rightbar-dock）：launch face（两档，无形态判据） */

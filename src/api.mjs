@@ -105,6 +105,57 @@ export async function queueAction(action, body = {}) {
 }
 
 /**
+ * 曲率队列桥（two-add-cosmos-proposal-warp 6.1/6.4）：与 `fetchQueue` / `queueAction` 同款
+ * 容错形（网络/非 2xx/坏体 → `{ok:false, error}`）。
+ */
+
+/**
+ * 全量曲率快照（`GET /warp`）：页面加载与收到 `warp-changed` 轻帧后拉取对账。
+ * @returns {Promise<{ok: true, warp: {version: number, revisedAt: number, warps: object}} |
+ *          {ok: false, error: string}>}
+ */
+export async function fetchWarp() {
+  try {
+    const res = await fetch(API + "/warp");
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok || body?.ok !== true || !body.warp) {
+      return { ok: false, error: body?.error || res.status + " " + res.statusText };
+    }
+    return { ok: true, warp: body.warp };
+  } catch (error) {
+    return { ok: false, error: String(error?.message || error) };
+  }
+}
+
+/**
+ * 曲率操作（附着 / 单条移出 / 暂停 / 恢复）。
+ * @param {"attach"|"remove"|"pause"|"resume"} action
+ * @param {object} [body]
+ * @returns {Promise<{ok: true, [key: string]: unknown} | {ok: false, error: string, reason?: string, message?: string}>}
+ */
+export async function warpAction(action, body = {}) {
+  try {
+    const res = await fetch(API + "/warp/" + action, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body ?? {})
+    });
+    const payload = await res.json().catch(() => ({}));
+    if (!res.ok || payload?.ok !== true) {
+      return {
+        ok: false,
+        error: payload?.error || res.status + " " + res.statusText,
+        ...(typeof payload?.reason === "string" ? { reason: payload.reason } : {}),
+        ...(typeof payload?.message === "string" ? { message: payload.message } : {})
+      };
+    }
+    return payload;
+  } catch (error) {
+    return { ok: false, error: String(error?.message || error) };
+  }
+}
+
+/**
  * 星座作品桥（p1-add-cosmos-works-service 3.1）：作品快捷入口的读面/写面/动作面。
  * 消费方 = p2 星场面（呈现半区）；容错形与 `fetchScene` / `queueAction` **同款**
  * （网络/非 2xx/坏体 → `{ok:false, error[, reason]}`，成功 → `{ok:true, …}` 载荷透传，
@@ -250,8 +301,8 @@ export async function revealWork(wsId, workId) {
 
 /**
  * @param {(frame: object) => void} onFrame 轻帧回调（{type:"proposals-changed"} |
- *        {type:"associations-changed"} | {type:"queue-changed"} | {type:"works-changed"}；
- *        坏帧忽略）
+ *        {type:"associations-changed"} | {type:"queue-changed"} | {type:"warp-changed"} |
+ *        {type:"works-changed"}；坏帧忽略）
  * @returns {() => void} 卸载函数
  */
 export function subscribeCosmosEvents(onFrame) {
@@ -264,6 +315,7 @@ export function subscribeCosmosEvents(onFrame) {
         frame?.type === "proposals-changed" ||
         frame?.type === "associations-changed" ||
         frame?.type === "queue-changed" ||
+        frame?.type === "warp-changed" ||
         frame?.type === "works-changed"
       ) {
         onFrame(frame);

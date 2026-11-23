@@ -425,6 +425,34 @@ rafQueue.length = 0; // 清掉已停引擎的陈旧帧回调（新增块从确�
     "条目默认不可点、.on 时可点（容器不形成点击死区）");
   assert.ok(/\.cos-wsbar-item i \{[^}]*var\(--dsw-alias-state-warn-primary/.test(ENGINE_CSS), "活跃状态点取活力琥珀令牌链（与 chip/名牌同源）");
 
+  /* ⑤′ 收藏按钮槽（add-cosmos-constellation-favorites 3.3 / D4）：槽布局（同令牌方形 + 可命中）、
+     ★ 按钮两态视觉契约（实心/空心 + focus-visible）、触屏热区透明扩展 ≥40×40，
+     且**不新增独立显隐**——显隐完全继承标牌组既有 data-drilled 门控（银河态零呈现回归）。 */
+  const favSlotM = /\.cos-fav-slot \{([^}]*)\}/.exec(ENGINE_CSS);
+  const favBtnM = /\.cos-fav-btn \{([^}]*)\}/.exec(ENGINE_CSS);
+  const favHotM = /\.cos-fav-btn::after \{([^}]*)\}/.exec(ENGINE_CSS);
+  const favOnM = /\.cos-fav-btn\[data-on="true"\] \{([^}]*)\}/.exec(ENGINE_CSS);
+  const favOnSvgM = /\.cos-fav-btn\[data-on="true"\] svg \{([^}]*)\}/.exec(ENGINE_CSS);
+  assert.ok(favSlotM && favBtnM && favHotM && favOnM && favOnSvgM, "收藏槽 + 按钮两态 + 热区五组样式规则在册");
+  assert.ok(favSlotM[1].includes("width: var(--cos-ws-tool-size, 32px)") && favSlotM[1].includes("height: var(--cos-ws-tool-size, 32px)"),
+    "收藏槽边长消费顶部工具尺寸令牌（与模板工具同高对齐）");
+  assert.ok(favSlotM[1].includes("pointer-events: auto"), "收藏槽可命中（组级 pointer-events:none 下不形成死区）");
+  assert.ok(favBtnM[1].includes("rgb(var(--cos-accent-rgb, 255 210 140) / .5)"), "空心态：描边 + 低 α（皮肤令牌取色，无硬编码）");
+  assert.ok(favBtnM[1].includes("width: 100%; height: 100%"), "按钮视觉尺寸吃满槽（随令牌缩放）");
+  assert.ok(!favBtnM[1].includes("color: #") && !/color: #[0-9a-f]{3,6}/i.test(favSlotM[1]),
+    "收藏按钮槽/按钮 MUST NOT 硬编码色值（皮肤变量链）");
+  assert.ok(favHotM[1].includes("width: 40px") && favHotM[1].includes("height: 40px"),
+    "触屏热区透明扩展 40×40（视觉呈现不变，与「视觉尺寸随令牌」不互斥）");
+  assert.ok(favOnM[1].includes("rgb(var(--cos-accent-rgb, 255 210 140) / .95)"), "实心态：accent 取色（满量）");
+  assert.ok(favOnSvgM[1].includes("fill: currentColor"), "实心态：五角星 accent 填充（实心）");
+  assert.ok(favOnSvgM[1].includes("drop-shadow"), "实心态：轻量高亮（令牌链光晕）");
+  assert.ok(/\.cos-fav-btn svg \{[^}]*fill: none/.test(ENGINE_CSS), "空心态：五角星仅描边（fill:none）");
+  assert.ok(/\.cos-fav-btn:focus-visible \{[^}]*outline: 1px solid rgb\(var\(--cos-accent-rgb/.test(ENGINE_CSS),
+    "键盘可达：focus-visible 描边（同既有 HUD 镀铬口径）");
+  assert.ok(!/\.cos-fav-slot[^,{]*\{[^}]*display: none/.test(ENGINE_CSS)
+    && !/\[data-drilled="true"\][^{]*\.cos-fav-slot/.test(ENGINE_CSS),
+    "收藏槽 MUST NOT 自带显隐规则（显隐完全继承标牌组 data-drilled 门控）");
+
   /* ⑥ 运行时：三个可切换星座钻取 → 左右条目挂载；银河态零呈现；退场清内容。 */
   const realPerformance = globalThis.performance;
   let fakeNow = realPerformance.now() + 60000; // 假时钟推进钻取补间（只影响镜头补间时刻口径）
@@ -451,10 +479,14 @@ rafQueue.length = 0; // 清掉已停引擎的陈旧帧回调（新增块从确�
       "cos-badge-cluster",
       'class="cos-badge"',
       'cos-wsbar-tools" data-side="left"',
-      'cos-wsbar-tools" data-side="right"'
+      'cos-wsbar-tools" data-side="right"',
+      'class="cos-fav-slot"'
     ].map((token) => markup.indexOf(token));
     assert.ok(order.every((at, i) => at >= 0 && (i === 0 || order[i - 1] < at)),
-      "DOM 顺序 [左槽][右槽] + 右上组 [标牌][指定模板][随机重掷]");
+      "DOM 顺序 [左槽][右槽] + 右上组 [标牌][指定模板][随机重掷][收藏]");
+    const clusterEl = root._byClass["cos-badge-cluster"];
+    const favSlotEl = root._byClass["cos-fav-slot"];
+    assert.ok(clusterEl && favSlotEl, "右上标牌组与收藏槽节点在册（client portal 目标，建一次不逐帧重建）");
     const starOf = (id) => ({ id, name: id, lifecycle: "created", setBy: null, at: null, tasks: [1, 1], age: "刚刚", act: 0, off: [0, 0, 0] });
     const wsOf = (id, name, pos) => ({ id, name, pos, stars: [starOf(id + "-s")], links: [], planets: [], comets: [], archives: 0, satelliteCount: 0 });
     switcher.setScene({
@@ -466,16 +498,22 @@ rafQueue.length = 0; // 清掉已停引擎的陈旧帧回调（新增块从确�
     frameStep(30);
     assert.ok(!leftItem.classList.contains("on") && !rightItem.classList.contains("on"), "银河态条目零呈现（零布局）");
     assert.equal(String(leftItem.innerHTML), "", "银河态左槽零内容");
+    /* 收藏槽显隐门控（add-cosmos-constellation-favorites 3.3）：银河态随标牌组整体退场
+       （组级 display:none → 槽与其内 portal 按钮零呈现/零命中），引擎侧只切 data-drilled。 */
+    assert.equal(String(clusterEl.dataset.drilled), "false", "银河态：标牌组 data-drilled=false（收藏槽随组退场）");
+    assert.equal(favSlotEl.style.display, undefined, "银河态：引擎不对收藏槽写显隐（门控只在组上，零双重判定）");
     assert.equal(switcher.diveToWs("b"), true, "钻取中位星座 Bravo");
     fakeNow += 1400; // 钻取补间落地（focusMix → 1）
     frameStep(3);
     assert.equal(switcher.inspectFilter().focus.diving, true, "钻取态成立");
+    assert.equal(String(clusterEl.dataset.drilled), "true", "钻取态：标牌组 data-drilled=true（收藏槽随组呈现）");
     assert.ok(String(badgeEl.dataset.html).includes("Bravo"), "标牌仍呈当前星座（中央格内容不变）");
     assert.ok(leftItem.classList.contains("on") && String(leftItem.innerHTML).includes("Alpha"), "左槽 = 环上前驱 Alpha");
     assert.ok(rightItem.classList.contains("on") && String(rightItem.innerHTML).includes("Charlie"), "右槽 = 环上后继 Charlie");
     assert.equal(switcher.consumeEscape(), true, "Esc 飞回银河");
     fakeNow += 1400;
     frameStep(3);
+    assert.equal(String(clusterEl.dataset.drilled), "false", "飞回银河：标牌组回到 data-drilled=false（收藏槽随组退场）");
     assert.ok(!leftItem.classList.contains("on") && !rightItem.classList.contains("on"), "飞回银河：条目退场（随钻取态整体）");
     frameStep(6);
     assert.equal(String(leftItem.innerHTML), "", "退场淡出满窗后条目零内容");

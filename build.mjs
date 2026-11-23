@@ -82,7 +82,7 @@ console.log(`client bundle: ${kb(result.metafile.outputs["lib/client.js"].bytes)
 /* 宿主半区：纯 ESM 源码直出。入口复制为 lib/index.js（package main 不变），
    纯逻辑模块保留 .mjs 扩展名复制（相对 import 说明符与文件名一致）。 */
 copyFileSync(new URL("./src/index.mjs", import.meta.url), new URL("./lib/index.js", import.meta.url));
-const HOST_MODULE_FILES = ["scan.mjs", "associations.mjs", "birthline.mjs", "sweep.mjs", "shortcuts.mjs", "buttons.mjs", "const-buttons.mjs", "paths.mjs", "configstore.mjs", "skill-provider.mjs", "message.mjs", "queue-store.mjs", "queue-scheduler.mjs", "session-executor.mjs", "works-store.mjs"];
+const HOST_MODULE_FILES = ["scan.mjs", "associations.mjs", "birthline.mjs", "sweep.mjs", "shortcuts.mjs", "buttons.mjs", "const-buttons.mjs", "paths.mjs", "configstore.mjs", "skill-provider.mjs", "message.mjs", "queue-store.mjs", "queue-scheduler.mjs", "session-executor.mjs", "warp-plan.mjs", "warp-store.mjs", "warp-scheduler.mjs", "works-store.mjs"];
 for (const file of HOST_MODULE_FILES) {
   copyFileSync(new URL("./src/" + file, import.meta.url), new URL("./lib/" + file, import.meta.url));
 }

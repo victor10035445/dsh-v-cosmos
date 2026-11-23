@@ -22,7 +22,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { assembleMessage } from "./message.mjs";
+import { assembleEmbryoMessage, assembleMessage } from "./message.mjs";
 
 /** 队列标题组装上限（码点；宿主 rename 另按字节预算保头截尾，装饰性失败不阻断投递）。 */
 export const SESSION_TITLE_MAX_CHARS = 400;
@@ -35,6 +35,14 @@ export const SESSION_FAILURES = Object.freeze([
   "session-controller-unavailable",
   "create-failed",
   "model-unavailable",
+  "prompt-failed",
+  "delivery-failed"
+]);
+
+/** 曲率 proto 直投失败原因族（two-add-cosmos-proposal-warp 3.4）。 */
+export const WARP_PROTO_FAILURES = Object.freeze([
+  "session-controller-unavailable",
+  "explorer-session-missing",
   "prompt-failed",
   "delivery-failed"
 ]);
@@ -64,14 +72,16 @@ function warn(logger, message) {
 }
 
 /**
- * 标题组装（`队列·<按钮名>·<提案名>`，按码点截断）。
- * @param {object} entry 队列条目
+ * 标题组装（`<前缀>·<按钮名>·<提案名>`，按码点截断）。
+ * @param {object} entry 队列 / 曲率条目
+ * @param {string} [prefix] 标题前缀（脉冲队列 = 队列；曲率直航 = 曲率）
  * @returns {string}
  */
-export function queueTitleOf(entry) {
+export function queueTitleOf(entry, prefix = "队列") {
   const buttonName = typeof entry?.button?.name === "string" ? entry.button.name : "";
   const proposalId = typeof entry?.proposalId === "string" ? entry.proposalId : "";
-  const raw = ["队列", buttonName, proposalId].filter((part) => Boolean(part)).join("·");
+  const head = typeof prefix === "string" && prefix ? prefix : "队列";
+  const raw = [head, buttonName, proposalId].filter((part) => Boolean(part)).join("·");
   const chars = Array.from(raw);
   return chars.length > SESSION_TITLE_MAX_CHARS ? chars.slice(0, SESSION_TITLE_MAX_CHARS).join("") : raw;
 }
@@ -80,16 +90,17 @@ export function queueTitleOf(entry) {
  * 投递 payload 组装（纯函数，冒烟直测）：分解为四个命令各自的入参，不再拼单一 HTTP 体。
  *
  * @param {object} entry 队列条目
+ * @param {string} [titlePrefix] 会话标题前缀（缺省「队列」；曲率直航传「曲率」）
  * @returns {{ok: true, payload: {workspaceId: string, title: string, text: string, model?: object}} |
  *          {ok: false, reason: string, message: string}}
  */
-export function deliverPayloadOf(entry) {
+export function deliverPayloadOf(entry, titlePrefix = "队列") {
   const wsId = typeof entry?.wsId === "string" ? entry.wsId.trim() : "";
   if (!wsId) return { ok: false, reason: "delivery-failed", message: "条目缺少工作区 id" };
   const dir = typeof entry?.proposalDir === "string" ? entry.proposalDir : "";
   const text = assembleMessage({ prompt: entry?.button?.prompt, prepend: entry?.button?.prepend === true }, { dir });
   if (!text) return { ok: false, reason: "delivery-failed", message: "提案目录缺失，无法组装 @引用消息" };
-  const payload = { workspaceId: wsId, title: queueTitleOf(entry), text };
+  const payload = { workspaceId: wsId, title: queueTitleOf(entry, titlePrefix), text };
   if (entry?.button?.model !== undefined) payload.model = entry.button.model;
   return { ok: true, payload };
 }
@@ -106,12 +117,14 @@ export function deliverPayloadOf(entry) {
  *        在 rename 之后、prompt 之前 **await** 调用一次，清单恒为条目目标提案（trim 后非空
  *        才调用，空则跳过）。`workspaceId` 是条目工作区 id（宿主半区据此解析工作区**路径**）。
  *        同步/异步失败一律吞掉 + logger warn（不产生新失败原因族）。缺省 = 不绑定。
+ * @param {string} [options.titlePrefix] 会话标题前缀（缺省「队列」；曲率直航传「曲率」）
  * @returns {(entry: object) => Promise<object>}
  */
 export function createQueueDeliverer(options = {}) {
   const sessionController = options.sessionController ?? null;
   const logger = options.logger ?? null;
   const bindAssociation = typeof options.bindAssociation === "function" ? options.bindAssociation : null;
+  const titlePrefix = typeof options.titlePrefix === "string" && options.titlePrefix ? options.titlePrefix : "队列";
   /* 工厂建立时探测一次：服务缺席/方法残缺 → 每条投递零请求显式失败（不抛穿调度器）。 */
   const missing = missingMembersOf(sessionController, REQUIRED_SESSION_METHODS);
   return async function deliver(entry) {
@@ -122,7 +135,7 @@ export function createQueueDeliverer(options = {}) {
         message: `会话服务不可用（sessionController 缺少命令方法：${missing.join("/")}）`
       };
     }
-    const built = deliverPayloadOf(entry);
+    const built = deliverPayloadOf(entry, titlePrefix);
     if (built.ok !== true) return built;
     const { workspaceId, title, text, model } = built.payload;
 
@@ -175,6 +188,54 @@ export function createQueueDeliverer(options = {}) {
         NEVER_ABORTED_SIGNAL
       );
     } catch (error) {
+      return { ok: false, reason: "prompt-failed", message: errorMessageOf(error) };
+    }
+    return { ok: true, sessionId };
+  };
+}
+
+/**
+ * 建立曲率 proto 投递器（two-add-cosmos-proposal-warp 3.4 / design D4）：
+ * **直投既有探索会话**（`entry.explorerSessionId`）——零 create、零 selectModel、
+ * 零 rename、零草稿；消息 = `assembleEmbryoMessage`（纯 prompt，多 slug 附清单，无 @引用）。
+ *
+ * 会话缺失 / 空 id → `explorer-session-missing`；不可用/被拒 → `prompt-failed`
+ * （显式失败，MUST NOT 回落前台 dock 通道）。归档判定由调度器（index.mjs 注入
+ * `isArchived`）在点火前先行完成——归档会话的 `prompt` 可能被宿主接受但 step 被
+ * ArchivedSessionGate 拒绝（永不 running），必须在投递前拦截。
+ *
+ * @param {object} [options]
+ * @param {object|null} [options.sessionController] 宿主会话控制面
+ * @param {object|null} [options.logger]
+ * @returns {(entry: object) => Promise<{ok: true, sessionId: string} | {ok: false, reason: string, message: string}>}
+ */
+export function createWarpProtoDeliverer(options = {}) {
+  const sessionController = options.sessionController ?? null;
+  const logger = options.logger ?? null;
+  const missing = missingMembersOf(sessionController, ["prompt"]);
+  return async function deliver(entry) {
+    if (missing.length > 0) {
+      return {
+        ok: false,
+        reason: "session-controller-unavailable",
+        message: `会话服务不可用（sessionController 缺少命令方法：${missing.join("/")}）`
+      };
+    }
+    const sessionId = typeof entry?.explorerSessionId === "string" ? entry.explorerSessionId.trim() : "";
+    if (!sessionId) {
+      return { ok: false, reason: "explorer-session-missing", message: "探索会话不可用（锚点未记录会话）" };
+    }
+    const text = assembleEmbryoMessage(entry?.button, { slugs: entry?.anchorSlugs });
+    if (!text) {
+      return { ok: false, reason: "delivery-failed", message: "星胚动作提示词为空" };
+    }
+    try {
+      await sessionController.prompt(
+        { requestId: randomUUID(), sessionId, mode: "queue", content: [{ type: "text", text }] },
+        NEVER_ABORTED_SIGNAL
+      );
+    } catch (error) {
+      warn(logger, `曲率 proto 直投失败: ${errorMessageOf(error)}`);
       return { ok: false, reason: "prompt-failed", message: errorMessageOf(error) };
     }
     return { ok: true, sessionId };

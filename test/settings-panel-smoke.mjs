@@ -731,7 +731,7 @@ const BUTTON = { name: "审查", prompt: "请使用 /cosmos-review 审查本提�
   const { COSMOS_DEFAULT_SKIN, COSMOS_SKINS, skinCardOf } = await import("../src/cosmos/skin-registry.mjs");
   const { COSMOS_SETTINGS_VERSION, loadCosmosSettings, sanitizeCosmosSettings, saveCosmosSettings } = await import("../src/settings.mjs");
 
-  assert.equal(COSMOS_SETTINGS_VERSION, 15, "设置面 v15（p2：v14 → v15 新增 worksContours/worksAscii；v13 → v14 新增 wsToolSize；v12 → v13 新增 patLineDim；v10 = launchMode/window→dock 迁移，v11 = templateNames，v12 = 删缩放阈值两键；版本号只进不退）");
+  assert.equal(COSMOS_SETTINGS_VERSION, 16, "设置面 v16（add-cosmos-constellation-favorites：v15 → v16 新增 favorites；v14 → v15 新增 worksContours/worksAscii；v13 → v14 新增 wsToolSize；v12 → v13 新增 patLineDim；v10 = launchMode/window→dock 迁移，v11 = templateNames，v12 = 删缩放阈值两键；版本号只进不退）");
   const cards = COSMOS_SKINS.map(skinCardOf);
   assert.equal(cards.length, 12, "12 张卡片");
   assert.deepEqual(cards.map((c) => c.id), COSMOS_SKINS.map((s) => s.id), "卡片顺序 = 注册表顺序");
@@ -775,7 +775,7 @@ const BUTTON = { name: "审查", prompt: "请使用 /cosmos-review 审查本提�
     saveCosmosSettings
   } = await import("../src/settings.mjs");
 
-  assert.equal(COSMOS_SETTINGS_VERSION, 15, "设置面 v15（v14 → v15 新增 worksContours/worksAscii；v13 → v14 新增 wsToolSize；v12 → v13 新增 patLineDim；v10 = dock 迁移，v11 = templateNames，v12 = 删缩放阈值两键）");
+  assert.equal(COSMOS_SETTINGS_VERSION, 16, "设置面 v16（v15 → v16 新增 favorites；v14 → v15 新增 worksContours/worksAscii；v13 → v14 新增 wsToolSize；v12 → v13 新增 patLineDim；v10 = dock 迁移，v11 = templateNames，v12 = 删缩放阈值两键）");
   assert.deepEqual(
     [COSMOS_SETTINGS_DEFAULTS.zoomPointerFocus, "zoomDiveRatio" in COSMOS_SETTINGS_DEFAULTS, "zoomFlyOutRatio" in COSMOS_SETTINGS_DEFAULTS],
     [true, false, false],
@@ -1003,7 +1003,7 @@ const BUTTON = { name: "审查", prompt: "请使用 /cosmos-review 审查本提�
     saveCosmosSettings
   } = await import("../src/settings.mjs");
 
-  assert.equal(COSMOS_SETTINGS_VERSION, 15, "设置面版本（拖拽平移键仍在册；v10 = dock，v11 = templateNames，v12 = 删缩放阈值两键，v13 = patLineDim，v14 = wsToolSize，v15 = worksContours/worksAscii）");
+  assert.equal(COSMOS_SETTINGS_VERSION, 16, "设置面版本（拖拽平移键仍在册；v10 = dock，v11 = templateNames，v12 = 删缩放阈值两键，v13 = patLineDim，v14 = wsToolSize，v15 = worksContours/worksAscii，v16 = favorites）");
   assert.equal(COSMOS_SETTINGS_DEFAULTS.dragPan, false, "出厂默认关闭（鼠标拖拽保持旋转）");
   assert.equal(sanitizeCosmosSettings({}).dragPan, false, "空载荷 → false");
   assert.equal(sanitizeCosmosSettings({ dragPan: true }).dragPan, true, "合法 true 透传（开启态）");
@@ -1305,7 +1305,7 @@ const BUTTON = { name: "审查", prompt: "请使用 /cosmos-review 审查本提�
     shortcutLabelOf
   } = await import("../src/shortcuts.mjs");
 
-  assert.equal(COSMOS_SETTINGS_VERSION, 15, "设置面 v15（shortcuts 子对象 + launchMode + templateNames + patLineDim + wsToolSize + worksContours/worksAscii + 删缩放阈值两键并入；v10 = dock 迁移）");
+  assert.equal(COSMOS_SETTINGS_VERSION, 16, "设置面 v16（shortcuts 子对象 + launchMode + templateNames + patLineDim + wsToolSize + worksContours/worksAscii + favorites + 删缩放阈值两键并入；v10 = dock 迁移）");
   assert.deepEqual(
     COSMOS_SETTINGS_DEFAULTS.shortcuts,
     { closePage: "Escape", goHome: "Backquote", togglePan: "KeyM", voiceToggle: "Ctrl+KeyQ" },
@@ -1315,7 +1315,7 @@ const BUTTON = { name: "审查", prompt: "请使用 /cosmos-review 审查本提�
   assert.ok(Object.isFrozen(COSMOS_SETTINGS_DEFAULTS.shortcuts), "缺省子对象冻结（防误改）");
   /* 构造头注记：v10 = add-cosmos-rightbar-dock（v9 = 历史独立窗口变更，v8 = add-cosmos-shortcuts） */
   const settingsSource = readFileSync(new URL("../src/settings.mjs", import.meta.url), "utf8");
-  assert.ok(settingsSource.includes("设置面（version 15"), "文档头版本注记同步 v15");
+  assert.ok(settingsSource.includes("设置面（version 16"), "文档头版本注记同步 v16");
   assert.ok(settingsSource.includes("shortcutsOf(source.shortcuts)"), "净房接线 shortcutsOf（单一来源）");
 
   /* v8 净房：空载荷 → 四键缺省；合法值透传；与 shortcutsOf 同源 */
@@ -1638,7 +1638,7 @@ const BUTTON = { name: "审查", prompt: "请使用 /cosmos-review 审查本提�
     saveCosmosSettings
   } = await import("../src/settings.mjs");
 
-  assert.equal(COSMOS_SETTINGS_VERSION, 15, "设置面 v15（v14 → v15 新增 worksContours/worksAscii；v13 → v14 新增 wsToolSize；v12 → v13 新增 patLineDim；v11 → v12 删缩放阈值两键；v10 → v11 新增 templateNames）");
+  assert.equal(COSMOS_SETTINGS_VERSION, 16, "设置面 v16（v15 → v16 新增 favorites；v14 → v15 新增 worksContours/worksAscii；v13 → v14 新增 wsToolSize；v12 → v13 新增 patLineDim；v11 → v12 删缩放阈值两键；v10 → v11 新增 templateNames）");
   assert.equal(COSMOS_SETTINGS_DEFAULTS.templateNames, false, "出厂缺省关闭（关闭态默认渲染零变化）");
   assert.equal(sanitizeCosmosSettings({}).templateNames, false, "空载荷 → false");
   assert.equal(sanitizeCosmosSettings({ templateNames: true }).templateNames, true, "合法 true 透传（开启态）");
@@ -1691,7 +1691,7 @@ const BUTTON = { name: "审查", prompt: "请使用 /cosmos-review 审查本提�
     saveCosmosSettings
   } = await import("../src/settings.mjs");
 
-  assert.equal(COSMOS_SETTINGS_VERSION, 15, "设置面 v15（v14 → v15 新增 worksContours/worksAscii；v13 → v14 新增 wsToolSize；v12 → v13 新增 patLineDim）");
+  assert.equal(COSMOS_SETTINGS_VERSION, 16, "设置面 v16（v15 → v16 新增 favorites；v14 → v15 新增 worksContours/worksAscii；v13 → v14 新增 wsToolSize；v12 → v13 新增 patLineDim）");
   assert.equal(COSMOS_SETTINGS_DEFAULTS.patLineDim, 50, "出厂缺省 50（= 引擎因子 0.5，默认渲染零变化）");
   assert.deepEqual(COSMOS_SETTINGS_BOUNDS.patLineDim, [5, 100], "数值界 [5, 100]（纯 [min,max] 形状）");
   assert.equal(sanitizeCosmosSettings({}).patLineDim, 50, "空载荷 → 50");
@@ -1746,6 +1746,117 @@ const BUTTON = { name: "审查", prompt: "请使用 /cosmos-review 审查本提�
     assert.equal(loadCosmosSettings().patLineDim, 50, "持久载荷坏值 → 净房回落 50");
     store.set("dsh-v-cosmos:settings", JSON.stringify({ templateNames: true }));
     assert.equal(loadCosmosSettings().patLineDim, 50, "v12 旧载荷（无键）读回补 50");
+  } finally {
+    delete globalThis.localStorage;
+  }
+}
+
+/* ── 星座收藏设置净房（add-cosmos-constellation-favorites 1.2 / D1）：v15 → v16 数组键
+   `favorites`（ws.id 字符串数组、上限 COSMOS_FAVORITES_MAX = 64，用户裁决）——缺省空数组、
+   旧载荷（无键）读出补空数组、非数组回落空数组、entry trim、trim 后去重先到先得、
+   非字符串逐条剔除（不整键回落）、读面超限静默截断保前 64、键序稳定（JSON.stringify 不变）、
+   持久化往返与既有键零互扰。 ── */
+{
+  const {
+    COSMOS_FAVORITES_MAX,
+    COSMOS_SETTINGS_BOUNDS,
+    COSMOS_SETTINGS_DEFAULTS,
+    COSMOS_SETTINGS_VERSION,
+    loadCosmosSettings,
+    sanitizeCosmosSettings,
+    saveCosmosSettings
+  } = await import("../src/settings.mjs");
+  assert.equal(COSMOS_SETTINGS_VERSION, 16, "设置面 v16（add-cosmos-constellation-favorites 1.1 引入 favorites 数组键）");
+  assert.equal(COSMOS_FAVORITES_MAX, 64, "收藏上限常量 64（读面截断与写面满限拒绝同源）");
+  assert.deepEqual(COSMOS_SETTINGS_DEFAULTS.favorites, [], "出厂缺省空数组（默认渲染零变化）");
+  assert.deepEqual(Object.keys(COSMOS_SETTINGS_DEFAULTS).slice(-1), ["favorites"], "键序尾部（默认表）");
+  assert.deepEqual(sanitizeCosmosSettings({}).favorites, [], "空载荷 → 空数组");
+  assert.notEqual(sanitizeCosmosSettings({}).favorites, COSMOS_SETTINGS_DEFAULTS.favorites, "返回值恒为新数组（不暴露出厂引用）");
+
+  /* v15 旧载荷（无键）→ 补空数组（零迁移、无报错）。 */
+  const v15Payload = { ...COSMOS_SETTINGS_DEFAULTS };
+  delete v15Payload.favorites;
+  assert.deepEqual(sanitizeCosmosSettings(v15Payload).favorites, [], "v15 载荷读出补空数组");
+
+  /* 非法形态整键回落空数组（非数组 / 缺失 / null）。 */
+  for (const bad of [null, undefined, "nope", 3, true, {}, { a: 1 }, new Set(["a"])]) {
+    assert.deepEqual(sanitizeCosmosSettings({ favorites: bad }).favorites, [], "非数组 → 空数组：" + String(bad));
+  }
+
+  /* 条目净房：trim、trim 后去重（先到先得 = 顺序保持）、非字符串逐条剔除、空串剔除。 */
+  assert.deepEqual(
+    sanitizeCosmosSettings({ favorites: ["  ws-a  ", "ws-b", "ws-a", "ws-c"] }).favorites,
+    ["ws-a", "ws-b", "ws-c"],
+    "entry trim + trim 后去重（先到先得）"
+  );
+  assert.deepEqual(
+    sanitizeCosmosSettings({ favorites: ["ws-a", 3, null, undefined, {}, [], true, "ws-b"] }).favorites,
+    ["ws-a", "ws-b"],
+    "数组含非字符串 → 逐条剔除（MUST NOT 整键回落）"
+  );
+  assert.deepEqual(
+    sanitizeCosmosSettings({ favorites: ["", "   ", "\t", "ws-a"] }).favorites,
+    ["ws-a"],
+    "空串 / 纯空白条目剔除（trim 后为空）"
+  );
+  assert.deepEqual(
+    sanitizeCosmosSettings({ favorites: ["1", "2", "3", "4", "5"] }).favorites,
+    ["1", "2", "3", "4", "5"],
+    "合法 id 顺序原样透传"
+  );
+
+  /* 读面超限：静默截断保前 64（写面满限拒绝在 client 侧，不归本函数）。 */
+  const overflow = Array.from({ length: COSMOS_FAVORITES_MAX + 16 }, (_, i) => "ws-" + i);
+  const truncated = sanitizeCosmosSettings({ favorites: overflow }).favorites;
+  assert.equal(truncated.length, COSMOS_FAVORITES_MAX, "读面超限静默截断到 64");
+  assert.equal(truncated[0], "ws-0", "截断保前（首条保留）");
+  assert.equal(truncated[COSMOS_FAVORITES_MAX - 1], "ws-63", "截断保前（第 64 条保留）");
+  assert.ok(!truncated.includes("ws-64"), "第 65 条起丢弃");
+
+  /* 键序稳定：净房输出键序与输入键序无关（JSON.stringify 依赖键序），favorites 恒在尾部。 */
+  const keys = Object.keys(sanitizeCosmosSettings({}));
+  assert.equal(keys[keys.length - 1], "favorites", "净房输出键序尾部 = favorites");
+  assert.equal(
+    JSON.stringify(sanitizeCosmosSettings({ favorites: ["ws-a"], panSpeed: 100 })),
+    JSON.stringify(sanitizeCosmosSettings({ panSpeed: 100, favorites: ["ws-a"] })),
+    "键序与输入插入顺序无关（JSON.stringify 逐字节一致）"
+  );
+  assert.ok(
+    JSON.stringify(sanitizeCosmosSettings({ favorites: ["ws-a"] })).endsWith('"favorites":["ws-a"]}'),
+    "序列化载荷尾部即 favorites 数组"
+  );
+
+  /* 未知键剥离；与既有键零互扰。 */
+  assert.equal("hacker" in sanitizeCosmosSettings({ hacker: 1 }), false, "未知键剥离");
+  assert.deepEqual(
+    [sanitizeCosmosSettings({ favorites: ["ws-a"], templateNames: true, wsToolSize: 40 }).templateNames,
+      sanitizeCosmosSettings({ favorites: ["ws-a"], templateNames: true, wsToolSize: 40 }).wsToolSize],
+    [true, 40],
+    "与既有 templateNames / wsToolSize 键零互扰"
+  );
+  assert.equal(
+    "favorites" in COSMOS_SETTINGS_BOUNDS,
+    false,
+    "BOUNDS 保持纯数值形状（数组键不进界表）"
+  );
+
+  /* 持久化读写（同一存储通道）：写入 → 读回；坏值 → 净房回落空数组；旧载荷缺键读回空数组。 */
+  const store = new Map();
+  globalThis.localStorage = {
+    getItem: (key) => (store.has(key) ? store.get(key) : null),
+    setItem: (key, value) => store.set(key, String(value)),
+    removeItem: (key) => store.delete(key)
+  };
+  try {
+    assert.deepEqual(loadCosmosSettings().favorites, [], "无存储 → 空数组");
+    const saved = saveCosmosSettings({ favorites: [" ws-a ", "ws-b", "ws-a"] });
+    assert.deepEqual(saved.favorites, ["ws-a", "ws-b"], "写入净房结果（trim + 去重）");
+    assert.deepEqual(loadCosmosSettings().favorites, ["ws-a", "ws-b"], "重开读回（持久化）");
+    assert.equal(loadCosmosSettings().launchMode, "embedded", "同通道既有键不受扰动");
+    store.set("dsh-v-cosmos:settings", JSON.stringify({ favorites: "ws-a" }));
+    assert.deepEqual(loadCosmosSettings().favorites, [], "持久载荷坏值（非数组）→ 净房回落空数组");
+    store.set("dsh-v-cosmos:settings", JSON.stringify({ panSpeed: 180 }));
+    assert.deepEqual(loadCosmosSettings().favorites, [], "v15 旧载荷（无键）读回补空数组");
   } finally {
     delete globalThis.localStorage;
   }
