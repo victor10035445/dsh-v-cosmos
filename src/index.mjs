@@ -118,9 +118,10 @@
  *    · `POST /works/update` `{wsId, workId, name?, note?}` 改名/备注（缺席/空白 = 清除回落）；
  *    · `POST /works/remove` `{wsId, workId}` 仅删条目不删文件（清空即回收容器键）；
  *    · `POST /works/open` `{wsId, workId}` 启动（**只收 id，不收裸路径**）：固定校验链
- *      在册 → resolve 包含性（含分隔符边界）→ 符号链接拒绝 → 文件判定 → `kind` 分派；
- *      `exec`（exe/bat/cmd）后台运行（bat/cmd 经 `cmd /c`、cwd = 条目目录），其余一切走
- *      系统默认程序打开（含 ps1，design D4）；成功记 `lastLaunchedAt` + 一帧；
+ *      在册 → resolve 包含性（含分隔符边界）→ 符号链接拒绝 → 文件判定 → 按 `kind` 分派；
+ *      `exec`（exe/bat/cmd）与其余一切类型同一「资源管理器双击」启动语义——`cmd /c start`
+ *      可见控制台、cwd = 条目目录（含 ps1，design D4 / exec 启动语义修复）；成功记
+ *      `lastLaunchedAt` + 一帧；
  *      失败 reason：`entry-unknown/out-of-root/not-a-file/missing-on-disk/symlink/
  *      platform-unsupported`（非 Windows 结构化降级）；
  *    · `POST /works/reveal` `{wsId, workId}` 资源管理器 `/select` 定位（同源校验链、
@@ -191,7 +192,6 @@ import {
    本文件只做端点接线与文件系统裁决（包含性/符号链接/文件类型）。 */
 import {
   createWorksStore,
-  extensionOf,
   normalizeRelPath,
   publicWorkOf
 } from "./works-store.mjs";
@@ -1331,7 +1331,8 @@ export function apply(ctx, config, options = {}) {
      存储 = 插件自有第四件 `$DSH_HOME/storages/dsh-v-cosmos.works.json`（与关联/队列/谱系
      互不覆盖）。启动面按 design D3 三层收窄：①端点签名只收 `(wsId, workId)`（裸路径结构上
      不可达）②`relPath` resolve 后严格包含于注册根（含分隔符边界）③`statSync` 必须文件 +
-     符号链接显式拒绝；④`kind` 分派（`exec` 后台运行，其余一切走系统默认程序打开，design D4）。 */
+     符号链接显式拒绝；④`kind` 分派（`exec` 走执行面、其余走系统默认程序打开，两者同一
+     「资源管理器双击」启动形态 = `cmd /c start` 可见控制台，design D4 + exec 启动语义修复）。 */
 
   /** 作品存储（原子写；坏档回空、首写即建）。 */
   const worksStore = createWorksStore({ logger: ctx.logger ?? null });
@@ -2897,36 +2898,35 @@ export function apply(ctx, config, options = {}) {
               return;
             }
             const { entry, abs } = verified;
+            /* ── 启动形态统一（fix-cosmos-works-exec-launch-semantics D1/D2）：exec 与其余
+               类型同一入口 `cmd /c start "" "<引号绝对路径>"`（ShellExecute = 资源管理器
+               双击）——exe/bat/cmd 一律走此形态，**无 exe 直接 spawn 特例**（旧 exe 子路径与
+               其「路径元字符」理由注释一并删除：该顾虑由 `cmdQuote` + `windowsVerbatimArguments`
+               承担，与 bat/cmd 同一防线）。
+               窗口语义：被启动进程 SHALL NOT 被隐藏——bat/cmd 与控制台型 exe 获**新建可见
+               控制台**、GUI exe 正常弹窗；交互式脚本的列表/输入因此有着落，也不会隐身挂死成
+               僵尸进程。执行白名单（design D3）零改动：端点只收 `(wsId, workId)`、`relPath`
+               根内包含性、扩展名收窄 exe/bat/cmd。引号纪律原样：`cmdQuote` 整体加引号且
+               `windowsVerbatimArguments` 关掉 Node 二次引号处理，条目名里的 `&`/`|`/`>` 不会
+               成为命令分隔符；`'""'` 占 `start` 的首个「窗口标题」参数位。
+               wrapper 上的 `windowsHide` 只作用于瞬时的 cmd 外壳——`start` 经 ShellExecute
+               新建的进程窗口态由 shell 决定，**不受父进程 hide 影响**（非 exec 分支的既有
+               成熟先例，design D3）。cwd 恒为条目所在目录（design D5 的 cwd 裁决保留）。 */
             try {
+              const openOptions = {
+                cwd: dirname(abs),
+                detached: true,
+                stdio: "ignore",
+                windowsHide: true,
+                windowsVerbatimArguments: true
+              };
               if (entry.kind === "exec") {
-                /* 执行白名单（design D4）：exe 直接 spawn；bat/cmd 经 `cmd /c` 且
-                   cwd = 条目所在目录（与资源管理器双击同语义，design D5）。 */
-                const workDir = dirname(abs);
-                if (extensionOf(entry.relPath) === "exe") {
-                  /* 直接 spawn（不进取 cmd 解析）：路径里的 `&` 一类元字符不构成命令拼接。 */
-                  launchDetached(abs, [], { cwd: workDir, detached: true, stdio: "ignore", windowsHide: true });
-                } else {
-                  /* 经 cmd 解析的形态必须显式加引号：否则文件名里的 `&`/`|`/`>` 会被 cmd
-                     当作命令分隔符（白名单只约束「启动哪个条目」，引号负责约束「条目名里的
-                     元字符」）。`windowsVerbatimArguments` 关掉 Node 的二次引号处理。 */
-                  launchDetached("cmd.exe", ["/c", cmdQuote(abs)], {
-                    cwd: workDir,
-                    detached: true,
-                    stdio: "ignore",
-                    windowsHide: true,
-                    windowsVerbatimArguments: true
-                  });
-                }
+                /* 执行面：与资源管理器双击同语义运行（可见控制台；即发即忘）。 */
+                launchDetached("cmd.exe", ["/c", "start", '""', cmdQuote(abs)], openOptions);
               } else {
                 /* 其余一切类型（md/pdf/html/other/ps1）走系统默认程序打开，
                    SHALL NOT 以可执行方式运行（`start` 即 ShellExecute 语义）。 */
-                launchDetached("cmd.exe", ["/c", "start", '""', cmdQuote(abs)], {
-                  cwd: dirname(abs),
-                  detached: true,
-                  stdio: "ignore",
-                  windowsHide: true,
-                  windowsVerbatimArguments: true
-                });
+                launchDetached("cmd.exe", ["/c", "start", '""', cmdQuote(abs)], openOptions);
               }
             } catch (error) {
               /* 启动调用本身失败（如进程创建配额）→ 结构化错误，不抛未捕获异常。 */

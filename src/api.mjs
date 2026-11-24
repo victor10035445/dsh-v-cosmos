@@ -279,8 +279,9 @@ export async function removeWork(wsId, workId) {
 }
 
 /**
- * 启动/打开（`POST /works/open`）：`exec` 后台运行，其余类型走系统默认程序打开。
- * 即发即忘——返回成功只表示启动调用已发出，不含子进程生命周期。
+ * 启动/打开（`POST /works/open`）：`exec` 与其余类型均按资源管理器双击语义启动
+ * （`cmd /c start`，可见控制台、不隐藏窗口）。
+ * 即发即忘——返回成功只表示启动调用已发出，不含子进程生命周期，也不捕获输出。
  * @param {string} wsId
  * @param {string} workId
  * @returns {Promise<{ok: true, entry: object} | {ok: false, error: string, reason?: string}>}

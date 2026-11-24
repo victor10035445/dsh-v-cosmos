@@ -519,8 +519,11 @@ const worksFrames = () => dataFrames().filter((frame) => frame.type === "works-c
   assert.equal(spawnStub.calls.length, 1, "恰一次进程启动");
   const execCall = spawnStub.calls[0];
   assert.equal(execCall.command, "cmd.exe", "bat 经 cmd.exe 启动");
-  assert.equal(execCall.args[0], "/c", "bat 经 cmd /c");
-  assert.equal(execCall.args[1], '"' + join(wsRoot, "tools", "build.bat") + '"', "目标 = 条目绝对路径（非注入路径；整体加引号）");
+  assert.deepEqual(
+    execCall.args,
+    ["/c", "start", '""', '"' + join(wsRoot, "tools", "build.bat") + '"'],
+    "bat 与文档类同形：start + 空标题 + 加引号的绝对路径（资源管理器双击语义 / 可见控制台）"
+  );
   assert.equal(execCall.options.windowsVerbatimArguments, true, "引号由本层权威给出（关掉 Node 二次处理）");
   assert.equal(execCall.options.cwd, join(wsRoot, "tools"), "cwd = 条目所在目录（design D5）");
   assert.equal(execCall.options.detached, true, "detached（即发即忘）");
@@ -792,13 +795,23 @@ function openspecListJson(cwd) {
     assert.deepEqual(Object.keys(frame), ["type"], "帧无载荷字段");
     assert.equal(frame.type, "works-changed", "帧类型");
   }
-  /* exec 分派：exe 直接 spawn（不经 cmd /c） */
-  const exeCall = spawnStub.calls.find((call) => call.command === join(wsRoot, "bin", "tool.exe"));
-  assert.ok(exeCall, "exe 直接 spawn");
-  assert.deepEqual(exeCall.args, [], "exe 无参数");
+  /* exec 分派收敛：exe 与 bat 同形（`cmd /c start`，无直接 spawn 特例） */
+  const exeQuoted = '"' + join(wsRoot, "bin", "tool.exe") + '"';
+  const exeCall = spawnStub.calls.find((call) => call.args.at(-1) === exeQuoted);
+  assert.ok(exeCall, "exe 经 cmd 启动");
+  assert.equal(exeCall.command, "cmd.exe", "exe 经 cmd.exe 启动");
+  assert.deepEqual(
+    exeCall.args,
+    ["/c", "start", '""', exeQuoted],
+    "exe 与 bat 同形：start + 空标题 + 加引号的绝对路径（无直接 spawn 特例）"
+  );
   assert.equal(exeCall.options.cwd, join(wsRoot, "bin"), "exe cwd = 条目目录");
-  /* start / select 不得混入 exe 启动 */
-  assert.equal(spawnStub.calls.some((call) => call.args[0] === "start"), false, "exe 不走 start 打开语义");
+  assert.equal(exeCall.options.windowsVerbatimArguments, true, "exe 引号纪律与 bat 同形");
+  assert.equal(
+    spawnStub.calls.some((call) => call.command === join(wsRoot, "bin", "tool.exe")),
+    false,
+    "无 exe 直接 spawn 特例"
+  );
 }
 
 /* ── 11. 客户端桥（3.1 / spec「客户端 API 桥」） ── */

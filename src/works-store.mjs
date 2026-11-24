@@ -35,7 +35,7 @@ export const WORKS_VERSION = 1;
 export const WORKS_LIMIT = 32;
 /** 条目类型枚举（`kind` 全量取值）。 */
 export const WORKS_KINDS = Object.freeze(["exec", "html", "md", "pdf", "other"]);
-/** 可执行白名单扩展名（design D4：**仅**这三类走后台运行，ps1 明确排除）。 */
+/** 可执行白名单扩展名（design D4：**仅**这三类归入 exec 执行面，ps1 明确排除）。 */
 export const WORKS_EXEC_EXTENSIONS = Object.freeze(["exe", "bat", "cmd"]);
 /** 错误 reason 枚举（端点透传；本模块只产出形态/重复/上限相关子集）。 */
 export const WORKS_REASONS = Object.freeze([
