@@ -26,7 +26,11 @@
  *  - 布位 = 条目 id 哈希播种 + 确定性最小间距松弛；**增量只移动新焦点**（稳定槽位）；
  *  - 场域缓存键 = 焦点集合签名 + 呼吸相位 100ms 桶（稳态帧零重算，`inspect()` 可断言）；
  *  - ASCII 离屏 ≤180ms 重绘；等势线 marching squares（鞍部涌现）；
- *  - 皮肤主题化：焦点/网格/等势线/涨落海取皮肤调色板与表面通道，light 皮肤禁加色。
+ *  - 皮肤主题化：焦点/网格/等势线/涨落海取皮肤调色板与表面通道，light 皮肤禁加色；
+ *  - 触屏长按（add-cosmos-focus-touch-activate）：呈现态由引擎写入（`holdBegin` /
+ *    `holdUpdate` / `holdEnd`），进度环几何走纯函数 `focusShapeProgressPointsOf`（与焦点
+ *    同一形状路径，形状语义不破功），触水涟漪复用既有发射机 + accent 通道取色；
+ *    取消/激发后 `WORKS_HOLD.retreat` 快退；风暴降级停发涟漪、进度环保留。
  */
 const TAU = Math.PI * 2;
 
@@ -109,6 +113,74 @@ export function focusShapePointsOf(kind, x, y, r) {
     for (let i = 0; i < 3; i++) add(-Math.PI / 2 + (i * TAU) / 3);
   }
   return points;
+}
+
+/**
+ * 触屏长按动效参数（add-cosmos-focus-touch-activate D5；集中校准）。
+ *  - `ringPeriod`：触水涟漪重复周期（秒）——每周期 `ringsPerPeriod` 道同心扩散环；
+ *  - `ringDur` / `ringAlpha` / `ringMaxR`：hold 专属**细环**包络（alpha 随半径衰减，
+ *    与「激发强涟漪」单道粗环可分辨）；
+ *  - `retreat`：取消/激发后的动效快退时长（秒）——进度环 alpha 线性归零，无残帧。
+ * 进度环的时长不在此：进度 = 引擎长按时钟（`HOLD_MS`），渲染核只按 `k` 描边。
+ */
+export const WORKS_HOLD = Object.freeze({
+  ringPeriod: 0.8,
+  ringsPerPeriod: 3,
+  ringDur: 0.8,
+  ringAlpha: 0.2,
+  ringMaxR: 58,
+  retreat: 0.2
+});
+
+/**
+ * 焦点形状**进度折线**（纯函数；进度环几何唯一真源）：自形状首个顶点
+ * （exec 尖顶 / 方框左上角 / 三角尖顶）起顺时针截取周长的 `k` 比例，返回折线点。
+ * 形状语义不破功（六边形进度仍是六边形）；circle 返回空数组——绘制走 `arc` 角度弧。
+ * @param {string} kindOrShape kind（exec）或形状名（hexagon）
+ * @param {number} x
+ * @param {number} y
+ * @param {number} r 周界半径（像素）
+ * @param {number} k 进度 0..1（越界 clamp）
+ * @returns {Array<{x:number,y:number}>}
+ */
+export function focusShapeProgressPointsOf(kindOrShape, x, y, r, k) {
+  const shape = focusShapeNameOf(kindOrShape);
+  if (shape === "circle") return [];
+  const points = focusShapePointsOf(shape, x, y, r);
+  if (points.length < 2) return [];
+  const ratio = clamp(Number(k) || 0, 0, 1);
+  if (!(ratio > 0)) return [];
+  const edges = [];
+  let total = 0;
+  for (let i = 0; i < points.length; i++) {
+    const a = points[i];
+    const b = points[(i + 1) % points.length];
+    const len = Math.hypot(b.x - a.x, b.y - a.y);
+    edges.push({ a, b, len });
+    total += len;
+  }
+  if (!(total > 0)) return [];
+  const out = [{ x: points[0].x, y: points[0].y }];
+  const EPS = 1e-9;
+  const want = total * ratio;
+  let acc = 0;
+  for (const edge of edges) {
+    const remaining = want - acc;
+    if (remaining <= EPS) break;
+    if (remaining >= edge.len - EPS) {
+      out.push({ x: edge.b.x, y: edge.b.y });
+      acc += edge.len;
+      continue;
+    }
+    const q = remaining / edge.len;
+    out.push({
+      x: edge.a.x + (edge.b.x - edge.a.x) * q,
+      y: edge.a.y + (edge.b.y - edge.a.y) * q
+    });
+    acc = want;
+    break;
+  }
+  return out;
 }
 
 /** 类型名（信息卡徽标文案；缺键回落「文件」）。 */
@@ -711,6 +783,10 @@ export function createWorksFace(host) {
     layoutSig: "",
     hoverId: null,
     hoverAt: 0,
+    /* 触屏长按呈现态（add-cosmos-focus-touch-activate D5）：引擎写入（holdBegin /
+       holdUpdate / holdEnd），渲染核只读并绘制进度环 + 触水涟漪。
+       `{ id, k, t0, emitAt, fadeT0 }`——fadeT0 非空 = 快退中（retreat 后清空）。 */
+    hold: null,
     vacancyK: 0,
     u: 1,
     W: 0,
@@ -754,6 +830,9 @@ export function createWorksFace(host) {
       light: skin?.light === true,
       additive: skin?.light !== true,
       gold,
+      /* accent 通道（add-cosmos-focus-touch-activate D5）：长按进度环/触水涟漪取色，
+         与 HUD `--cos-accent` 同源（注册表自 `base.accent` 单点派生）；缺省回落金色。 */
+      accent: hexOf(pal.accent) || gold,
       exec: hexOf(prop.executed) || gold,
       html: hexOf(sess.free) || hexOf(prop.reviewed) || "#8fe8ef",
       md: hexOf(prop.created) || "#9fd8ff",
@@ -852,16 +931,97 @@ export function createWorksFace(host) {
     }
   }
 
-  function pushEmission(x, y, strong, color) {
+  /**
+   * 焦点辐射涟漪发射（既有发射机；add-cosmos-focus-touch-activate 2.1 起长按复用同一
+   * 通道——**不新增绘制体系**）。
+   * @param {number} x
+   * @param {number} y
+   * @param {boolean} strong 强涟漪（hover/激发）；false = 环境稳态弱涟漪
+   * @param {string|null} color 缺省回落皮肤 contour 通道
+   * @param {{a0?:number,maxR?:number,dur?:number}} [opts] 包络覆写（hold 专属细环）
+   */
+  function pushEmission(x, y, strong, color, opts) {
     if (state.emissions.length > 30) state.emissions.shift();
+    const o = opts && typeof opts === "object" ? opts : null;
     state.emissions.push({
       x, y,
       t0: timeOf(),
-      dur: strong ? 1.1 : 1.5,
-      maxR: strong ? 130 : 78 + 26 * ((worksHashOf(x + ":" + y) % 1000) / 1000),
-      a0: strong ? 0.34 : 0.16,
+      dur: Number(o?.dur) > 0 ? Number(o.dur) : (strong ? 1.1 : 1.5),
+      maxR: Number(o?.maxR) > 0
+        ? Number(o.maxR)
+        : (strong ? 130 : 78 + 26 * ((worksHashOf(x + ":" + y) % 1000) / 1000)),
+      a0: Number(o?.a0) > 0 ? Number(o.a0) : (strong ? 0.34 : 0.16),
       color: color || null
     });
+  }
+
+  /* ── 触屏长按（add-cosmos-focus-touch-activate D5）：呈现态写入 + 动效 ── */
+
+  /** 一道 hold 触水细环（steam 包络：细、alpha 随半径衰减、取 accent 通道）。 */
+  function emitHoldRipple(id) {
+    if (stormNow()) return false;
+    const f = focusById(id);
+    if (!f) return false;
+    pushEmission(f.sx, f.sy, false, paletteOf().accent, {
+      a0: WORKS_HOLD.ringAlpha,
+      maxR: WORKS_HOLD.ringMaxR * state.u,
+      dur: WORKS_HOLD.ringDur
+    });
+    return true;
+  }
+
+  /** 长按起步（引擎 pointerdown 命中焦点时调用）：建立呈现态 + 首道触水涟漪。 */
+  function holdBegin(id) {
+    const f = focusById(id);
+    if (!f) return false;
+    const t = timeOf();
+    const step = WORKS_HOLD.ringPeriod / WORKS_HOLD.ringsPerPeriod;
+    state.hold = { id, k: 0, t0: t, emitAt: t + step, fadeT0: null };
+    emitHoldRipple(id); // 按下即一道（阈值前 2 秒内保持约 2–3 道同心环在场）
+    return true;
+  }
+
+  /** 长按帧推进（引擎每帧写入进度 k）：涟漪按周期补发；风暴降级停发（进度环保留）。 */
+  function holdUpdate(k) {
+    const hold = state.hold;
+    if (!hold || hold.fadeT0 != null) return false;
+    hold.k = clamp(Number(k) || 0, 0, 1);
+    if (stormNow()) { hold.emitAt = timeOf(); return false; } // 不积压：恢复后自当前时刻重新起拍
+    const t = timeOf();
+    const step = WORKS_HOLD.ringPeriod / WORKS_HOLD.ringsPerPeriod;
+    let guard = 0;
+    while (t >= hold.emitAt && guard < 8) {
+      emitHoldRipple(hold.id);
+      hold.emitAt += step;
+      guard += 1;
+    }
+    if (guard >= 8) hold.emitAt = t + step; // 长冻结后不补发满屏历史环
+    return true;
+  }
+
+  /**
+   * 长按结束（取消 / 已激发）：停止补发、进入 `retreat` 快退（进度环 alpha 线性归零）。
+   * 引擎侧状态机与呈现态解耦——快退播完由 `update` 回收（无残帧）。
+   */
+  function holdEnd() {
+    const hold = state.hold;
+    if (!hold) return false;
+    if (hold.fadeT0 == null) hold.fadeT0 = timeOf();
+    hold.emitAt = Infinity;
+    return true;
+  }
+
+  /** 当前 hold 呈现视图（目标焦点 + 未完成快退才返回；进度环与 alpha 的唯一读取点）。 */
+  function holdViewOf(id) {
+    const hold = state.hold;
+    if (!hold || hold.id !== id) return null;
+    let alpha = 1;
+    if (hold.fadeT0 != null) {
+      const p = (timeOf() - hold.fadeT0) / WORKS_HOLD.retreat;
+      if (p >= 1) return null;
+      alpha = clamp(1 - p, 0, 1);
+    }
+    return { k: clamp(hold.k, 0, 1), alpha };
   }
 
   /**
@@ -1265,6 +1425,10 @@ export function createWorksFace(host) {
     }
     state.vacancyK += ((live.length ? 0 : 1) - state.vacancyK) * Math.min(1, dt * 2.4);
     updateEffects(t, dt);
+    /* 长按快退收尾（add-cosmos-focus-touch-activate 2.3）：retreat 播完即清呈现态。 */
+    if (state.hold && state.hold.fadeT0 != null && t - state.hold.fadeT0 >= WORKS_HOLD.retreat) {
+      state.hold = null;
+    }
     // 泡沫/流珠漂移（入阱回收；活跃度只改"可绘前缀"数量 → 存量零跳变）。
     const sinks = live.length ? live : null;
     const sinkCount = Math.max(0, Math.min(state.foam.length, Math.round(state.foamCount)));
@@ -1566,6 +1730,28 @@ export function createWorksFace(host) {
     ctx.restore();
   }
 
+  /**
+   * 沿形状周界描出**单段进度弧**（add-cosmos-focus-touch-activate 2.2）：几何走纯函数
+   * `focusShapeProgressPointsOf`（与冒烟同一真源），circle 走 `arc` 角度弧。
+   * 调用方负责 save/restore 与 strokeStyle（本函数只写路径）。
+   * @returns {boolean} 是否写入路径
+   */
+  function traceFocusShapeProgress(ctx, kindOrShape, x, y, r, k) {
+    const shape = focusShapeNameOf(kindOrShape);
+    const ratio = clamp(Number(k) || 0, 0, 1);
+    if (!(ratio > 0)) return false;
+    if (shape === "circle") {
+      const start = -Math.PI / 2;
+      ctx.arc(x, y, r, start, start + TAU * ratio);
+      return true;
+    }
+    const points = focusShapeProgressPointsOf(shape, x, y, r, ratio);
+    if (points.length < 2) return false;
+    ctx.moveTo(points[0].x, points[0].y);
+    for (let i = 1; i < points.length; i++) ctx.lineTo(points[i].x, points[i].y);
+    return true;
+  }
+
   function drawFocus(ctx, f, alpha, pal, hoverId) {
     if (f.s < 0.02) return;
     const u = state.u;
@@ -1618,6 +1804,26 @@ export function createWorksFace(host) {
       const hoverDash = [3 * u, 4 * u];
       strokeFocusShape(ctx, shape, x, y, hoverR, pal.light ? "#ffffff" : "#000000", 0.36 * a, hoverDash, 3, t * 24);
       strokeFocusShape(ctx, shape, x, y, hoverR, pal.gold, 0.98 * a, hoverDash, 1.6, t * 24);
+    }
+
+    /* 长按进度环（add-cosmos-focus-touch-activate 2.2/D5）：沿该焦点**形状周界**描边，
+       进度 = Δt/2000 线性（k 由引擎时钟写入），周界外侧留白一档（baseR + 7u，与 hover
+       内环 baseR − 7u 同档）。取消/激发后快退期同路径 alpha 线性归零（无残帧）；
+       形状语义不破功——六边形焦点的进度环仍是六边形。绘制序在名称之前：标签恒压环上，
+       环扫过底部顶点时不遮字（真机评审仅调半径/线宽，不动层级）。 */
+    const holdView = holdViewOf(f.id);
+    if (holdView && holdView.k > 0.001 && holdView.alpha > 0.01) {
+      const ringR = baseR + 7 * u;
+      ctx.save();
+      ctx.setLineDash([]);
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+      ctx.strokeStyle = worksRgba(pal.accent, 0.92 * a * holdView.alpha);
+      ctx.lineWidth = 2.2;
+      ctx.beginPath();
+      traceFocusShapeProgress(ctx, shape, x, y, ringR, holdView.k);
+      ctx.stroke();
+      ctx.restore();
     }
 
     /* 名称：字号加大 + 文字阴影；失谐以 ⚠ 前缀与警示色替代旧「上方字形 + 下方警示」双行。 */
@@ -2085,6 +2291,7 @@ export function createWorksFace(host) {
     state.beads = [];
     state.effects = { ripples: [], sparks: [], spirals: [] };
     state.emissions = [];
+    state.hold = null;
     state.trans = null;
     state.gridCache = null;
     state.contourCache = null;
@@ -2114,6 +2321,14 @@ export function createWorksFace(host) {
       layout: Object.fromEntries(Array.from(state.layout.entries()).map(([id, p]) => [id, { x: Math.round(p.x * 10000) / 10000, y: Math.round(p.y * 10000) / 10000 }])),
       signature: state.layoutSig,
       hoverId: state.hoverId,
+      /* 长按呈现态（add-cosmos-focus-touch-activate 观测面）：id + 进度 + 是否快退中。 */
+      hold: state.hold
+        ? {
+          id: state.hold.id,
+          k: Math.round(clamp(state.hold.k, 0, 1) * 1000) / 1000,
+          fading: state.hold.fadeT0 != null
+        }
+        : null,
       vacancyK: Math.round(state.vacancyK * 1000) / 1000,
       options: optionsOf(),
       activity: activityOf(),
@@ -2148,6 +2363,10 @@ export function createWorksFace(host) {
     updateHover,
     activate,
     notifyLaunched,
+    /* 触屏长按呈现面（add-cosmos-focus-touch-activate D5）：引擎状态机唯一写入方。 */
+    holdBegin,
+    holdUpdate,
+    holdEnd,
     update,
     draw(ctx, view, alpha) {
       state.stats.draws += 1;

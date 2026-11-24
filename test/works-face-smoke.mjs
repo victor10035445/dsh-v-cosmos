@@ -19,6 +19,7 @@ import { readFileSync } from "node:fs";
 
 import {
   WORKS_FACE_LIMIT, WORKS_FACE_TRANSITION, WORKS_KIND_GLYPH, WORKS_FOCUS_SHAPE, focusShapePointsOf, WORKS_ASCII_RAMP,
+  WORKS_HOLD, focusShapeProgressPointsOf,
   worksFocusListOf, worksSignatureOf, worksLayoutOf, placeWorksIncremental,
   worksHashOf, worksRng, worksRgba, worksMixHex,
   waveHeightAt, waveUnionAt, waveRevealAt, waveCrestAt,
@@ -120,7 +121,7 @@ function stepFrame(ms) {
   cb(ms);
 }
 
-const { createCosmosEngine } = await import("../src/cosmos/engine.mjs");
+const { createCosmosEngine, HOLD_MS, HOLD_CANCEL_PX } = await import("../src/cosmos/engine.mjs");
 
 /* ── 夹具 ─────────────────────────────────────────────────── */
 
@@ -374,6 +375,24 @@ function miniScene() {
   assert.equal(stormInfo.cache.contourBuilds, stormContours, "风暴期等势线保持缓存帧");
   assert.equal(stormInfo.cache.asciiBuilds, stormAscii, "风暴期 ASCII 保持缓存帧");
   assert.ok(stormInfo.effects.emissions <= emissionBefore, "风暴期辐射涟漪停发");
+  /* 长按在风暴降级档（add-cosmos-focus-touch-activate 2.3）：涟漪停发、进度环保留。 */
+  const holdId = field.inspect().focuses[0].id;
+  assert.equal(field.holdBegin(holdId), true, "long-press 呈现态起步");
+  const holdEmissionBefore = field.inspect().effects.emissions;
+  for (let i = 0; i < 6; i++) {
+    now += 0.1;
+    field.holdUpdate(0.6);
+    field.update(0.016);
+    field.draw(ctx, {});
+  }
+  let holdInfo = field.inspect();
+  assert.ok(holdInfo.effects.emissions <= holdEmissionBefore, "风暴期 hold 涟漪停发（不积压）");
+  assert.equal(holdInfo.hold?.id, holdId, "进度环呈现态保留（核心反馈不可失）");
+  assert.equal(holdInfo.hold.k, 0.6, "进度按引擎写入的 k 呈现");
+  stormMode = false;
+  field.holdEnd();
+  for (let i = 0; i < 4; i++) { now += 0.1; field.update(0.016); field.draw(ctx, {}); }
+  assert.equal(field.inspect().hold, null, "取消/激发后快退回收（无残帧）");
   stormMode = false;
 
   // 新增属性级补丁：凝聚入场、存量零位移
@@ -764,6 +783,230 @@ function tick() { return new Promise((resolve) => setTimeout(resolve, 0)); }
   eng.dispose();
 }
 
+/* ═══ C2. 触屏长按激发（add-cosmos-focus-touch-activate） ═══════ */
+{
+  assert.equal(HOLD_MS, 2000, "长按阈值 2.0s（tuning 常量，不进设置存储）");
+  assert.equal(HOLD_CANCEL_PX, 10, "取消位移阈值 10px（tuning 常量）");
+  assert.equal(WORKS_HOLD.ringPeriod, 0.8, "触水涟漪周期约 800ms");
+  assert.equal(WORKS_HOLD.retreat, 0.2, "取消/激发动效快退约 200ms");
+  assert.equal(WORKS_HOLD.ringsPerPeriod, 3, "每周期 2–3 道同心环");
+
+  /* 进度环几何（纯函数；与绘制同一真源）：沿焦点同形状周界截取周长比例。 */
+  const halfHex = focusShapeProgressPointsOf("exec", 0, 0, 10, 0.5);
+  assert.equal(halfHex.length, 4, "六边形半程 = 起点 + 3 顶点");
+  assert.ok(Math.abs(halfHex[0].x) < 1e-9 && Math.abs(halfHex[0].y + 10) < 1e-9, "自形状首顶点（尖顶）起笔");
+  assert.ok(Math.abs(halfHex.at(-1).x) < 1e-6 && Math.abs(halfHex.at(-1).y - 10) < 1e-6, "半程落于第四顶点");
+  const fullHex = focusShapeProgressPointsOf("hexagon", 0, 0, 10, 1);
+  assert.equal(fullHex.length, 7, "满程闭回起点（6 顶点 + 闭合点）");
+  assert.ok(Math.abs(fullHex.at(-1).x - fullHex[0].x) < 1e-9 && Math.abs(fullHex.at(-1).y - fullHex[0].y) < 1e-9, "满程首尾同点");
+  assert.equal(focusShapeProgressPointsOf("exec", 0, 0, 10, 0).length, 0, "零进度不描边");
+  assert.equal(focusShapeProgressPointsOf("other", 0, 0, 10, 0.5).length, 0, "圆走 arc 角度弧（无折线）");
+  const quarterSquare = focusShapeProgressPointsOf("md", 0, 0, 10, 0.25);
+  assert.equal(quarterSquare.length, 2, "方框 1/4 周长 = 一条边");
+
+  const opened = [];
+  const container = stubEl("div");
+  const eng = createCosmosEngine({
+    container,
+    style: createSkinD(),
+    settings: {},
+    worksActions: {
+      pick: async () => ({ ok: true, cancelled: true, entries: [] }),
+      update: async () => ({ ok: true }),
+      remove: async () => ({ ok: true }),
+      open: async (wsId, id) => { opened.push({ wsId, id }); return { ok: true }; },
+      reveal: async () => ({ ok: true })
+    }
+  });
+  eng.setScene(miniScene(), "rebuild");
+  rafQ.length = 0;
+  eng.start();
+  let ts = 900000;
+  const step = (n = 1) => {
+    for (let i = 0; i < n; i++) { ts += 50; fakeNow += 50; stepFrame(ts); }
+  };
+  step(3);
+  eng.diveToWs("ws1");
+  step(32);
+  eng.setWorks("ws1", focusFixture(4)); // w2 = exists:false（失谐）
+  assert.equal(eng.setFace("field"), true, "翻面请求接受");
+  step(60);
+  assert.equal(eng.inspectFace().face, "field", "长按夹具进入星场");
+
+  const root = container.children[0];
+  const canvasEl = root.querySelector(".cos-canvas");
+  const toastEl = root.querySelector(".cos-toast");
+  const fire = (type, ev) => { for (const fn of root.listeners[type] ?? []) fn(ev); };
+  const focusOf = (id) => eng.inspectFace().field.focuses.find((f) => f.id === id) || null;
+  let pid = 91;
+  const down = (x, y, pointerType = "touch") => {
+    const id = pid++;
+    fire("pointerdown", { pointerId: id, button: 0, clientX: x, clientY: y, pointerType, target: canvasEl, preventDefault() {} });
+    return id;
+  };
+  const move = (id, x, y, pointerType = "touch") => {
+    fire("pointermove", { pointerId: id, clientX: x, clientY: y, buttons: 1, pointerType, target: canvasEl });
+  };
+  const up = (id, x, y, pointerType = "touch", target = canvasEl) => {
+    fire("pointerup", { pointerId: id, button: 0, clientX: x, clientY: y, pointerType, target });
+  };
+  const f0 = focusOf("w0");
+  assert.ok(f0 && typeof f0.x === "number", "焦点屏幕位可用");
+  const yaw0 = eng.getCamera().yaw;
+
+  /* ① 长按 2s 恰好一次激发（阈值时刻 FIRE，无需抬指；续按不重触发） */
+  const p1 = down(f0.x, f0.y);
+  let input = eng.inspectInput();
+  assert.equal(input.hold?.id, "w0", "按下建立 holding");
+  assert.equal(input.hold.state, "holding", "起步为 holding");
+  assert.equal(eng.inspectFace().pinId, "w0", "按下即钉卡（触屏 hover 等价物）");
+  assert.equal(eng.inspectFace().ui.card.open, true, "只读信息卡立即呈现");
+  step(10); // 0.5s
+  const fieldHold = eng.inspectFace().field.hold;
+  assert.equal(fieldHold?.id, "w0", "渲染核 hold 呈现态就位");
+  assert.ok(fieldHold.k >= 0.2 && fieldHold.k <= 0.32, "进度 k≈0.25（Δt/2000 线性）：" + fieldHold.k);
+  assert.ok(eng.inspectFace().field.effects.emissions >= 1, "触水涟漪在场");
+  assert.equal(eng.inspectInput().dragging, false, "HOLDING 期不置拖拽态");
+  assert.equal(eng.getCamera().yaw, yaw0, "HOLDING 期不旋转");
+  step(32); // 累计 ≈2.1s
+  input = eng.inspectInput();
+  assert.equal(input.hold?.state, "fired", "阈值时刻 FIRE（无需抬指）");
+  await tick();
+  assert.deepEqual(opened, [{ wsId: "ws1", id: "w0" }], "恰好一次激发（worksActions.open 链路）");
+  assert.ok(eng.inspectFace().field.effects.ripples >= 1, "激发接棒既有强涟漪（notifyLaunched 原链）");
+  step(60); // 续按 3s
+  await tick();
+  assert.equal(opened.length, 1, "续按不再激发（fired 终态防重入）");
+  up(p1, f0.x, f0.y);
+  assert.equal(eng.inspectInput().hold, null, "抬指清 hold 态");
+  assert.equal(eng.inspectFace().ui.card.open, true, "FIRED 后抬指落点=本焦点 → 钉卡");
+  assert.equal(eng.inspectFace().ui.card.id, "w0", "钉住的是激发目标");
+  await tick();
+  assert.equal(opened.length, 1, "抬指不再激发");
+  assert.equal(eng.getCamera().yaw, yaw0, "整段长按零旋转");
+
+  /* ② 抬指早于阈值 = tap（无激发；只读信息卡钉住） */
+  eng.inspectFace().ui.card.open;
+  const p2 = down(f0.x, f0.y);
+  step(20); // 1s
+  assert.equal(eng.inspectInput().hold?.state, "holding", "阈值前仍 holding");
+  up(p2, f0.x, f0.y);
+  assert.equal(eng.inspectInput().hold, null, "早于阈值抬指 → 结束长按");
+  assert.equal(eng.inspectFace().ui.card.open, true, "tap 语义：信息卡钉住");
+  await tick();
+  assert.equal(opened.length, 1, "早于阈值抬指无启动请求");
+  step(5); // 250ms > retreat(200ms)
+  assert.equal(eng.inspectFace().field.hold, null, "取消动效快退无残帧");
+
+  /* ③ 漂移容忍：6px 自然漂移不触发旋转/不中断长按 */
+  const p3 = down(f0.x, f0.y);
+  move(p3, f0.x + 6, f0.y);
+  step(42);
+  input = eng.inspectInput();
+  assert.equal(input.hold?.state, "fired", "容忍带内漂移不杀死长按");
+  assert.equal(input.dragging, false, "漂移不累积成拖拽");
+  assert.equal(eng.getCamera().yaw, yaw0, "漂移零旋转");
+  await tick();
+  assert.equal(opened.length, 2, "漂移 + 阈值 → 激发");
+  up(p3, f0.x + 6, f0.y);
+
+  /* ④ 起指点在命中域边缘：外向漂移（< 取消阈值）不被扩域 re-hitTest 杀死 */
+  const edgeX = f0.x + 28; // hitRadius = 30（800×600 视口）
+  const p4 = down(edgeX, f0.y);
+  assert.equal(eng.inspectInput().hold?.id, "w0", "命中域边缘起指仍建立长按");
+  move(p4, edgeX + 8, f0.y); // 距中心 36 < hitRadius 30 + HOLD_CANCEL_PX 10 = 40
+  step(42);
+  assert.equal(eng.inspectInput().hold?.state, "fired", "扩域 re-hitTest 不杀容忍带内漂移");
+  await tick();
+  assert.equal(opened.length, 3, "边缘起指 + 容忍带漂移 → 激发");
+  up(p4, edgeX + 8, f0.y);
+
+  /* ⑤ 位移越阈取消：快退、无激发；锚点就地重锚切回旋转 */
+  const p5 = down(f0.x, f0.y);
+  step(10);
+  move(p5, f0.x + HOLD_CANCEL_PX + 2, f0.y);
+  assert.equal(eng.inspectInput().hold, null, "位移越阈 → 取消长按");
+  assert.equal(eng.inspectFace().field.hold?.fading, true, "取消 → 动效快退中");
+  step(42);
+  await tick();
+  assert.equal(opened.length, 3, "越阈取消无启动请求");
+  step(5);
+  assert.equal(eng.inspectFace().field.hold, null, "快退结束呈现态回收（约 200ms）");
+  const yawBeforeRotate = eng.getCamera().yaw;
+  move(p5, f0.x + HOLD_CANCEL_PX + 2 + 20, f0.y);
+  assert.equal(eng.inspectInput().dragging, true, "取消后锚点重锚 → 正常旋转拖拽续接");
+  assert.ok(eng.getCamera().yaw !== yawBeforeRotate, "旋转自新锚点生效（无跳变）");
+  up(p5, f0.x + HOLD_CANCEL_PX + 22, f0.y);
+
+  /* ⑥ 第二指落下（手势接管）取消长按 */
+  const p6a = down(f0.x, f0.y);
+  step(10);
+  assert.equal(eng.inspectInput().hold?.state, "holding", "单指 holding");
+  const p6b = down(200, 300);
+  assert.equal(eng.inspectInput().hold, null, "第二指落下 → 取消长按（手势接管）");
+  assert.ok(eng.inspectInput().pinch, "双指进入既有捏合");
+  step(42);
+  await tick();
+  assert.equal(opened.length, 3, "手势接管无启动请求");
+  up(p6b, 200, 300);
+  up(p6a, f0.x, f0.y);
+  step(9); // 越过手势抑制窗（350ms），后续用例按常态按下
+
+  /* ⑦ 失谐焦点：按下瞬间取消 + toast（进度环不出现、无启动请求） */
+  const f2 = focusOf("w2");
+  const toastBefore = String(toastEl.textContent);
+  const p7 = down(f2.x, f2.y);
+  assert.equal(eng.inspectInput().hold, null, "失谐焦点不建立长按");
+  assert.equal(eng.inspectFace().field.hold, null, "无进度环呈现");
+  assert.ok(String(toastEl.textContent).includes("文件不存在"), "按下瞬间 toast 文件缺失");
+  assert.ok(toastBefore !== String(toastEl.textContent), "toast 文案更新");
+  step(42);
+  await tick();
+  assert.equal(opened.length, 3, "失谐无启动请求");
+  up(p7, f2.x, f2.y);
+
+  /* ⑧ 抑制窗内不起步（与 tap 拾取抑制同窗同源 350ms） */
+  const pa = down(200, 300);
+  const pb = down(300, 300);
+  assert.equal(eng.inspectInput().hold, null, "双指期间不建长按");
+  up(pb, 300, 300);
+  up(pa, 200, 300); // 手势序列完成 → 抑制窗起点
+  const pinBefore = eng.inspectFace().pinId;
+  const p8 = down(f0.x, f0.y);
+  assert.equal(eng.inspectInput().hold, null, "抑制窗内按下 MUST NOT 启动长按");
+  up(p8, f0.x, f0.y);
+  assert.equal(eng.inspectFace().pinId, pinBefore, "窗内抬指被同一抑制窗吞掉（无拾取/无钉卡）");
+  step(9); // 450ms > 350ms
+  const p9 = down(f0.x, f0.y);
+  assert.equal(eng.inspectInput().hold?.id, "w0", "窗已过后按下恢复长按");
+  up(p9, f0.x, f0.y);
+  step(5);
+  assert.equal(eng.inspectFace().field.hold, null, "抬指后快退回收");
+
+  /* ⑨ 鼠标与笔零变化（无长按门槛、无进度环，单击直接激发） */
+  const openedBeforeMouse = opened.length;
+  const pm = down(f0.x, f0.y, "mouse");
+  assert.equal(eng.inspectInput().hold, null, "鼠标点击不建长按");
+  assert.equal(eng.inspectFace().field.hold, null, "鼠标无进度环");
+  up(pm, f0.x, f0.y, "mouse");
+  await tick();
+  assert.equal(opened.length, openedBeforeMouse + 1, "鼠标单击焦点本体直接激发（既有语义）");
+  const pp = down(f0.x, f0.y, "pen");
+  assert.equal(eng.inspectInput().hold, null, "pen 点击不建长按");
+  up(pp, f0.x, f0.y, "pen");
+  await tick();
+  assert.equal(opened.length, openedBeforeMouse + 2, "pen 单击同样直接激发（零变化）");
+
+  /* ⑩ 空白处按下不建 hold（旋转手感不变） */
+  const blank = down(10, 10);
+  assert.equal(eng.inspectInput().hold, null, "空白按下不建长按");
+  move(blank, 40, 10);
+  assert.equal(eng.inspectInput().dragging, true, "空白拖拽仍按既有 4px 阈值旋转");
+  up(blank, 40, 10);
+
+  eng.dispose();
+}
+
 /* ═══ D. 设置面 ═════════════════════════════════════════════ */
 {
   const settings = await import("../src/settings.mjs");
@@ -833,6 +1076,21 @@ function tick() { return new Promise((resolve) => setTimeout(resolve, 0)); }
   assert.ok(!engine.includes(".cos-wcard-btns"), "tips 动作按钮 CSS 已退役");
   assert.ok(faceUiSource.includes("function openEditor") && faceUiSource.includes('data-act="save"'), "编辑页开页与行内保存");
   assert.ok(engine.includes(".cos-wcard"), "信息卡 CSS");
+  /* 触屏长按激发接线（add-cosmos-focus-touch-activate）：引擎状态机 + 渲染核动效锚点。 */
+  const faceSource = readFileSync(new URL("../src/cosmos/works-face.mjs", import.meta.url), "utf8");
+  assert.ok(engine.includes("export const HOLD_MS = 2000;"), "长按阈值 tuning 常量（不进设置）");
+  assert.ok(engine.includes("export const HOLD_CANCEL_PX = 10;"), "取消位移阈值 tuning 常量");
+  assert.ok(engine.includes("function beginTouchHold(ev)"), "pointerdown 长按起步入口");
+  assert.ok(engine.includes("function updateHold()"), "帧驱动阈值判定（MUST NOT setTimeout）");
+  assert.ok(engine.includes("E.field.holdUpdate(k)"), "进度/涟漪每帧写入渲染核");
+  assert.ok(engine.includes("E.field.holdBegin(hit.id)"), "按下即起始动效");
+  assert.ok(engine.includes('cancelHold("release")'), "抬指收尾走统一取消入口");
+  assert.ok(engine.includes("worksHitRadiusOf(Math.min(E.W, E.H)) + HOLD_CANCEL_PX"), "扩域 re-hitTest 宽容带");
+  assert.ok(!engine.includes("setTimeout(function () { launchWork"), "长按判定不用计时器");
+  assert.ok(faceSource.includes("export function focusShapeProgressPointsOf"), "进度环几何纯函数（形状路径复用）");
+  assert.ok(faceSource.includes("export const WORKS_HOLD = Object.freeze({"), "hold 动效常量集中");
+  assert.ok(faceSource.includes("function holdBegin(id)") && faceSource.includes("function holdEnd()"), "hold 呈现态写入面");
+  assert.ok(faceSource.includes("accent: hexOf(pal.accent) || gold"), "accent 通道取色（皮肤主题化）");
 }
 
 console.log("works-face-smoke: all assertions passed");

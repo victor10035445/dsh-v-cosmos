@@ -141,6 +141,27 @@
  * 契约：openspec/changes/add-cosmos-two-finger-pan（specs/dsh-cosmos「指针缩放与触屏捏合」
  * MODIFIED + 「三指按住平移（触屏）」措辞对齐）。
  *
+ * add-cosmos-focus-touch-activate（触屏长按激发；补上触屏端唯一的打开路径）：
+ *  - **触屏长按 2.0s 激发**：`E.hold` 状态机驻引擎、**帧驱动**判定（`HOLD_MS` /
+ *    `HOLD_CANCEL_PX` 为 tuning 常量，不进设置存储）——阈值时刻调既有
+ *    `launchWork`（异步即发即忘）恰好一次，hold 转 `fired` 终态防重入（续按/滑动/
+ *    抬指/再按均无动作）；抬指早于阈值 = 既有 tap（只读信息卡），轻触=查看、长按=启动；
+ *  - **漂移容忍**（D2 核心决策）：HOLDING 期旋转锚点每帧跟随指尖（dx/dy 归零 → 微漂移
+ *    不累积、不置 `E.dragging`、不中断长按），取消判据改为「相对按下起点位移 >
+ *    `HOLD_CANCEL_PX`」并就地重锚切回旋转；真实触屏 2s 内 5–15px 漂移因此不会杀死长按；
+ *  - **取消矩阵收束 `cancelHold(reason)`**（D6）：位移越阈 / 第二指落下 · 第三指接管 /
+ *    pointercancel / pointerleave 幽灵指针 / 编辑页打开 / 面转场与静默复位 / 目标焦点
+ *    消失 / 每帧**扩域 re-hitTest** 失配（指尖距焦点中心 > hitRadius + HOLD_CANCEL_PX；
+ *    与位移判据几何正交，起指点在命中域边缘的容忍带内漂移不被杀死）；失谐焦点按下即
+ *    toast 并中止（进度环不走向注定失败的启动）；
+ *  - **按下即钉卡**（D4）：起步同时钉住只读信息卡（触屏 hover 等价物，2 秒确认窗口），
+ *    复用既有 `showCard`（内容差分/宽限/只读纪律零改动），收敛为单一调用点便于回退；
+ *  - **动效全在渲染循环**（works-face.mjs）：触水涟漪复用场域活体层发射机（hold 专属
+ *    细环包络）+ 沿焦点形状周界的进度环（同形状路径纯函数复用，accent 通道取色）；
+ *    取消/激发后约 200ms 快退；激发瞬间既有「强涟漪 + ~3.5s 余辉」经 `notifyLaunched`
+ *    原样接棒；风暴降级档停发涟漪、进度环保留；
+ *  - 作用域收窄 touch：鼠标/笔单击直接激发、tap 出卡、多指手势、编辑页/虚位交互零变化。
+ *
  * polish-cosmos-tip-leader-line（浮签引线与避让间距）：
  *  - 三族浮签避让（`TIP_GAP`，spec 只锁下限、实现集中校准）：chip 悬空 56px（≥40）、
  *    恒星名牌星缘下 44px（≥28）、信息卡自「星中心旁 ±18px」改为**星缘外** 80px（≥40，
@@ -1276,6 +1297,17 @@ const FILTER_ALPHA_EPS = 1e-4;
 /** 手势结束后 click 抑制窗（ms）：click 在 pointerup 之后才派发，时间窗兜住
     「捏合刚结束就到的 click」——手游/地图类惯例值，集中定义便于调参。 */
 export const GESTURE_SUPPRESS_MS = 350;
+
+/* ---------- 触屏长按激发（add-cosmos-focus-touch-activate D1/D2） ---------- */
+
+/** 触屏长按阈值（ms）：按住焦点本体到此时刻即激发（**不要求抬指**），恰好一次。
+    收束在引擎 tuning 常量（MUST NOT 进设置存储）；真机调参只改此值。 */
+export const HOLD_MS = 2000;
+
+/** 长按取消位移阈值（px，自按下起点起算）：真实触屏 2s 内自然漂移普遍 5–15px，
+    与单指旋转的 4px 同源阈值会让长按几乎必败——故取消阈值独立放大一档（D2）。
+    同值另作扩域 re-hitTest 的宽容带（命中域外扩一档），与位移判据几何正交。 */
+export const HOLD_CANCEL_PX = 10;
 
 /** 右下「回到银河」按钮图标（迷你星系：三条同心椭圆轨道 + 中心点；与风格 D 侧栏
     座位星图同源语义，但引擎模块独立自持字符串——不引 client.jsx 常量）。 */
@@ -2801,6 +2833,11 @@ export function createCosmosEngine(opts) {
     pan3: null, // {sx, sy, movedX, movedY, pinchCarry}：三指平移质心起点/累计位移（add-cosmos-three-finger-pan D3）
     pinchCarry: false, // 本手势序列曾发生捏合（3→1/3→0 收束补判链，防切平移丢失阈值导航）
     gestureEndAt: -Infinity, // 手势结束时刻（GESTURE_SUPPRESS_MS 抑制窗起点）
+    /* 触屏长按态（add-cosmos-focus-touch-activate D1）：`{id, x0, y0, cx, cy, t0, state, pid}`
+       ——x0/y0 = 按下起点、cx/cy = 当前指尖（均 canvas 相对坐标）；state: "holding" |
+       "fired"（fired 终态防重入）。唯一写入口 = beginTouchHold / cancelHold / 帧内
+       updateHold（阈值判定与进度环共用引擎帧时钟，MUST NOT 用 setTimeout）。 */
+    hold: null,
     viewSwitchAt: -Infinity, // 视图切换冷却锚点（触发 + 切换补间收尾双写；add-cosmos-zoom-focus-nav D2）
     diveCount: 0, // dive() 调用计数（观测面：容器级重绑「单次 dive」防回归断言）
     panKeys: new Set(), // WASD 按住集合（keydown/keyup 维护，帧循环积分）
@@ -4148,6 +4185,8 @@ export function createCosmosEngine(opts) {
     E.faceHoverId = null;
     E.faceHoverHideAt = 0;
     E.facePinId = null;
+    /* 长按随面静默复位取消（D6：面转场/离开星场 = 取消矩阵一员，动效快退无激发）。 */
+    cancelHold("face-reset");
     E.field?.finishTransition();
     if (keepWorks !== true) {
       E.worksWsId = null;
@@ -4214,6 +4253,8 @@ export function createCosmosEngine(opts) {
    */
   function startFaceTransition(face, crossfade) {
     if (!E.field) return;
+    /* 长按让位（D6「面转场中」取消矩阵）：换面叙事开始即取消（快退、无激发）。 */
+    cancelHold("transition");
     /* 编辑页/信息卡随面转场让位（避免遮罩压住叙事）。 */
     if (E.fieldUI) {
       E.fieldUI.closeEditor?.();
@@ -5533,6 +5574,106 @@ export function createCosmosEngine(opts) {
     ctx.restore();
   }
 
+  /* ---------- 触屏长按激发（add-cosmos-focus-touch-activate D1–D6） ---------- */
+
+  /**
+   * 长按态清零（**唯一**取消入口，D6）：清引擎态 + 通知渲染核动效快退（约 200ms）。
+   * 取消矩阵全部汇到本函数：位移越阈 / 第二指接管 / pointercancel / 编辑页打开 /
+   * 面转场 / 扩域 re-hitTest 失配 / 失谐按下 / 目标焦点消失 / 抬指收尾。
+   * 动效快退由渲染核按 `WORKS_HOLD.retreat` 自播（本函数只切状态，不逐帧驱动）。
+   * @param {string} reason 取消原因（排障观测位；不参与任何判定）
+   * @returns {boolean} 是否确有长按态被清除
+   */
+  function cancelHold(reason) {
+    const hold = E.hold;
+    if (!hold) return false;
+    E.hold = null;
+    if (E.field) E.field.holdEnd();
+    void reason;
+    return true;
+  }
+
+  /**
+   * 长按起步判定（D7 作用域收窄）：touch ∧ canvas 起指 ∧ 非编辑页/面转场/抑制窗 ∧
+   * 命中的焦点可激发 → 建立 holding + **按下即钉卡**（触屏的 hover 等价物，D4）。
+   * 失谐焦点（`exists:false`）：按下瞬间 toast 失谐文案并中止（D6——不让进度环走向
+   * 注定失败的启动；`launchWork` 内既有 exists 守卫为双保险，不改）。
+   * 鼠标/笔（pen 单击既有直接激发分支）/ 覆盖元素起指 / 空白与虚位按下全部静默返回
+   * （空白按下 MUST NOT 建 hold —— 旋转手感不变）。
+   * @param {PointerEvent} ev pointerdown
+   * @returns {boolean} 是否建立长按态
+   */
+  function beginTouchHold(ev) {
+    if (!E.field || E.face !== FACE_FIELD || E.faceTrans) return false;
+    if (ev.pointerType !== "touch") return false;
+    if (ev.target !== E.el.canvas) return false; // 覆盖元素起指不进长按（与既有捕获策略同源）
+    if (E.fieldUI && E.fieldUI.editorOpen && E.fieldUI.editorOpen()) return false;
+    if (gestureSuppressed()) return false; // 与 tap 拾取抑制同窗同源（350ms）
+    const rect = E.el.canvas.getBoundingClientRect();
+    const x = ev.clientX - rect.left;
+    const y = ev.clientY - rect.top;
+    const hit = E.field.hitTest(x, y);
+    if (!hit || hit.type !== "focus") return false;
+    const focus = E.field.focusById(hit.id);
+    if (!focus) return false;
+    if (focus.exists === false) {
+      cancelHold("desync"); // 理论前置：新建前清死残留（幂等）
+      toast("文件不存在：" + focus.displayName + "（失谐）");
+      return false;
+    }
+    E.hold = {
+      id: hit.id,
+      x0: x, y0: y,
+      cx: x, cy: y,
+      t0: E.t,
+      state: "holding",
+      pid: ev.pointerId
+    };
+    /* 按下即钉卡（D4）：与触屏 tap 钉住态同一置态手法（pin + hover id + 宽限），
+       卡片内容差分/宽限/只读纪律全部复用既有 showCard，零新增结构。
+       同时把 hover 探针定位到按下点：触屏 pointerdown 前可能没有 pointermove，
+       否则陈旧探针会命中**另一**焦点并顶掉本卡（D4「钉住的必是长按目标」）。 */
+    E.px = x;
+    E.py = y;
+    E.pointerIn = true;
+    E.facePinId = hit.id;
+    E.faceHoverId = hit.id;
+    E.faceHoverHideAt = E.t + 6;
+    if (E.fieldUI) E.fieldUI.showCard(focus);
+    E.field.holdBegin(hit.id);
+    return true;
+  }
+
+  /**
+   * 长按帧推进（D1 帧驱动判定 + D3 阈值时刻 FIRE，MUST NOT 用 setTimeout）：
+   *  - 每帧把进度 k = Δt/2000 写入渲染核（形状周界进度环 + 触水涟漪）；
+   *  - 每帧对**长按目标焦点**做扩域 re-hitTest（D6）：指尖距焦点中心超过
+   *    `hitRadius + HOLD_CANCEL_PX` 才判失配——与「位移越阈」几何正交：起指点可落在
+   *    命中域边缘，取消阈值内的外向漂移 MUST NOT 被原命中域 re-hitTest 杀死；
+   *  - 编辑页打开 / 面转场中 / 目标焦点消失（快照对账移除）→ 取消；
+   *  - k ≥ 1 → `launchWork`（异步即发即忘，既有链路）**恰好一次**，hold 转 fired 终态。
+   */
+  function updateHold() {
+    const hold = E.hold;
+    if (!hold || hold.state !== "holding") return;
+    if (!E.field) { cancelHold("no-field"); return; }
+    if (E.face !== FACE_FIELD || E.faceTrans) { cancelHold("face"); return; }
+    if (E.fieldUI && E.fieldUI.editorOpen && E.fieldUI.editorOpen()) { cancelHold("editor"); return; }
+    const focus = E.field.focusById(hold.id);
+    if (!focus || focus.dying) { cancelHold("gone"); return; }
+    const pos = E.field.screenOf(hold.id);
+    if (!pos) { cancelHold("gone"); return; }
+    const reach = worksHitRadiusOf(Math.min(E.W, E.H)) + HOLD_CANCEL_PX;
+    if (Math.hypot(hold.cx - pos.x, hold.cy - pos.y) > reach) { cancelHold("drift"); return; }
+    const k = clamp((E.t - hold.t0) / (HOLD_MS / 1000), 0, 1);
+    E.field.holdUpdate(k);
+    if (k >= 1) {
+      hold.state = "fired"; // 终态：续按/滑动/抬指/再按均不再触发（单次防重入）
+      E.field.holdEnd(); // 进度环快退；「强涟漪 + ~3.5s 余辉」由 notifyLaunched 原样接棒
+      launchWork(hold.id);
+    }
+  }
+
   /* ---------- 输入（容器级绑定；坐标经 canvas 相对化，去 window 全屏假设） ---------- */
 
   /**
@@ -5607,6 +5748,9 @@ export function createCosmosEngine(opts) {
     function beginPinch() {
       const d0 = pinchDist();
       if (!(d0 > 0)) return;
+      /* 长按让位（D6 第二指落下 = 手势接管）：与 cancelTween 接管同语义，先取消长按
+         再建捏合基准——进度环快退、无激发。 */
+      cancelHold("pinch");
       const center = centroidOfPointers();
       E.pinch = { d0: d0, dist0: E.cam.dist, cx: center.x, cy: center.y };
       E.gesture = true;
@@ -5616,6 +5760,8 @@ export function createCosmosEngine(opts) {
     /** 第三指落下进入三指平移（D3）：清捏合/拖拽累积、以多指质心为起点、接管补间；
         第四指及以上再落指只重锚质心起点（无语义切换、无基准跳变）。 */
     function enterPan3() {
+      /* 长按让位（D6 第三指接管）：先取消长按（无激发），再进三指平移。 */
+      cancelHold("pan3");
       const center = centroidOfPointers();
       if (!Number.isFinite(center.x) || !Number.isFinite(center.y)) return;
       if (E.pan3) {
@@ -5722,6 +5868,9 @@ export function createCosmosEngine(opts) {
       if (E.pointers.size === 1) {
         sx = ev.clientX; sy = ev.clientY;
         E.dragging = false;
+        /* 触屏长按起步（1.2/D4/D7）：命中可激发焦点且未被抑制 → holding + 按下即钉卡；
+           失谐焦点按下即 toast 并中止。鼠标/笔/覆盖元素/空白一律静默不入。 */
+        beginTouchHold(ev);
       }
     });
     root.addEventListener('pointermove', function (ev) {
@@ -5736,6 +5885,22 @@ export function createCosmosEngine(opts) {
       }
       const tracked = E.pointers.get(ev.pointerId);
       if (tracked) { tracked.x = ev.clientX; tracked.y = ev.clientY; }
+      /* 触屏长按（1.3/D2 漂移容忍，核心决策）：
+         - HOLDING 期旋转锚点**每帧跟随指尖** → 本帧 dx/dy 归零，微漂移永不累积、
+           MUST NOT 置 `E.dragging` / 触发旋转 / 中断长按；
+         - 取消判据改为「当前位置 − 按下起点」位移 > `HOLD_CANCEL_PX`：取消后锚点就地
+           重锚（本帧 dx/dy 已归零），下一 move 起按正常旋转拖拽续接，无镜头跳变。 */
+      const holdNow = E.hold;
+      if (holdNow && holdNow.state === "holding" && ev.pointerId === holdNow.pid) {
+        const rect = canvas.getBoundingClientRect();
+        holdNow.cx = ev.clientX - rect.left;
+        holdNow.cy = ev.clientY - rect.top;
+        sx = ev.clientX; sy = ev.clientY; // 锚点跟随（容忍带内漂移零累积）
+        if (Math.hypot(holdNow.cx - holdNow.x0, holdNow.cy - holdNow.y0) > HOLD_CANCEL_PX) {
+          cancelHold("drift"); // 越阈取消 + 动效快退；锚点已重锚 → 切回旋转语义
+        }
+        return; // 长按帧内不进旋转/右键分支（取消帧亦不旋转，手感无跳变）
+      }
       /* 三指平移（D3）：第三指落下即接管；按多指质心增量平移 target，增量式重置
          质心起点（防漂移）；`E.pan3` 在场时下方捏合重锚守卫 MUST NOT 抢回捏合。 */
       if (E.pointers.size >= 3 && E.pan3) {
@@ -5868,6 +6033,11 @@ export function createCosmosEngine(opts) {
       /* 多指手势收尾（D2）：手势期间 pointerup MUST NOT 拾取；全部抬起后 record
          手势结束时刻，供 click 抑制窗使用。 */
       if (E.gesture) { endGesturePointer(ev); return; }
+      /* 触屏长按收尾（1.4）：抬指即结束 hold——早于阈值 = 既是 tap 一次普通抬指
+         （长按动效快退、无激发），FIRED = 终态。不为 FIRED 新增特判分支：本次抬指
+         继续走下方**落点**既有拾取路径（落点=本焦点 → 钉卡；其他落点 → 对应既有语义），
+         防重入由状态机保证（fired 态不重入 holding），MUST NOT 再激发。 */
+      if (E.hold && ev.pointerId === E.hold.pid) cancelHold("release");
       E.pointers.delete(ev.pointerId);
       const wasDrag = E.dragging;
       E.dragging = false;
@@ -5931,6 +6101,8 @@ export function createCosmosEngine(opts) {
       /* 右键拖拽收束（D8）：系统取消右键指针（如指针捕获丢失）→ 清右键态，防止拖拽态
          残留卡住 hover 探针与 grabbing 光标。 */
       if (ev.pointerId === rpid) endRightDrag();
+      /* 触屏长按取消（1.4/D6）：系统取消指针 = 取消矩阵一员（快退、无激发）。 */
+      if (E.hold && ev.pointerId === E.hold.pid) cancelHold("pointercancel");
       if (E.gesture) { endGesturePointer(ev); return; }
       E.pointers.delete(ev.pointerId);
       E.dragging = false;
@@ -5948,6 +6120,8 @@ export function createCosmosEngine(opts) {
          单指非手势态保持既有「仅清追踪」语义（不新开抑制窗）。 */
       for (const id of [...E.pointers.keys()]) {
         if (captured.has(id)) continue;
+        /* 长按幽灵指针（1.4/D6）：无捕获指针离开容器后不再收到 pointerup → 取消长按。 */
+        if (E.hold && id === E.hold.pid) cancelHold("leave");
         if (E.gesture) endGesturePointer({ pointerId: id });
         else E.pointers.delete(id);
       }
@@ -6341,6 +6515,9 @@ export function createCosmosEngine(opts) {
        结算——`E.face` 翻转发生在播完之后（按钮图案随之切换；周边界面保持不变）。 */
     if (E.field && (E.face !== FACE_MATTER || E.faceTrans)) E.field.update(dt);
     settleFaceTransition();
+    /* 触屏长按帧推进（add-cosmos-focus-touch-activate D1）：阈值判定、扩域 re-hitTest 与
+       进度环共用同一引擎帧时钟（rAF 暂停时 hold 天然冻结，无计时器泄漏）。 */
+    updateHold();
     const facePhase = E.faceTrans
       ? (E.faceTrans.direction === "toField" ? "toField" : "toMatter")
       : (E.face === FACE_FIELD ? "field" : "matter");
@@ -7043,6 +7220,11 @@ export function createCosmosEngine(opts) {
         pinchCarry: E.pinchCarry === true,
         gestureEndAt: E.gestureEndAt,
         suppressed: gestureSuppressed(),
+        /* 触屏长按观测面（add-cosmos-focus-touch-activate）：id / 状态（holding|fired）。
+           状态回填与 tasks 勾选无关，纯只读快照供冒烟断言。 */
+        hold: E.hold
+          ? { id: E.hold.id, state: E.hold.state, pid: E.hold.pid, x0: E.hold.x0, y0: E.hold.y0, cx: E.hold.cx, cy: E.hold.cy }
+          : null,
         dragging: E.dragging === true,
         rdrag: E.rdrag === true,
         dives: E.diveCount

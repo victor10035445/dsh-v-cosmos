@@ -1,7 +1,7 @@
 {
   "name": "dsh-v-cosmos",
   "description": "V Cosmos — DSH Web 的工作区星系可视化插件（工作区=星座、活跃提案=恒星（生命周期四态）、openspec 会话=行星、子代理=卫星、自由会话=彗星、归档=星云；风格 D HUD 银河 + dive-in 钻取）",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "license": "MIT",
   "type": "module",
   "main": "lib/index.js",
