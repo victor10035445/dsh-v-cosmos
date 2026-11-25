@@ -126,6 +126,10 @@ const enqueue = (store, name, overrides = {}) => {
   return result.entry;
 };
 
+/** 停机原因信号（真实宿主次序：`turn/end` 先于 `agent/status` idle）。 */
+const turnEnd = (scheduler, sessionId, reason) => scheduler.onSessionTurnEnd(sessionId, reason);
+const COMPLETED = Object.freeze({ kind: "completed" });
+
 /* ── 1. 正常完成：投递 → running → idle → 出队并启动下一条 ── */
 {
   const { store, deliverBox, scheduler, clock } = makeScheduler();
@@ -141,6 +145,7 @@ const enqueue = (store, name, overrides = {}) => {
   scheduler.onAgentStatus({ sessionId: "s-1", status: "running" });
   assert.deepEqual(scheduler.activityOf(WS, store.find(WS, first.id)), { running: true, waiting: 0 }, "running 子态");
   assert.equal(deliverBox.calls.length, 1, "执行中不启动下一条（单飞）");
+  turnEnd(scheduler, "s-1", COMPLETED);
   scheduler.onAgentStatus({ sessionId: "s-1", status: "idle" });
   await flush();
   assert.equal(store.find(WS, first.id), null, "完成即出队");
@@ -169,6 +174,7 @@ const enqueue = (store, name, overrides = {}) => {
   scheduler.interactionExit("s-2");
   await flush();
   assert.notEqual(store.find(WS, entry.id), null, "决策后回合未跑完不算完成");
+  turnEnd(scheduler, "s-2", COMPLETED);
   scheduler.onAgentStatus({ sessionId: "s-2", status: "idle" });
   assert.equal(store.find(WS, entry.id), null, "回合跑完 → 完成出队");
   scheduler.dispose();
@@ -239,6 +245,7 @@ const enqueue = (store, name, overrides = {}) => {
   await deliverBox.resolveNext({ ok: true, sessionId: "s-6" });
   store.setPaused({ wsId: WS, paused: true });
   scheduler.onAgentStatus({ sessionId: "s-6", status: "running" });
+  turnEnd(scheduler, "s-6", COMPLETED);
   scheduler.onAgentStatus({ sessionId: "s-6", status: "idle" });
   assert.equal(store.find(WS, first.id), null, "暂停不拦截在途条目的收尾");
   assert.equal(deliverBox.calls.length, 1, "暂停期间不启动下一条");
@@ -279,6 +286,7 @@ const enqueue = (store, name, overrides = {}) => {
   assert.equal(deliverBox.calls.length, 1, "并发 kick 只占位一次");
   await deliverBox.resolveNext({ ok: true, sessionId: "s-8" });
   scheduler.onAgentStatus({ sessionId: "s-8", status: "running" });
+  turnEnd(scheduler, "s-8", COMPLETED);
   scheduler.onAgentStatus({ sessionId: "s-8", status: "idle" });
   await flush();
   assert.equal(deliverBox.calls.length, 2, "完成后才取下一条");
@@ -293,6 +301,7 @@ const enqueue = (store, name, overrides = {}) => {
   await flush();
   /* 事件先于投递响应到达（会话 id 已知：queen 先建会话再回复）。 */
   scheduler.onAgentStatus({ sessionId: "s-9", status: "running" });
+  turnEnd(scheduler, "s-9", COMPLETED);
   scheduler.onAgentStatus({ sessionId: "s-9", status: "idle" });
   await deliverBox.resolveNext({ ok: true, sessionId: "s-9" });
   assert.equal(store.find(WS, entry.id), null, "回合已跑完 → 立即完成出队");
@@ -336,6 +345,7 @@ const enqueue = (store, name, overrides = {}) => {
   /* 会话消失**不暂停**；launching 失败**不暂停**（spec：重启对账不自动暂停） */
   assert.equal(store.queue(WS).paused, false, "重启对账不自动暂停");
   /* running 续监视：后续 idle → 完成 */
+  turnEnd(scheduler, "s-run", COMPLETED);
   scheduler.onAgentStatus({ sessionId: "s-run", status: "idle" });
   assert.equal(store.find(WS, second.id), null, "续监视后完成出队");
   scheduler.dispose();
@@ -466,6 +476,261 @@ const enqueue = (store, name, overrides = {}) => {
   assert.equal(attempts, 2, "重试一次");
   assert.equal(store.find(WS, entry.id).state, "failed", "尝试耗尽 → 显式 failed（不永久锁定）");
   assert.equal(store.find(WS, entry.id).reason, "cold-read-unavailable", "耗尽原因");
+  scheduler.dispose();
+}
+
+/* ══ 停机分类处置（one-add-cosmos-queue-stop-reason-policy 7.1） ══ */
+
+/** 带 resume 注入的调度器夹具（续跑场景共用）。 */
+function makeStopScheduler(overrides = {}) {
+  const clock = overrides.clock ?? makeClock();
+  const deliverBox = overrides.deliverBox ?? makeDeliver();
+  const store = overrides.store ?? makeStore();
+  const events = { changes: 0, notices: [] };
+  const resumes = [];
+  const scheduler = createQueueScheduler({
+    store,
+    deliver: deliverBox.deliver,
+    readSession: overrides.readSession ?? (async () => ({ ok: true, running: false, waiting: false })),
+    resume: async (input) => {
+      resumes.push(input);
+      if (typeof overrides.resume === "function") return overrides.resume(input);
+      return { ok: true };
+    },
+    reverify: async () => ({ ok: true }),
+    isArchived: () => false,
+    onChange: () => { events.changes += 1; },
+    notify: (message, isError) => { events.notices.push({ message, isError }); },
+    now: clock.now,
+    setTimeout: clock.setTimeout,
+    clearTimeout: clock.clearTimeout,
+    truncationLimit: overrides.truncationLimit ?? 3
+  });
+  return { store, clock, deliverBox, scheduler, events, resumes };
+}
+
+/* ── 16. 截断续跑后完成出队（零新会话 / 不重放绑定） ── */
+{
+  const { store, deliverBox, scheduler, resumes } = makeStopScheduler();
+  const entry = enqueue(store, "B1");
+  scheduler.kick(WS);
+  await flush();
+  await deliverBox.resolveNext({ ok: true, sessionId: "s-c1" });
+  scheduler.onAgentStatus({ sessionId: "s-c1", status: "running" });
+  turnEnd(scheduler, "s-c1", { kind: "max-tokens" });
+  scheduler.onAgentStatus({ sessionId: "s-c1", status: "idle" });
+  await flush();
+  assert.equal(store.find(WS, entry.id).state, "executing", "截断不判完成（续跑中保持 executing）");
+  assert.equal(resumes.length, 1, "补投「继续」一次");
+  assert.equal(resumes[0].sessionId, "s-c1", "续跑复用既有会话（同会话补投）");
+  assert.equal(deliverBox.calls.length, 1, "零新会话：不重建、不重放投递链");
+  /* 续跑后会话重新跑起来 → 完成 */
+  scheduler.onAgentStatus({ sessionId: "s-c1", status: "running" });
+  turnEnd(scheduler, "s-c1", COMPLETED);
+  scheduler.onAgentStatus({ sessionId: "s-c1", status: "idle" });
+  await flush();
+  assert.equal(store.find(WS, entry.id), null, "续跑后正常完成 → 出队");
+  assert.equal(deliverBox.calls.length, 1, "全程零新会话");
+  assert.equal(scheduler.runtimeOf(entry.id), null, "运行态销毁");
+  scheduler.dispose();
+}
+
+/* ── 17. 连续截断耗尽 → failed + 暂停 ── */
+{
+  const { store, deliverBox, scheduler, resume: _resume } = makeStopScheduler();
+  const entry = enqueue(store, "B1");
+  enqueue(store, "B2");
+  scheduler.kick(WS);
+  await flush();
+  await deliverBox.resolveNext({ ok: true, sessionId: "s-c2" });
+  for (let round = 1; round <= 3; round += 1) {
+    scheduler.onAgentStatus({ sessionId: "s-c2", status: "running" });
+    turnEnd(scheduler, "s-c2", { kind: "max-tokens" });
+    scheduler.onAgentStatus({ sessionId: "s-c2", status: "idle" });
+    await flush();
+  }
+  const failed = store.find(WS, entry.id);
+  assert.equal(failed.state, "failed", "连续 3 次截断 → failed（不再续跑）");
+  assert.equal(failed.reason, "turn-max-tokens-exhausted", "原因族 = 截断耗尽");
+  assert.equal(failed.message.includes("截断"), true, "说明含截断语义");
+  assert.equal(store.queue(WS).paused, true, "队列暂停");
+  assert.equal(deliverBox.calls.length, 1, "后继条目不启动");
+  scheduler.dispose();
+}
+
+/* ── 18. 续跑补投后未重新进入运行态 → failed + 暂停（不永久滞留 executing） ── */
+{
+  const { store, deliverBox, scheduler, clock } = makeStopScheduler();
+  const entry = enqueue(store, "B1");
+  scheduler.kick(WS);
+  await flush();
+  await deliverBox.resolveNext({ ok: true, sessionId: "s-c3" });
+  scheduler.onAgentStatus({ sessionId: "s-c3", status: "running" });
+  turnEnd(scheduler, "s-c3", { kind: "max-tokens" });
+  scheduler.onAgentStatus({ sessionId: "s-c3", status: "idle" });
+  await flush();
+  assert.equal(store.find(WS, entry.id).state, "executing", "续跑窗内保持 executing");
+  await clock.advance(FIRST_BUSY_WINDOW_MS + 10);
+  const failed = store.find(WS, entry.id);
+  assert.equal(failed.state, "failed", "续跑窗超时 → failed（不永久滞留）");
+  assert.equal(failed.reason, "busy-timeout", "原因 = 投递异常族");
+  assert.equal(failed.message.includes("续跑"), true, "说明点明续跑未生效");
+  assert.equal(store.queue(WS).paused, true, "队列暂停");
+  scheduler.dispose();
+}
+
+/* ── 19. 判定触发沿次序无关：idle 先到 → 推迟至 turn/end（不提前兜底判完成） ── */
+{
+  const { store, deliverBox, scheduler } = makeStopScheduler();
+  const entry = enqueue(store, "B1");
+  scheduler.kick(WS);
+  await flush();
+  await deliverBox.resolveNext({ ok: true, sessionId: "s-c4" });
+  scheduler.onAgentStatus({ sessionId: "s-c4", status: "running" });
+  scheduler.onAgentStatus({ sessionId: "s-c4", status: "idle" });
+  assert.notEqual(store.find(WS, entry.id), null, "idle 先到不立即判完成（推迟窗）");
+  turnEnd(scheduler, "s-c4", { kind: "error", error: { code: "UNKNOWN" } });
+  const failed = store.find(WS, entry.id);
+  assert.equal(failed.state, "failed", "turn/end 补到后按策略表处置（错误族 failed）");
+  assert.equal(failed.reason, "turn-error", "原因族 = 回合错误");
+  assert.equal(store.queue(WS).paused, true, "队列暂停");
+  scheduler.dispose();
+}
+
+/* ── 20. 信号缺失兜底完成（老宿主/事件面不可用零回归） ── */
+{
+  const { store, deliverBox, scheduler, clock } = makeStopScheduler();
+  const entry = enqueue(store, "B1");
+  enqueue(store, "B2");
+  scheduler.kick(WS);
+  await flush();
+  await deliverBox.resolveNext({ ok: true, sessionId: "s-c5" });
+  scheduler.onAgentStatus({ sessionId: "s-c5", status: "running" });
+  scheduler.onAgentStatus({ sessionId: "s-c5", status: "idle" });
+  assert.notEqual(store.find(WS, entry.id), null, "推迟窗内不判完成");
+  await clock.advance(1100);
+  assert.equal(store.find(WS, entry.id), null, "窗内 turn/end 缺席 → 兜底完成（零回归）");
+  assert.equal(deliverBox.calls.length, 2, "队列照常推进");
+  scheduler.dispose();
+}
+
+/* ── 21. 欠费停机 → failed + 暂停 + 后继不启动；继续后恢复推进 ── */
+{
+  const { store, deliverBox, scheduler, events } = makeStopScheduler();
+  const entry = enqueue(store, "B1");
+  enqueue(store, "B2");
+  scheduler.kick(WS);
+  await flush();
+  await deliverBox.resolveNext({ ok: true, sessionId: "s-c6" });
+  scheduler.onAgentStatus({ sessionId: "s-c6", status: "running" });
+  turnEnd(scheduler, "s-c6", { kind: "error", error: { code: "QUOTA" } });
+  scheduler.onAgentStatus({ sessionId: "s-c6", status: "idle" });
+  const failed = store.find(WS, entry.id);
+  assert.equal(failed.state, "failed", "欠费 → failed");
+  assert.equal(failed.reason, "turn-quota", "原因族 = 欠费");
+  assert.equal(failed.message.includes("QUOTA"), true, "说明携带错误码");
+  assert.equal(store.queue(WS).paused, true, "队列暂停（不盲目重试）");
+  assert.equal(deliverBox.calls.length, 1, "后继条目不启动");
+  assert.equal(events.notices.at(-1)?.isError, true, "错误色 toast");
+  /* 用户充值后点继续 → 恢复推进 */
+  store.setPaused({ wsId: WS, paused: false });
+  scheduler.kick(WS);
+  await flush();
+  assert.equal(deliverBox.calls.length, 2, "继续后启动队首");
+  scheduler.dispose();
+}
+
+/* ── 22. 用户主动停止（aborted）→ failed + 暂停；disposed 归 session-gone 不暂停 ── */
+{
+  const { store, deliverBox, scheduler } = makeStopScheduler();
+  const entry = enqueue(store, "B1");
+  enqueue(store, "B2");
+  scheduler.kick(WS);
+  await flush();
+  await deliverBox.resolveNext({ ok: true, sessionId: "s-c7" });
+  scheduler.onAgentStatus({ sessionId: "s-c7", status: "running" });
+  turnEnd(scheduler, "s-c7", { kind: "aborted", reason: { kind: "user" } });
+  scheduler.onAgentStatus({ sessionId: "s-c7", status: "idle" });
+  const failed = store.find(WS, entry.id);
+  assert.equal(failed.state, "failed", "用户停止 → failed（MUST NOT 判完成）");
+  assert.equal(failed.reason, "turn-aborted", "原因族 = 用户停止");
+  assert.equal(store.queue(WS).paused, true, "队列暂停（用户接管信号）");
+  assert.equal(deliverBox.calls.length, 1, "后继条目不启动");
+  scheduler.dispose();
+}
+{
+  const { store, deliverBox, scheduler } = makeStopScheduler();
+  const entry = enqueue(store, "B1");
+  enqueue(store, "B2");
+  scheduler.kick(WS);
+  await flush();
+  await deliverBox.resolveNext({ ok: true, sessionId: "s-c8" });
+  scheduler.onAgentStatus({ sessionId: "s-c8", status: "running" });
+  turnEnd(scheduler, "s-c8", { kind: "aborted", reason: { kind: "disposed" } });
+  scheduler.onAgentStatus({ sessionId: "s-c8", status: "idle" });
+  await flush();
+  const failed = store.find(WS, entry.id);
+  assert.equal(failed.state, "failed", "disposed → failed");
+  assert.equal(failed.reason, "session-gone", "disposed 归既有 session-gone 分支");
+  assert.equal(store.queue(WS).paused, false, "disposed 不暂停队列");
+  assert.equal(deliverBox.calls.length, 2, "队列继续下一条");
+  scheduler.dispose();
+}
+
+/* ── 23. agent/error 错误码补齐：先按回合错误收尾，后到欠费码改判 ── */
+{
+  const { store, deliverBox, scheduler } = makeStopScheduler();
+  const entry = enqueue(store, "B1");
+  scheduler.kick(WS);
+  await flush();
+  await deliverBox.resolveNext({ ok: true, sessionId: "s-c9" });
+  scheduler.onAgentStatus({ sessionId: "s-c9", status: "running" });
+  /* turn/end 带 reason.kind=error 但无错误码（降级形态）→ 先落回合错误 */
+  turnEnd(scheduler, "s-c9", { kind: "error" });
+  scheduler.onAgentStatus({ sessionId: "s-c9", status: "idle" });
+  assert.equal(store.find(WS, entry.id).reason, "turn-error", "无码时按回合错误收尾");
+  /* 宿主 agent/error 补到欠费码 → 改判 */
+  scheduler.onAgentError("s-c9", { code: "ACCOUNT_QUOTA" });
+  const failed = store.find(WS, entry.id);
+  assert.equal(failed.reason, "turn-quota", "错误码补齐 → 改判欠费族");
+  assert.equal(failed.message.includes("ACCOUNT_QUOTA"), true, "说明携带补齐的错误码");
+  scheduler.dispose();
+}
+
+/* ── 24. 冷读对账走策略表：截断 → 续跑；欠费 → failed + 暂停 ── */
+{
+  const store = makeStore();
+  const truncated = enqueue(store, "B1");
+  const quota = enqueue(store, "B2");
+  store.patch({ wsId: WS, entryId: truncated.id, patch: { state: "executing", sessionId: "s-cold-t" } });
+  store.patch({ wsId: WS, entryId: quota.id, patch: { state: "executing", sessionId: "s-cold-q" } });
+  const clock = makeClock();
+  const deliverBox = makeDeliver();
+  const resumes = [];
+  const scheduler = createQueueScheduler({
+    store,
+    deliver: deliverBox.deliver,
+    readSession: async (sessionId) => {
+      if (sessionId === "s-cold-t") return { ok: true, running: false, waiting: false, stopKind: "max-tokens" };
+      if (sessionId === "s-cold-q") return { ok: true, running: false, waiting: false, stopKind: "error", stopCode: "QUOTA" };
+      return { ok: true, running: false, waiting: false };
+    },
+    resume: async (input) => {
+      resumes.push(input);
+      return { ok: true };
+    },
+    now: clock.now,
+    setTimeout: clock.setTimeout,
+    clearTimeout: clock.clearTimeout
+  });
+  await scheduler.start();
+  assert.equal(resumes.length, 1, "冷读发现截断 → 自动续跑（不误判完成）");
+  assert.equal(resumes[0].sessionId, "s-cold-t", "续跑同会话");
+  assert.notEqual(store.find(WS, truncated.id), null, "截断条目未出队");
+  const failed = store.find(WS, quota.id);
+  assert.equal(failed.state, "failed", "冷读发现欠费 → failed");
+  assert.equal(failed.reason, "turn-quota", "欠费原因族");
+  assert.equal(store.queue(WS).paused, true, "队列暂停");
   scheduler.dispose();
 }
 

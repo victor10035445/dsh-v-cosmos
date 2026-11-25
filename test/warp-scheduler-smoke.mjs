@@ -65,9 +65,9 @@ function makeTimers() {
  * @param {Function} [options.isArchived]
  */
 function makeScheduler(options = {}) {
-  const sessionStates = new Map(); // sessionId → {running, sawRunning, waiting}
+  const sessionStates = new Map(); // sessionId → {running, sawRunning, waiting[, stopKind, stopCode, stopCause]}
   const timers = makeTimers();
-  const calls = { deliver: [], transfer: [], expand: [], changes: 0, notify: [] };
+  const calls = { deliver: [], transfer: [], expand: [], resume: [], changes: 0, notify: [] };
   const userDeliver = options.deliver;
   const userTransfer = options.transfer;
   const userExpand = options.expand;
@@ -82,6 +82,11 @@ function makeScheduler(options = {}) {
     transfer: async (entry) => {
       calls.transfer.push(entry);
       if (typeof userTransfer === "function") return userTransfer(entry);
+      return { ok: true };
+    },
+    resume: async (input) => {
+      calls.resume.push(input);
+      if (typeof options.resume === "function") return options.resume(input);
       return { ok: true };
     },
     expand: async (entry) => {
@@ -105,9 +110,20 @@ function makeScheduler(options = {}) {
     clearTimeout: timers.clearTimeout,
     firstBusyWindowMs: 5000,
     coldRetryMs: 1000,
-    coldReadMaxAttempts: 2
+    coldReadMaxAttempts: 2,
+    truncationLimit: options.truncationLimit ?? 3,
+    stopGraceMs: options.stopGraceMs ?? 50
   });
   return { scheduler, sessionStates, timers, calls };
+}
+
+/** 执行停机原因推迟窗的定时器（`stopGraceMs = 50`；首忙窗 = 5000 不在此列）。 */
+function runStopGrace(timers) {
+  for (const timer of timers.timers) {
+    if (timer.cleared || timer.ms !== 50) continue;
+    timer.cleared = true;
+    timer.fn();
+  }
 }
 
 /** 附着一组条目（默认 proposal 目标；id 由存储工厂递增）。 */
@@ -131,7 +147,8 @@ const entryStates = (store, wsId = "ws1") => store.warp(wsId).entries.map((entry
   targetKey: entry.targetKey,
   state: entry.state,
   rule: entry.rule,
-  reason: entry.reason
+  reason: entry.reason,
+  buttonName: entry.button?.name
 }));
 
 /** 让投递/转投的异步收尾跑完（微任务 + 宏任务一轮）。 */
@@ -163,7 +180,7 @@ const flush = () => new Promise((done) => setImmediate(done));
   /* 完成判定：running → idle（无待决策）→ 出队 + 触发目标复查 */
   const sessionId = calls.deliver[0].sessionId ?? "session-w-1";
   scheduler.onAgentStatus({ sessionId, status: "running" });
-  sessionStates.set(sessionId, { running: false, sawRunning: true, waiting: 0 });
+  sessionStates.set(sessionId, { running: false, sawRunning: true, waiting: 0, stopKind: "completed" });
   probe.lifecycle = "reviewed";
   scheduler.onAgentStatus({ sessionId, status: "idle" });
   await new Promise((done) => setImmediate(done));
@@ -174,7 +191,7 @@ const flush = () => new Promise((done) => setImmediate(done));
   /* Apply 完成 → Archive（executed）点亮 */
   const applyId = calls.deliver[1].sessionId ?? "session-w-2";
   scheduler.onAgentStatus({ sessionId: applyId, status: "running" });
-  sessionStates.set(applyId, { running: false, sawRunning: true, waiting: 0 });
+  sessionStates.set(applyId, { running: false, sawRunning: true, waiting: 0, stopKind: "completed" });
   probe.lifecycle = "executed";
   scheduler.onAgentStatus({ sessionId: applyId, status: "idle" });
   await new Promise((done) => setImmediate(done));
@@ -189,7 +206,7 @@ const flush = () => new Promise((done) => setImmediate(done));
   assert.equal(scheduler.activityOf("ws1", store.warp("ws1").entries[0]).waiting, 1, "等待决策子态透出");
 
   /* 决策完成 → 出队 */
-  sessionStates.set(archiveId, { running: false, sawRunning: true, waiting: 0 });
+  sessionStates.set(archiveId, { running: false, sawRunning: true, waiting: 0, stopKind: "completed" });
   scheduler.onInteractionExit(archiveId);
   await new Promise((done) => setImmediate(done));
   assert.deepEqual(entryStates(store), [], "决策完成 → 出队");
@@ -315,7 +332,7 @@ const flush = () => new Promise((done) => setImmediate(done));
   assert.deepEqual(delivered, ["w-1"], "同一探索会话仅一条 proto 在途");
   assert.equal(entryStates(store)[1].state, "ready", "第二条保持 ready 待发");
   scheduler.onAgentStatus({ sessionId: "explorer-9", status: "running" });
-  sessionStates.set("explorer-9", { running: false, sawRunning: true, waiting: 0 });
+  sessionStates.set("explorer-9", { running: false, sawRunning: true, waiting: 0, stopKind: "completed" });
   scheduler.onAgentStatus({ sessionId: "explorer-9", status: "idle" });
   await flush();
   assert.deepEqual(delivered, ["w-1", "w-2"], "第一条收尾后第二条点火（串行）");
@@ -325,7 +342,7 @@ const flush = () => new Promise((done) => setImmediate(done));
 {
   const store = makeStore();
   let expandCalls = 0;
-  const { scheduler, calls } = makeScheduler({
+  const { scheduler, sessionStates, calls } = makeScheduler({
     store,
     deliver: async (entry) => ({
       ok: true,
@@ -348,6 +365,7 @@ const flush = () => new Promise((done) => setImmediate(done));
   await flush();
   const sessionId = "explorer-2";
   scheduler.onAgentStatus({ sessionId, status: "running" });
+  sessionStates.set(sessionId, { running: false, sawRunning: true, waiting: 0, stopKind: "completed" });
   scheduler.onAgentStatus({ sessionId, status: "idle" });
   await new Promise((done) => setImmediate(done));
   assert.equal(expandCalls, 1, "proto 收尾触发展开");
@@ -518,7 +536,7 @@ const flush = () => new Promise((done) => setImmediate(done));
   store3.load();
   attach(store3, "add-r3", [{ button: button("Review") }]);
   store3.patch({ wsId: "ws1", entryId: "w-1", patch: { state: "executing", sessionId: "s-live" } });
-  const { scheduler: scheduler3 } = makeScheduler({
+  const { scheduler: scheduler3, sessionStates: sessionStates3 } = makeScheduler({
     store: store3,
     readSession: async () => ({ ok: true, running: true, waiting: false })
   });
@@ -526,6 +544,7 @@ const flush = () => new Promise((done) => setImmediate(done));
   assert.equal(entryStates(store3)[0].state, "executing", "running → 续监视");
   /* 会合后 idle → 完成 */
   store3.patch({ wsId: "ws1", entryId: "w-1", patch: { state: "executing" } });
+  sessionStates3.set("s-live", { running: false, sawRunning: true, waiting: 0, stopKind: "completed" });
   scheduler3.onAgentStatus({ sessionId: "s-live", status: "idle" });
   assert.equal(entryStates(store3).length, 0, "续监视后运行结束 → 出队");
 
@@ -547,7 +566,7 @@ const flush = () => new Promise((done) => setImmediate(done));
 {
   const store = makeStore();
   const probe = { lifecycle: "created" };
-  const { scheduler } = makeScheduler({
+  const { scheduler, sessionStates } = makeScheduler({
     store,
     gate: (entry) => (
       !entry.button.preState || probe.lifecycle === entry.button.preState ? { ok: true } : { ok: false }
@@ -565,9 +584,154 @@ const flush = () => new Promise((done) => setImmediate(done));
   assert.equal(entryStates(store).length, 2, "扫描补查不改变在途/置灰结构");
   /* Review 完成（触发复查被调用）→ Apply 点亮 */
   scheduler.onAgentStatus({ sessionId: "s-w-1", status: "running" });
+  sessionStates.set("s-w-1", { running: false, sawRunning: true, waiting: 0, stopKind: "completed" });
   scheduler.onAgentStatus({ sessionId: "s-w-1", status: "idle" });
   await flush();
   assert.equal(entryStates(store).length, 1, "完成出队 + 接力");
+}
+
+/* ══ 停机分类处置（one-add-cosmos-queue-stop-reason-policy 7.2） ══ */
+
+/** 停止信号夹具：一条在途 Review 条目（preState 门控）+ 后继 Apply。 */
+function makeStopFixture(options = {}) {
+  const store = makeStore();
+  const probe = { lifecycle: "created" };
+  const fixture = makeScheduler({
+    store,
+    gate: (entry) => (
+      !entry.button.preState || probe.lifecycle === entry.button.preState
+        ? { ok: true }
+        : { ok: false, reason: "prestate-drift" }
+    ),
+    ...options
+  });
+  attach(store, "add-stop", [
+    { button: button("Review", { preState: "created" }) },
+    { button: button("Apply", { preState: "reviewed" }) }
+  ]);
+  return { store, probe, ...fixture };
+}
+
+/* ── 11. 截断续跑不误判完成（同会话补投「继续」） ── */
+{
+  const { store, probe, scheduler, sessionStates, calls } = makeStopFixture();
+  await scheduler.start();
+  await flush();
+  assert.equal(entryStates(store)[0].state, "executing", "Review 点火");
+  const sessionId = "session-" + calls.deliver[0].id;
+  scheduler.onAgentStatus({ sessionId, status: "running" });
+  sessionStates.set(sessionId, { running: false, sawRunning: true, waiting: 0, stopKind: "max-tokens" });
+  scheduler.onAgentStatus({ sessionId, status: "idle" });
+  await flush();
+  assert.equal(entryStates(store).length, 2, "截断 MUST NOT 判定完成移出");
+  assert.equal(entryStates(store)[0].state, "executing", "条目保持 executing（续跑中）");
+  assert.equal(calls.resume.length, 1, "同会话补投「继续」一次");
+  assert.equal(calls.resume[0].sessionId, sessionId, "续跑复用既有会话");
+  assert.equal(calls.deliver.length, 1, "零新会话（不重建）");
+  assert.equal(calls.expand.length, 0, "未触发星胚展开");
+  /* 续跑后正常完成 → 移出 + 接力 */
+  probe.lifecycle = "reviewed";
+  scheduler.onAgentStatus({ sessionId, status: "running" });
+  sessionStates.set(sessionId, { running: false, sawRunning: true, waiting: 0, stopKind: "completed" });
+  scheduler.onAgentStatus({ sessionId, status: "idle" });
+  await flush();
+  assert.deepEqual(entryStates(store).map((entry) => entry.buttonName), ["Apply"], "续跑完成后移出并接力");
+  scheduler.dispose();
+}
+
+/* ── 12. 欠费停机 → failed 残留 + 点火暂停 + 复查仍触发 ── */
+{
+  const { store, probe, scheduler, sessionStates, calls } = makeStopFixture();
+  await scheduler.start();
+  await flush();
+  const sessionId = "session-" + calls.deliver[0].id;
+  scheduler.onAgentStatus({ sessionId, status: "running" });
+  probe.lifecycle = "reviewed";
+  sessionStates.set(sessionId, {
+    running: false,
+    sawRunning: true,
+    waiting: 0,
+    stopKind: "error",
+    stopCode: "QUOTA"
+  });
+  scheduler.onAgentStatus({ sessionId, status: "idle" });
+  await flush();
+  const states = entryStates(store);
+  assert.equal(states.length, 2, "failed 残留（不移出）");
+  assert.equal(states[0].state, "failed", "欠费 → failed");
+  assert.equal(states[0].reason, "turn-quota", "原因族 = 欠费");
+  assert.equal(store.warp("ws1").paused, true, "曲率点火暂停（暂停标志）");
+  assert.equal(states[1].state, "ready", "复查照常触发（后继条目点亮）");
+  assert.equal(calls.deliver.length, 1, "点火暂停：后继条目不被点火");
+  assert.equal(calls.notify.at(-1)?.message.includes("欠费"), true, "欠费语义通知");
+  scheduler.dispose();
+}
+
+/* ── 13. 用户主动停止 → failed 残留 + 复查（不暂停，后续接力继续） ── */
+{
+  const { store, probe, scheduler, sessionStates, calls } = makeStopFixture();
+  await scheduler.start();
+  await flush();
+  const sessionId = "session-" + calls.deliver[0].id;
+  scheduler.onAgentStatus({ sessionId, status: "running" });
+  probe.lifecycle = "reviewed";
+  sessionStates.set(sessionId, {
+    running: false,
+    sawRunning: true,
+    waiting: 0,
+    stopKind: "aborted",
+    stopCause: "user"
+  });
+  scheduler.onAgentStatus({ sessionId, status: "idle" });
+  await flush();
+  const states = entryStates(store);
+  assert.equal(states[0].state, "failed", "用户停止 → failed 残留（MUST NOT 判完成）");
+  assert.equal(states[0].reason, "turn-aborted", "原因族 = 用户停止");
+  assert.equal(store.warp("ws1").paused, false, "用户停止不暂停曲率");
+  assert.equal(calls.deliver.length, 2, "复查照常点亮并接力点火后继条目");
+  scheduler.dispose();
+}
+
+/* ── 14. 停机信号缺失 → 推迟窗兜底：移出 + 复查（零回归） ── */
+{
+  const { store, probe, scheduler, sessionStates, timers, calls } = makeStopFixture();
+  await scheduler.start();
+  await flush();
+  const sessionId = "session-" + calls.deliver[0].id;
+  scheduler.onAgentStatus({ sessionId, status: "running" });
+  probe.lifecycle = "reviewed";
+  sessionStates.set(sessionId, { running: false, sawRunning: true, waiting: 0 });
+  scheduler.onAgentStatus({ sessionId, status: "idle" });
+  assert.equal(entryStates(store).length, 2, "推迟窗内不判完成（不提前兜底）");
+  runStopGrace(timers);
+  await flush();
+  assert.deepEqual(entryStates(store).map((entry) => entry.buttonName), ["Apply"], "窗内无 turn/end → 兜底移出 + 复查接力");
+  assert.equal(calls.deliver.length, 2, "后继条目点火");
+  scheduler.dispose();
+}
+
+/* ── 15. 欠费码晚到（agent/error）：回合错误残留改判欠费族 + 点火暂停 ── */
+{
+  const { store, probe, scheduler, sessionStates, calls } = makeStopFixture();
+  await scheduler.start();
+  await flush();
+  const sessionId = "session-" + calls.deliver[0].id;
+  scheduler.onAgentStatus({ sessionId, status: "running" });
+  probe.lifecycle = "reviewed";
+  /* turn/end 只带 kind=error、无错误码 → 先按回合错误收尾（未暂停点火） */
+  sessionStates.set(sessionId, { running: false, sawRunning: true, waiting: 0, stopKind: "error" });
+  scheduler.onAgentStatus({ sessionId, status: "idle" });
+  await flush();
+  assert.equal(entryStates(store)[0].reason, "turn-error", "无码时按回合错误收尾");
+  assert.equal(store.warp("ws1").paused, false, "无码时未暂停点火");
+  /* 宿主 agent/error 补到欠费码 → 改判 + 暂停点火 */
+  scheduler.onAgentError(sessionId, { code: "ACCOUNT_QUOTA" });
+  const states = entryStates(store);
+  assert.equal(states[0].reason, "turn-quota", "错误码补齐 → 改判欠费族");
+  assert.equal(store.warp("ws1").entries[0].message.includes("ACCOUNT_QUOTA"), true, "说明携带补齐错误码");
+  assert.equal(store.warp("ws1").paused, true, "曲率点火随之暂停");
+  assert.equal(calls.notify.at(-1)?.message.includes("欠费"), true, "欠费语义通知");
+  scheduler.dispose();
 }
 
 /* ── 收尾 ── */

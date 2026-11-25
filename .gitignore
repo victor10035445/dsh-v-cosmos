@@ -16,6 +16,9 @@ docs/
 # 历史打磨笔记
 STYLE-POLISH.md
 
+# 本地排障 / 探针草稿（非发布资产）
+tmp/
+
 # 系统与打包卫生项
 .DS_Store
 Thumbs.db

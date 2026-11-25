@@ -16,7 +16,12 @@
  *                                 （按当前按钮配置落快照；入队时刻复验 `actionButtonVisible`
  *                                 同谓词，400 gate；重复/超限 400 duplicate|limit）；
  *                                 `POST /queue/reorder|remove|clear|pause|resume`（操作矩阵
- *                                 由 queue-store 校验，非法目标 400；写操作幂等）；变更后
+ *                                 由 queue-store 校验，非法目标 400；写操作幂等）；
+ *                                 `POST /queue/retry` `{wsId, entryId}`（**仅 failed 残留**：
+ *                                 转回队首 queued、快照原样、终态记账字段清除；不改暂停态，
+ *                                 转态成功后与入队同语义 kick 一次——暂停队列下为 no-op；
+ *                                 非 failed 400 not-failed / 判重 400 duplicate / 超限 400
+ *                                 limit，见 queue-store.mjs `retryEntry`）；变更后
  *                                 广播 `queue-changed` 轻帧。队列服务端权威（持久化
  *                                 `$DSH_HOME/storages/dsh-v-cosmos.queues.json`），执行走
  *                                 进程内 `sessionController` 直投（create → selectModel →
@@ -166,7 +171,26 @@ import { existsSync, mkdirSync, openSync, readFileSync, readdirSync, closeSync, 
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildSkeleton, scanProposal, assignmentProposalSlugs } from "./scan.mjs";
+import {
+  buildSkeleton,
+  collectProposalNames,
+  joinChangesDir,
+  joinProposalDir,
+  lifecycleOf,
+  pendingItemsOf,
+  scanProposal,
+  assignmentProposalSlugs
+} from "./scan.mjs";
+/* 跨提案依赖（first-add-proposal-dependency-declaration 解析面 +
+   second-add-cross-proposal-dependency-gating 调度门控）：解析/达标谓词唯一定义点在
+   dep-resolve.mjs，门控整形在 dep-gate.mjs；本文件只做观察快照装配与端点接线。 */
+import { resolveDependencies, resolveWorkspaceDependencies } from "./dep-resolve.mjs";
+import {
+  DEPENDENCY_DRIFT_REASON,
+  dependencyVerdictOf,
+  dependencyWaitOf,
+  depsSnapshotOf
+} from "./dep-gate.mjs";
 import { actionButtonVisible, normalizeButtons } from "./buttons.mjs";
 import {
   createQueueStore,
@@ -180,7 +204,8 @@ import {
   createWarpStore,
   hasActiveWarpTarget,
   publicWarpEntryOf,
-  publicWarpSnapshotOf
+  publicWarpSnapshotOf,
+  warpDependencyWaitersOf
 } from "./warp-store.mjs";
 import { createWarpScheduler } from "./warp-scheduler.mjs";
 import {
@@ -198,6 +223,7 @@ import {
 import { createQueueScheduler } from "./queue-scheduler.mjs";
 import {
   createQueueDeliverer,
+  createSessionPrompter,
   createSessionReader,
   createWarpProtoDeliverer
 } from "./session-executor.mjs";
@@ -478,9 +504,11 @@ const readers = {
   },
   readPendingDir(workspacePath) {
     /* cosmos-spec 契约 v1（add-celestial-states 2.3 / add-cosmos-embryo-cards 2.1）：
-       原始条目列表（{name, by, at, sessionId?}），归一/非法跳过/目录优先剔除由 scan.mjs
-       纯层完成。`sessionId` 为可选加法扩展——**三跳第一跳**，此处漏透传即静默退化为
-       旧锚点（各自成卡），故原样携带、不做解释。 */
+       原始条目列表（{name, by, at, sessionId?, requires?}），归一/非法跳过/目录优先剔除
+       由 scan.mjs 纯层完成。`sessionId` 为可选加法扩展——**三跳第一跳**，此处漏透传即
+       静默退化为旧锚点（各自成卡），故原样携带、不做解释。`requires` 为可选依赖声明
+       （first-add-proposal-dependency-declaration 3.3）——同一三跳链的锚点→sighting→
+       台账行捕获起点，漏透传即依赖声明在点燃后失传，故同样原样携带、归一归 scan.mjs。 */
     const dir = join(String(workspacePath), "openspec", "pending-changes");
     return readdirSync(dir, { withFileTypes: true })
       .filter((entry) => entry.isFile() && typeof entry.name === "string" && entry.name.endsWith(".json"))
@@ -488,7 +516,7 @@ const readers = {
         try {
           const parsed = JSON.parse(readFileSync(join(dir, entry.name), "utf8"));
           if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
-          return { name: parsed.name, by: parsed.by, at: parsed.at, sessionId: parsed.sessionId };
+          return { name: parsed.name, by: parsed.by, at: parsed.at, sessionId: parsed.sessionId, requires: parsed.requires };
         } catch {
           return null; // 非法文件跳过
         }
@@ -969,6 +997,14 @@ export function apply(ctx, config, options = {}) {
   });
 
   /**
+   * 同会话补投器（截断自动续跑的执行通道，one-add-cosmos-queue-stop-reason-policy 3.3）：
+   * 只发一条 `prompt`（`mode:"queue"`，文本「继续」）——零 create / 零 rename / 零绑定重放。
+   */
+  const promptQueueSession = createSessionPrompter({
+    sessionController: ctx.sessionController
+  });
+
+  /**
    * 该提案的「活动信号」（服务端口径）：关联存储中属于该提案的会话里，处于 running 或
    * 等待决策的条数。与客户端 `act`（busy ∨ waiting ∨ 委托忙碌计数）同口径的**服务端可达
    * 部分**——委托忙碌服务端不可见，按 0 计（spike-findings §1.3 已如实标注）。
@@ -999,12 +1035,20 @@ export function apply(ctx, config, options = {}) {
   /** 队列变更轻帧（帧体不带载荷）。 */
   const broadcastQueue = () => broadcast({ type: "queue-changed" });
 
-  /** 调度器（单飞 / 暂停只挡 advance / 完成判定 / 重启对账）。 */
+  /** 调度器（单飞 / 暂停只挡 advance / 状态+停机原因双口径判定 / 截断续跑 / 重启对账）。 */
   const scheduler = createQueueScheduler({
     store: queueStore,
     deliver: deliverQueuedEntry,
     readSession: readQueueSession,
+    resume: promptQueueSession,
     reverify: reverifyQueuedEntry,
+    /* 依赖让位子句（second-add-cross-proposal-dependency-gating 2.1）：扫描时刻动态解析
+       目标提案依赖（`dep-resolve` 解析面 + 达标谓词），条目模型零改动（design D5）。 */
+    depsSatisfied: (wsId, entry) => {
+      const wsPath = workspacePathOf(wsId);
+      if (!wsPath) return true; // 工作区不可达 → 少守卫（不误阻塞）
+      return dependencyVerdictOf(dependencyObservationOf(wsPath), dependencyMapOf(wsPath).get(entry.proposalId)).satisfied;
+    },
     isArchived: (sessionId) => archivedSessionIds().has(sessionId),
     onChange: broadcastQueue,
     notify: (message) => {
@@ -1013,11 +1057,36 @@ export function apply(ctx, config, options = {}) {
     logger: ctx.logger ?? null
   });
 
-  /** 对外快照（`GET /queue`）：叠加调度器活动信号（executing → running/waiting 子态）。 */
-  const queueViewSnapshot = () => ({
-    ...publicSnapshotOf(queueStore.doc, (wsId, entry) => scheduler.activityOf(wsId, entry)),
-    revisedAt: queueStore.revisedAt
-  });
+  /**
+   * 对外快照（`GET /queue`）：叠加调度器活动信号（executing → running/waiting 子态）
+   * + 依赖等待呈现（3.2：条目「等待依赖」子态、头部「下一执行」指示、全等待闲置态）。
+   *
+   * 队列级两字段由服务端在快照时现算（不落存储、不进条目模型）：
+   *  - `nextExecution`：让位扫描将启动的下一 queued 条目目标（全等待 / 暂停 / 有空闲
+   *    在途时为 null）；
+   *  - `idle`：**闲置态**——未暂停、无在途、仍有 queued 条目，但无任何条目依赖达标
+   *    （「全部等待依赖」；与暂停态正交：暂停标志恒未被自动置位）。
+   */
+  const queueViewSnapshot = () => {
+    const snapshot = publicSnapshotOf(
+      queueStore.doc,
+      (wsId, entry) => scheduler.activityOf(wsId, entry),
+      (wsId, entry) => queueWaitOf(wsId, entry)
+    );
+    for (const [wsId, queue] of Object.entries(snapshot.queues ?? {})) {
+      const next = scheduler.nextExecutable(wsId);
+      const counts = queue.counts ?? {};
+      const inflight = Number(counts.launching ?? 0) + Number(counts.executing ?? 0);
+      queue.nextExecution = next === null
+        ? null
+        : { proposalId: next.proposalId, buttonName: next.button.name };
+      queue.idle = queue.paused !== true
+        && inflight === 0
+        && Number(counts.queued ?? 0) > 0
+        && next === null;
+    }
+    return { ...snapshot, revisedAt: queueStore.revisedAt };
+  };
 
   /* ── 曲率队列（two-add-cosmos-proposal-warp 4.1–4.4）：服务端权威 ──
      曲率 = 附着在目标上的计划 + 反应式门控接力引擎（design D1：独立存储/独立调度器，
@@ -1080,9 +1149,194 @@ export function apply(ctx, config, options = {}) {
     return state !== null && (state.running === true || state.waiting > 0);
   };
 
+  /* ── 跨提案依赖观察面（second-add-cross-proposal-dependency-gating 1.1–1.3、2.1、2.3） ──
+     观察快照 = 单工作区「活跃提案生命周期 ∪ 归档目录名 ∪ 谱系台账行 ∪ 待创建锚点」，
+     供 `dep-resolve` 解析面 / 达标谓词消费（判定单点不在本文件）。装配是**只读**的：
+     目录读取失败一律按空兜底（= 无依赖守卫，安全方向宁缺不误阻塞）。
+
+     短 TTL 缓存让同一帧内的「门控复查 / 公共快照投影 / 入队预警」共用一次扫描；附着时刻
+     （deps 快照定格）走 `fresh` 绕过缓存，保证快照取当刻磁盘事实。 */
+
+  /** 观察快照缓存 TTL（同一帧内多处求值只读一次盘；跨帧仍亚秒级新鲜）。 */
+  const DEP_OBSERVATION_TTL_MS = 400;
+  const depObservationCache = new Map();
+  const depMapCache = new Map();
+
+  /** 空观察快照（读失败 / 工作区未知的兜底；`dep-resolve` 容忍该形状）。 */
+  const emptyDependencyObservation = () => ({ active: [], archiveNames: [], lineages: [], anchors: [] });
+
+  /**
+   * 单工作区依赖观察快照（缓存；`fresh` 强制重扫）。
+   * @param {string} workspacePath 工作区路径
+   * @param {{fresh?: boolean}} [options]
+   * @returns {{active: Array<{slug: string, state: string}>, archiveNames: string[],
+   *            lineages: Array<object>, anchors: Array<object>}}
+   */
+  const dependencyObservationOf = (workspacePath, options = {}) => {
+    const key = typeof workspacePath === "string" ? workspacePath : "";
+    if (!key) return emptyDependencyObservation();
+    const nowMs = Date.now();
+    const cached = depObservationCache.get(key);
+    if (options.fresh !== true && cached !== undefined && nowMs - cached.at <= DEP_OBSERVATION_TTL_MS) {
+      return cached.value;
+    }
+    const observation = emptyDependencyObservation();
+    try {
+      const changesDir = joinChangesDir(key);
+      const activeNames = collectProposalNames(readers.readChangesDir(key));
+      for (const name of activeNames) {
+        let stateText = null;
+        try {
+          stateText = readers.readState(joinProposalDir(changesDir, name));
+        } catch {
+          stateText = null;
+        }
+        observation.active.push({ slug: name, state: lifecycleOf(stateText) });
+      }
+      let archiveEntries = null;
+      try {
+        archiveEntries = readers.readArchiveDir(key);
+      } catch {
+        archiveEntries = null;
+      }
+      for (const entry of Array.isArray(archiveEntries) ? archiveEntries : []) {
+        const name = typeof entry?.name === "string" ? entry.name : "";
+        if (!name || name.startsWith(".")) continue;
+        if (typeof entry.isDirectory === "function" && !entry.isDirectory()) continue;
+        observation.archiveNames.push(name);
+      }
+      try {
+        observation.lineages = lineagesOf(birthlineDoc, key);
+      } catch {
+        observation.lineages = [];
+      }
+      try {
+        observation.anchors = pendingItemsOf(readers.readPendingDir(key), new Set(activeNames));
+      } catch {
+        observation.anchors = [];
+      }
+    } catch {
+      /* 工作区目录不可读 → 空观察（无守卫；不阻断任何调度面）。 */
+    }
+    depObservationCache.set(key, { at: nowMs, value: observation });
+    return observation;
+  };
+
+  /**
+   * 工作区生效依赖图（`slug → deps 快照`；缓存同观察面 TTL）。
+   * 解析失败 / 成环 → 空依赖（`dep-resolve` 安全退化，本层不再兜底）。
+   * @param {string} workspacePath
+   * @param {{fresh?: boolean}} [options]
+   * @returns {Map<string, Array<{slug: string, state: string}>>}
+   */
+  const dependencyMapOf = (workspacePath, options = {}) => {
+    const key = typeof workspacePath === "string" ? workspacePath : "";
+    if (!key) return new Map();
+    const nowMs = Date.now();
+    const cached = depMapCache.get(key);
+    if (options.fresh !== true && cached !== undefined && nowMs - cached.at <= DEP_OBSERVATION_TTL_MS) {
+      return cached.map;
+    }
+    const map = new Map();
+    try {
+      const workspace = resolveWorkspaceDependencies(dependencyObservationOf(key, options));
+      for (const [slug, dependencies] of workspace.dependencies) map.set(slug, depsSnapshotOf(dependencies));
+    } catch (error) {
+      ctx.logger?.warn?.("[dsh-v-cosmos] 依赖解析失败（按无依赖兜底）: %s", String(error?.message || error));
+    }
+    depMapCache.set(key, { at: nowMs, map });
+    return map;
+  };
+
+  /** 单提案 deps 快照（附着时刻定格用；观察面强制重扫 = 取当刻磁盘事实）。 */
+  const depsSnapshotFor = (workspacePath, slug) => {
+    if (typeof slug !== "string" || !slug) return [];
+    try {
+      const resolution = resolveDependencies({
+        slug,
+        ...dependencyObservationOf(workspacePath, { fresh: true })
+      });
+      return depsSnapshotOf(resolution.dependencies);
+    } catch (error) {
+      ctx.logger?.warn?.("[dsh-v-cosmos] 依赖快照解析失败（按无依赖兜底）: %s", String(error?.message || error));
+      return [];
+    }
+  };
+
+  /**
+   * 依赖提案的在册条目状态（warp ∪ queue）：等待原因 `repair` 的推导输入
+   * （`failed | skipped` → 等修复；纯推导、不落持久状态）。
+   * @param {string} wsId
+   * @param {string} slug 依赖提案 slug
+   * @returns {string[]}
+   */
+  const dependencyRegisterStatesOf = (wsId, slug) => {
+    const states = [];
+    for (const entry of warpStore.warp(wsId).entries) {
+      if (entry.targetKey === slug) states.push(entry.state);
+    }
+    for (const entry of queueStore.queue(wsId).entries) {
+      if (entry.proposalId === slug) states.push(entry.state);
+    }
+    return states;
+  };
+
+  /**
+   * 依赖等待呈现信息（公共快照 / 入队预警共用；`null` = 无等待）。
+   * @param {string} wsId
+   * @param {Array<{slug: string, state: string}>|null|undefined} deps deps 快照
+   * @returns {{dep: string, reason?: string}|null}
+   */
+  const dependencyWaitForDeps = (wsId, deps) => {
+    if (!Array.isArray(deps) || deps.length === 0) return null;
+    const wsPath = workspacePathOf(wsId);
+    if (!wsPath) return null;
+    const observation = dependencyObservationOf(wsPath);
+    const verdict = dependencyVerdictOf(observation, deps);
+    if (verdict.satisfied || verdict.first === null) return null;
+    return dependencyWaitOf(observation, deps, dependencyRegisterStatesOf(wsId, verdict.first.slug));
+  };
+
+  /** 曲率条目的依赖等待信息（仅 grayed 条目；其余状态无「等待依赖」语义）。 */
+  const warpWaitOf = (wsId, entry) => (
+    entry?.state === "grayed" ? dependencyWaitForDeps(wsId, entry.deps) : null
+  );
+
+  /**
+   * 脉冲条目的依赖等待信息（仅 queued 条目）：条目模型零改动 → 扫描时刻**动态解析**
+   * 目标提案依赖（design D5），不读条目快照。
+   */
+  const queueWaitOf = (wsId, entry) => {
+    if (entry?.state !== "queued") return null;
+    const wsPath = workspacePathOf(wsId);
+    if (!wsPath) return null;
+    const deps = dependencyMapOf(wsPath).get(entry.proposalId);
+    return dependencyWaitForDeps(wsId, deps);
+  };
+
+  /**
+   * 入队依赖预警（second-add-cross-proposal-dependency-gating 2.3）：未达标**允许入队**
+   * （不拒绝、不落残态、不改条目快照形状），响应体携带预警信息交给客户端 toast。
+   * @param {string} wsId
+   * @param {string} proposalId
+   * @returns {{dependency: string, requiredState: string}|null}
+   */
+  const enqueueDependencyWarningOf = (wsId, proposalId) => {
+    const wsPath = workspacePathOf(wsId);
+    if (!wsPath) return null;
+    const deps = dependencyMapOf(wsPath).get(proposalId);
+    if (!Array.isArray(deps) || deps.length === 0) return null;
+    const verdict = dependencyVerdictOf(dependencyObservationOf(wsPath), deps);
+    if (verdict.satisfied || verdict.first === null) return null;
+    return { dependency: verdict.first.slug, requiredState: verdict.first.state };
+  };
+
   /**
    * 曲率门控复查（同步）：与动作条渲染同一谓词 + 磁盘重扫。
-   *  - proposal：`preState` 匹配（未设恒过）∧ 沉睡（act === 0）∧ 提案目录存在；
+   *  - proposal：`preState` 匹配（未设恒过）∧ **依赖达标** ∧ 沉睡（act === 0）∧ 目录存在；
+   *    （依赖子句 = second-add-cross-proposal-dependency-gating 1.2：按条目 deps 快照逐项
+   *    求值达标谓词，任一未达标保持置灰并呈「等待依赖」子态——呈现信息由快照投影的
+   *    `waitOf` 另行提供，门控只判放行）
    *  - embryo：目标锚点仍存在（proto 生命周期由锚点存在性表达）；会话空闲由点火时刻
    *    安静门另行复验（ready 保留「等待会话空闲」子态）。
    */
@@ -1104,6 +1358,9 @@ export function apply(ctx, config, options = {}) {
     const preState = typeof entry.button?.preState === "string" ? entry.button.preState : "";
     if (preState && !actionButtonVisible({ preState }, { lifecycle: proposal.lifecycle, act })) {
       return { ok: false, reason: "prestate-drift" };
+    }
+    if (!dependencyVerdictOf(dependencyObservationOf(wsPath), entry.deps).satisfied) {
+      return { ok: false, reason: DEPENDENCY_DRIFT_REASON };
     }
     if (act > 0) return { ok: false, reason: "busy" };
     return { ok: true };
@@ -1145,6 +1402,9 @@ export function apply(ctx, config, options = {}) {
         targetKind: "proposal",
         targetLabel: slug,
         proposalDir,
+        /* 附着时刻定格依赖快照（1.1；展开路径同样解析——早附着的 proto 展开条目
+           也需要守卫，脉冲侧动态解析兜底时序缺口见 design D6）。 */
+        deps: depsSnapshotFor(wsPath, slug),
         entries: planEntries
       });
       if (attached.ok === true) targets.push({ wsId, targetKey: slug });
@@ -1175,6 +1435,11 @@ export function apply(ctx, config, options = {}) {
         return { ok: false, reason: "gate" };
       }
     }
+    /* 转投复验并入依赖子句（second-add-cross-proposal-dependency-gating 1.5）：与门控
+       同谓词防御复验；不过 → 曲率条目标 skipped 残留并透出依赖原因（正常门控下不触发）。 */
+    if (!dependencyVerdictOf(dependencyObservationOf(wsPath), entry.deps).satisfied) {
+      return { ok: false, reason: DEPENDENCY_DRIFT_REASON };
+    }
     if (act > 0) return { ok: false, reason: "gate" };
     const enqueued = queueStore.enqueue({
       wsId: entry.wsId,
@@ -1202,6 +1467,7 @@ export function apply(ctx, config, options = {}) {
     explorerBusy,
     readSession: readQueueSession,
     readSessionState: (sessionId) => scheduler.sessionStateOf(sessionId),
+    resume: promptQueueSession,
     isArchived: (sessionId) => archivedSessionIds().has(sessionId),
     onChange: broadcastWarp,
     notify: (message) => {
@@ -1210,9 +1476,17 @@ export function apply(ctx, config, options = {}) {
     logger: ctx.logger ?? null
   });
 
-  /** 对外快照（`GET /warp`）：叠加调度器活动子态（executing running/waiting、ready 等待会话空闲）。 */
+  /**
+   * 对外快照（`GET /warp`）：叠加调度器活动子态（executing running/waiting、ready 等待
+   * 会话空闲）+ 依赖等待子态（3.1：grayed 条目的「等待依赖 <前置提案名>」与等修复原因）。
+   * 等待信息**快照时现算**（不落持久状态；design D3 口径）。
+   */
   const warpViewSnapshot = () => ({
-    ...publicWarpSnapshotOf(warpStore.doc, (wsId, entry) => warpScheduler.activityOf(wsId, entry)),
+    ...publicWarpSnapshotOf(
+      warpStore.doc,
+      (wsId, entry) => warpScheduler.activityOf(wsId, entry),
+      (wsId, entry) => warpWaitOf(wsId, entry)
+    ),
     revisedAt: warpStore.revisedAt
   });
 
@@ -1234,22 +1508,78 @@ export function apply(ctx, config, options = {}) {
    * 触发沿刷新：对文档内全部去重目标采样活动计数，`>0 → 0` 下降沿喂复查。
    * 每道会话事件（agent/status、交互瀑布退出）后调用；新附着目标也调用一次建立基线
    * （避免「附着时会话已忙 → 收尾下降沿」丢失）。
+   *
+   * **依赖触发源扩展**（second-add-cross-proposal-dependency-gating 1.3 / design D2）：
+   * 反向索引（`warpDependencyWaitersOf`：依赖提案 slug → 等待目标集合，随条目集现算、
+   * 不独立持久化）命中时，依赖提案关联会话的同一收尾沿 SHALL **追加触发其全部等待目标
+   * 的复查**（曲率自投 / 脉冲条目 / 手动点击三源同口径——三者都经同一活动计数观测）。
+   * 依赖提案可能已无曲率条目（动作转投后曲率侧零跟踪）→ 对索引里的每个依赖 slug
+   * 另行采样其活动计数（同 key 不重复成沿）。
+   *
+   * **脉冲让位重扫**（2.2）：收尾沿另**整体驱动**队列重扫（不按条目路由——脉冲条目不持
+   * deps 快照，索引也路由不到它；扫描只读求值、零副作用，过触发无害）。
    */
   const refreshWarpTriggers = () => {
+    /* 反向索引现算（条目集变更即时生效；重启对账由条目 deps 回读等价重建）。 */
+    const waiters = warpDependencyWaitersOf(warpStore.doc);
     const live = new Set();
-    for (const target of warpStore.targets()) {
-      const key = target.wsId + "\u0000" + target.targetKey;
+    /** 采样单键并回填基线；返回是否为「>0 → 0」下降沿。 */
+    const sampleOf = (wsId, key, count) => {
       live.add(key);
-      const count = warpActivityNowOf(target);
       const previous = warpActivityLast.get(key) ?? 0;
       warpActivityLast.set(key, count);
-      if (previous > 0 && count === 0) {
-        warpScheduler.onTaskSettled(target.wsId, target.targetKey);
+      return previous > 0 && count === 0;
+    };
+    const keyOf = (wsId, slug) => wsId + "\u0000" + slug;
+    let settled = false;
+    for (const target of warpStore.targets()) {
+      const count = warpActivityNowOf(target);
+      if (!sampleOf(target.wsId, keyOf(target.wsId, target.targetKey), count)) continue;
+      settled = true;
+      warpScheduler.onTaskSettled(target.wsId, target.targetKey);
+      for (const waiter of waiters.get(keyOf(target.wsId, target.targetKey)) ?? []) {
+        warpScheduler.onTaskSettled(waiter.wsId, waiter.targetKey);
+      }
+    }
+    for (const [key, list] of waiters) {
+      const index = key.indexOf("\u0000");
+      if (index < 0) continue;
+      const wsId = key.slice(0, index);
+      const slug = key.slice(index + 1);
+      const count = warpActivityActOf(wsId, slug);
+      if (!sampleOf(wsId, key, count)) continue;
+      settled = true;
+      for (const waiter of list) warpScheduler.onTaskSettled(waiter.wsId, waiter.targetKey);
+    }
+    /* 队列侧依赖 slug（条目模型零改动 → 从解析面现算）：让**依赖提案的会话收尾**也能
+       触发脉冲整体重扫（2.2；依赖提案可能既无曲率条目也不在该队列里，只能经解析面
+       枚举）。同 key 的重复采样由基线回填天然去重（不重复成沿）。 */
+    for (const [wsId, queue] of Object.entries(queueStore.doc?.queues ?? {})) {
+      const wsPath = workspacePathOf(wsId);
+      if (!wsPath) continue;
+      const map = dependencyMapOf(wsPath);
+      for (const entry of queue.entries) {
+        if (entry.state !== "queued" && entry.state !== "launching" && entry.state !== "executing") continue;
+        for (const dep of map.get(entry.proposalId) ?? []) {
+          const key = keyOf(wsId, dep.slug);
+          if (live.has(key)) continue;
+          if (sampleOf(wsId, key, warpActivityActOf(wsId, dep.slug))) settled = true;
+        }
       }
     }
     for (const key of [...warpActivityLast.keys()]) {
       if (!live.has(key)) warpActivityLast.delete(key);
     }
+    if (settled) rescanQueues();
+  };
+
+  /**
+   * 全队列让位重扫（second-add-cross-proposal-dependency-gating 2.2）：触发源到达后对
+   * **全部已存在队列**各跑一次 `advance` 扫描（未暂停且无在途时才会真正启动；全等待时
+   * 恒 no-op —— 闲置态由快照投影判定，不在此层落状态）。
+   */
+  const rescanQueues = () => {
+    for (const wsId of Object.keys(queueStore.doc?.queues ?? {})) scheduler.kick(wsId);
   };
 
   /**
@@ -1685,7 +2015,15 @@ export function apply(ctx, config, options = {}) {
   };
 
   /**
-   * 宿主 agent 事件面 → 脉冲调度器 + 曲率引擎（two-add-cosmos-proposal-warp 2.1）：
+   * 宿主事件面 → 脉冲调度器 + 曲率引擎（two-add-cosmos-proposal-warp 2.1；
+   * 停机原因信号见 one-add-cosmos-queue-stop-reason-policy 2.2）：
+   *  - `session/event`（**停机原因主信号**）：`event.type === "turn/end"` → 脉冲调度器
+   *    `onSessionTurnEnd(session.id, event.data.reason)` 写入 `reason.kind`（含 `error`
+   *    的 `LlmFailure` 错误码、`aborted` 的取消原因），随后立即按策略表处置已绑定条目；
+   *    曲率引擎经共享会话态缓存零改动读同一原因。
+   *  - `agent/error`（**错误码明细**）：错误路径活体边界事件（载荷 `{agent, turn, step,
+   *    error}`，`error` 为 `LlmError` 实例）→ `onAgentError(agent.id, error)` 补齐错误码
+   *    （欠费族归类随补齐修正；`turn/end` 晚到时同样以 `reason.error.code` 定稿）。
    *  - `agent/status`：running/idle 迁移（`payload.agent.id` = 会话 id）——**先**喂脉冲
    *    调度器（共享会话态缓存的唯一写者），再喂曲率引擎（只读同一缓存），最后刷新曲率
    *    触发沿（按目标活动计数下降沿）；
@@ -1694,6 +2032,13 @@ export function apply(ctx, config, options = {}) {
    *    会持有整条链直到人应答，非 prepend 监听者在该路径上永远收不到请求（本插件的主场景
    *    正是浏览器常开）。观察者恒 `next()` 透传、`finally` 配对进出沿，绝不吞链、不改变
    *    官方应答者行为。退出沿同时喂曲率完成判定与触发沿刷新。
+   *
+   * 作用域实证（本提案 spike 1.1）：宿主会话事件经 `scopeTarget(session, key)` 生成的
+   * carrier 派发，cordis 过滤规则为 `hook.global || !filter || filter(thisArg, hook.ctx)`，
+   * 而 `scopeTarget.filter` 对**未打 scope 标签**的监听上下文直接放行——插件根 ctx 的
+   * `ctx.on` 因此能收到**所有会话**的 `session/event`（含进程内直投新建的会话）。派发参数
+   * 为 `(session, event)`，会话 id 取 `session.id`；`agent/error` 为 agent 作用域 emit，
+   * 载荷含 `agent`（`agent.id` 即会话 id）。
    * @returns {() => void} 卸载函数
    */
   const installQueueListeners = () => {
@@ -1707,6 +2052,30 @@ export function apply(ctx, config, options = {}) {
           refreshWarpTriggers();
         } catch (error) {
           ctx.logger?.warn?.("[dsh-v-cosmos] 队列 agent/status 归约失败: %s", String(error?.message || error));
+        }
+      })
+    );
+    /* 停机原因主信号：`turn/end` 的 `reason`（completed | max-tokens | error | aborted |
+       interrupted | blocked | forked；merge-extensible）。 */
+    disposers.push(
+      ctx.on("session/event", (session, event) => {
+        try {
+          if (event?.type !== "turn/end") return;
+          scheduler.onSessionTurnEnd(session?.id, event?.data?.reason);
+        } catch (error) {
+          ctx.logger?.warn?.("[dsh-v-cosmos] 队列 turn/end 归约失败: %s", String(error?.message || error));
+        }
+      })
+    );
+    /* 错误码明细：`agent/error`（error 路径活体边界；载荷 error 为 LlmError 实例）。 */
+    disposers.push(
+      ctx.on("agent/error", (payload) => {
+        try {
+          scheduler.onAgentError(payload?.agent?.id, payload?.error);
+          /* 欠费码晚到：曲率侧已按「回合错误」失败残留的条目须改判并暂停点火。 */
+          warpScheduler.onAgentError(payload?.agent?.id, payload?.error);
+        } catch (error) {
+          ctx.logger?.warn?.("[dsh-v-cosmos] 队列 agent/error 归约失败: %s", String(error?.message || error));
         }
       })
     );
@@ -1908,6 +2277,10 @@ export function apply(ctx, config, options = {}) {
     skeleton = next;
     scanned = true;
     reconcileWatchers();
+    /* 依赖观察面随骨架变更失效（新提案目录 / `.state.json` / 归档 / 锚点都可能在
+       本帧变化）：清缓存让下一次门控与快照取到当刻事实。 */
+    depObservationCache.clear();
+    depMapCache.clear();
     if (wasScanned) warpScheduler.onScanChanged();
     if (skeletonChanged) broadcast({ type: "proposals-changed" });
     return skeleton;
@@ -2461,9 +2834,40 @@ export function apply(ctx, config, options = {}) {
                 json(res, 400, { error: enqueued.error });
                 return;
               }
+              /* 依赖预警（second-add-cross-proposal-dependency-gating 2.3）：未达标仍**允许
+                 入队**（不拒绝、不落残态、不改条目快照形状），响应体携带预警 → 客户端 toast；
+                 执行由让位扫描统一守卫。 */
+              const dependencyWarning = enqueueDependencyWarningOf(wsId, proposalId);
               broadcastQueue();
               scheduler.kick(wsId);
-              json(res, 200, { ok: true, entry: publicEntryOf(enqueued.entry) });
+              json(res, 200, {
+                ok: true,
+                entry: publicEntryOf(enqueued.entry, null, queueWaitOf(wsId, enqueued.entry)),
+                ...(dependencyWarning === null ? {} : { warning: dependencyWarning })
+              });
+              return;
+            }
+            if (action === "retry") {
+              /* failed 残留重试（two-add-cosmos-queue-failed-entry-retry / design D1–D3）：
+                 转态语义与校验全部在 queue-store 单点（not-failed / duplicate / limit 400），
+                 本处只做参数归位 + 广播 + 推进。**不改暂停态**：kick 在暂停队列下由
+                 `nextLaunchable` 的暂停守卫短路（可证 no-op）；非暂停空闲队列则立即启动。 */
+              const entryId = typeof body?.entryId === "string" ? body.entryId : "";
+              if (!entryId) {
+                json(res, 400, { error: "invalid", reason: "缺少 entryId" });
+                return;
+              }
+              const result = queueStore.retry({ wsId, entryId });
+              if (result.ok !== true) {
+                json(res, 400, { error: result.error });
+                return;
+              }
+              broadcastQueue();
+              scheduler.kick(wsId);
+              json(res, 200, {
+                ok: true,
+                entry: publicEntryOf(result.entry, null, queueWaitOf(wsId, result.entry))
+              });
               return;
             }
             if (action === "reorder") {
@@ -2584,6 +2988,8 @@ export function apply(ctx, config, options = {}) {
                   targetKind,
                   targetLabel: targetLabel || targetKey,
                   proposalDir,
+                  /* 附着时刻定格依赖快照（second-add-cross-proposal-dependency-gating 1.1）。 */
+                  deps: depsSnapshotFor(workspacePath, targetKey),
                   entries
                 });
                 if (attached.ok !== true) {
@@ -2597,7 +3003,7 @@ export function apply(ctx, config, options = {}) {
                 json(res, 200, {
                   ok: true,
                   targetKey,
-                  entries: attached.entries.map((entry) => publicWarpEntryOf(entry)),
+                  entries: attached.entries.map((entry) => publicWarpEntryOf(entry, null, warpWaitOf(wsId, entry))),
                   expanded: []
                 });
                 return;
@@ -2649,7 +3055,7 @@ export function apply(ctx, config, options = {}) {
               json(res, 200, {
                 ok: true,
                 targetKey,
-                entries: attached.entries.map((entry) => publicWarpEntryOf(entry)),
+                entries: attached.entries.map((entry) => publicWarpEntryOf(entry, null, warpWaitOf(wsId, entry))),
                 expanded: expanded.targets.map((target) => target.targetKey)
               });
               return;

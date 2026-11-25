@@ -2499,7 +2499,7 @@ const QUEUE_CLEAR_CONFIRM_MS = 3000;
  *    钻取星座**；**银河态随选中提案所属星座**显示（面板是动作条配套面）；组件只消费
  *    投影，不自行推导作用域；
  *  - **脉冲页签**：既有全部呈现语义逐字保留（标题 + 在途计数 + 指示点 + ⏸/▶ + ✕ 清空
- *    + 条目行 ▲/▼/✕ 与失败诊断）；
+ *    + 条目行 ▲/▼/↻/✕ 与失败诊断；↻ 重试钮仅 failed 残留行呈现，暂停态照常可用）；
  *  - **曲率页签**：头部 = 条目计数 + 指示点（executing 呼吸 / 等待决策琥珀）+ `⏸/▶`
  *    （**无清空钮、无排序钮**——用户裁决 2026-11-23）；条目行 = 动作条名 + 目标名
  *    （溢出省略）+ 状态徽标，`grayed` 整行降饱和（CSS `data-state=grayed`），hover 浮出
@@ -2516,6 +2516,7 @@ function QueuePanel({
   onClear,
   onReorder,
   onRemove,
+  onRetry,
   onHoverEntry,
   onWarpPause,
   onWarpRemove,
@@ -2644,11 +2645,29 @@ function QueuePanel({
             {pulse.paused ? (
               <span className="dsh-cosmos-queue-paused">{t("cosmos.queue.paused", "已暂停")}</span>
             ) : null}
-            {/* 恒自动发送标注（spec「队列执行恒自动发送」：条目呈现标注；不占行内宽度）。 */}
-            <span
-              className="dsh-cosmos-queue-auto"
-              title={t("cosmos.queue.autoTitle", "队列执行恒为自动发送：不打开会话、不写草稿")}
-            >{t("cosmos.queue.auto", "自动发送")}</span>
+            {/* 闲置态标识（second-add-cross-proposal-dependency-gating 3.2）：全部 queued 条目
+                依赖未达标且未暂停——与暂停态视觉可辨（虚线徽标，暂停钮仍为运行图标）。 */}
+            {pulse.idle ? (
+              <span
+                className="dsh-cosmos-queue-idle"
+                data-cosmos-queue-idle="true"
+                title={t("cosmos.queue.idleTitle", "全部条目都在等待依赖达标（非暂停：暂停钮仍为运行态）")}
+              >{t("cosmos.queue.idle", "全部等待依赖")}</span>
+            ) : null}
+            {/* 依赖让位呈现（同一提案）：有可执行条目 → 头部「下一执行」指示（让位扫描将启动
+                的下一 queued 条目目标名）；否则保留既有「自动发送」标注位（不占额外行宽）。 */}
+            {pulse.nextExecution !== null && pulse.nextExecution !== undefined ? (
+              <span
+                className="dsh-cosmos-queue-next"
+                data-cosmos-queue-next={pulse.nextExecution.proposalId}
+                title={t("cosmos.queue.nextExecutionTitle", "让位扫描将启动的下一队列条目") + " · " + t("cosmos.queue.auto", "自动发送")}
+              >{t("cosmos.queue.nextExecution", "下一执行") + " " + (pulse.nextExecution.proposalId || pulse.nextExecution.buttonName || "")}</span>
+            ) : (
+              <span
+                className="dsh-cosmos-queue-auto"
+                title={t("cosmos.queue.autoTitle", "队列执行恒为自动发送：不打开会话、不写草稿")}
+              >{t("cosmos.queue.auto", "自动发送")}</span>
+            )}
             <button
               type="button"
               className="dsh-cosmos-queue-pause"
@@ -2689,6 +2708,11 @@ function QueuePanel({
                   {row.failedDetail ? (
                     <span className="dsh-cosmos-queue-detail">{row.failedDetail}</span>
                   ) : null}
+                  {/* 依赖等待原因（second-add-cross-proposal-dependency-gating 3.2）：前置失败
+                      等修复时可见（琥珀色，非错误色——本条目没有失败）；正常等待零布局。 */}
+                  {row.waitingDetail ? (
+                    <span className="dsh-cosmos-queue-detail" data-cosmos-queue-wait-reason="true">{row.waitingDetail}</span>
+                  ) : null}
                 </span>
                 <span className="dsh-cosmos-queue-badge" data-badge={row.badgeKey}>{row.badgeLabel}</span>
                 <span className="dsh-cosmos-queue-ops">
@@ -2710,6 +2734,19 @@ function QueuePanel({
                     disabled={!row.canMoveDown}
                     onClick={() => onReorder?.(row, "down")}
                   >▼</button>
+                  {/* failed 残留重试钮（two-add-cosmos-queue-failed-entry-retry / design D4）：
+                      与移出钮并列、行内操作钮同视觉语言；**仅 failed 行呈现**（其余行不渲染），
+                      暂停态照常可用（数据操作，不越过暂停守卫推进）。 */}
+                  {row.canRetry ? (
+                    <button
+                      type="button"
+                      className="dsh-cosmos-queue-op"
+                      data-cosmos-queue-op="retry"
+                      aria-label={t("cosmos.queue.retry", "重试")}
+                      title={row.retryTitle}
+                      onClick={() => onRetry?.(row)}
+                    >↻</button>
+                  ) : null}
                   <button
                     type="button"
                     className="dsh-cosmos-queue-op"
@@ -2784,6 +2821,11 @@ function QueuePanel({
                     {/* 失败 / 跳过残留的可见诊断行（spec「留下可见记录」）：无诊断时零布局。 */}
                     {row.failedDetail ? (
                       <span className="dsh-cosmos-queue-detail">{row.failedDetail}</span>
+                    ) : null}
+                    {/* 依赖等待原因（second-add-cross-proposal-dependency-gating 3.1）：前置失败
+                        等修复时可见；正常等待零布局。 */}
+                    {row.waitingDetail ? (
+                      <span className="dsh-cosmos-queue-detail" data-cosmos-warp-wait-reason="true">{row.waitingDetail}</span>
                     ) : null}
                   </span>
                   <span className="dsh-cosmos-queue-badge" data-badge={row.badgeKey}>{row.badgeLabel}</span>
@@ -5297,15 +5339,34 @@ function CosmosSurface(props) {
       : 0;
     return pulseEntries + warpEntries > 0 ? wsId : null;
   }, [queueSnapshot, warpSnapshot, drill?.wsId, selectedCard?.wsId]);
+  /* 停机原因族文案（one-add-cosmos-queue-stop-reason-policy 6.1）：failed 残留诊断行的族标签
+     （截断耗尽 / 欠费 / 回合错误 / 用户停止），经面板投影注入 → 复用既有 `failedDetail`
+     管线，零布局变化。词典缺键回落中文基线（与面板既有徽标文案同口径）。 */
+  const stopReasonLabels = useMemo(() => ({
+    "turn-quota": tr("cosmos.queue.stop.quota", "欠费停机"),
+    "turn-error": tr("cosmos.queue.stop.error", "回合错误"),
+    "turn-aborted": tr("cosmos.queue.stop.aborted", "用户停止"),
+    "turn-interrupted": tr("cosmos.queue.stop.interrupted", "回合中断"),
+    "turn-blocked": tr("cosmos.queue.stop.blocked", "回合阻塞"),
+    "turn-max-tokens-exhausted": tr("cosmos.queue.stop.exhausted", "截断耗尽")
+  }), [t]);
+  /* 依赖等待文案（second-add-cross-proposal-dependency-gating 3.3）：等待依赖徽标前缀 +
+     等修复原因，经面板投影注入（与 stopLabels 同管线；缺键回落中文基线）。 */
+  const waitDependencyLabels = useMemo(() => ({
+    dependency: tr("cosmos.queue.waitDep", "等待依赖"),
+    repair: tr("cosmos.queue.waitRepair", "等修复")
+  }), [t]);
   const queueModel = useMemo(
     () => (panelWsId === null
       ? null
       : projectQueuePanel({
         queue: queueSnapshot?.queues?.[panelWsId] ?? null,
         wsId: panelWsId,
-        now: Date.now()
+        now: Date.now(),
+        stopLabels: stopReasonLabels,
+        waitLabels: waitDependencyLabels
       })),
-    [queueSnapshot, panelWsId]
+    [queueSnapshot, panelWsId, stopReasonLabels, waitDependencyLabels]
   );
   const warpModel = useMemo(
     () => (panelWsId === null
@@ -5313,9 +5374,11 @@ function CosmosSurface(props) {
       : projectWarpPanel({
         warp: warpSnapshot?.warps?.[panelWsId] ?? null,
         wsId: panelWsId,
-        now: Date.now()
+        now: Date.now(),
+        stopLabels: stopReasonLabels,
+        waitLabels: waitDependencyLabels
       })),
-    [warpSnapshot, panelWsId]
+    [warpSnapshot, panelWsId, stopReasonLabels, waitDependencyLabels]
   );
   /* 「已在队列中」键集（入队钮禁用判定；仅 queued 命中——终态残留不构成重复）。 */
   const queuePendingKeys = useMemo(() => queuePendingKeysOf(queueSnapshot), [queueSnapshot]);
@@ -5752,6 +5815,8 @@ function CosmosSurface(props) {
       return tr("cosmos.queue.hostStale", "宿主半区未加载队列接口：请重启 DSH 后重试");
     }
     if (code === "locked") return tr("cosmos.queue.locked", "执行中条目不可操作");
+    /* 重试专用码（两-add-cosmos-queue-failed-entry-retry / design D3）：非 failed 目标拒绝。 */
+    if (code === "not-failed") return tr("cosmos.queue.notFailed", "仅失败的条目可重试");
     if (code === "neighbor-locked") return tr("cosmos.queue.neighborLocked", "相邻条目不可调整（仅等待中的条目可排序）");
     if (code === "boundary") return tr("cosmos.queue.boundary", "已到队列边界");
     if (
@@ -5787,7 +5852,16 @@ function CosmosSurface(props) {
         buttonName: button.name
       });
       if (result?.ok === true) {
-        queueToast(tr("cosmos.queue.enqueued", "已加入脉冲队列"));
+        /* 依赖预警（second-add-cross-proposal-dependency-gating 2.3）：未达标仍**允许入队**，
+            服务端以 `warning.dependency` 透出 → toast 预警（执行由让位扫描统一守卫）。 */
+        const dependency = typeof result?.warning?.dependency === "string" ? result.warning.dependency : "";
+        if (dependency) {
+          queueToast(
+            tr("cosmos.queue.depWarning", "依赖 {dep} 未达标，该条目将在队列中等待").replace("{dep}", dependency)
+          );
+        } else {
+          queueToast(tr("cosmos.queue.enqueued", "已加入脉冲队列"));
+        }
       } else {
         queueToast(queueFailureText(result, tr("cosmos.queue.enqueueFailed", "加入队列失败")));
       }
@@ -5864,6 +5938,23 @@ function CosmosSurface(props) {
     const result = await queueAction("remove", { wsId: row.wsId, entryId: row.id });
     if (result?.ok !== true) {
       queueToast(queueFailureText(result, tr("cosmos.queue.removeFailed", "移出队列失败")));
+    }
+    await refreshQueue();
+  };
+
+  /** 重试 failed 残留（two-add-cosmos-queue-failed-entry-retry / design D2、D4）：
+      转回队首 queued；**不改暂停态**——暂停队列 toast 明示需点继续恢复推进，非暂停队列
+      按队列自然推进（服务端 kick）。toast 双形态按该行所属星座的暂停标志分流。 */
+  const retryQueueEntry = async (row) => {
+    if (!row || !row.id) return;
+    const paused = queueSnapshot?.queues?.[row.wsId]?.paused === true;
+    const result = await queueAction("retry", { wsId: row.wsId, entryId: row.id });
+    if (result?.ok === true) {
+      queueToast(paused
+        ? tr("cosmos.queue.retriedPaused", "已转回队首，队列暂停中（点继续恢复推进）")
+        : tr("cosmos.queue.retried", "已转回队首"));
+    } else {
+      queueToast(queueFailureText(result, tr("cosmos.queue.retryFailed", "重试失败")));
     }
     await refreshQueue();
   };
@@ -6521,6 +6612,7 @@ function CosmosSurface(props) {
         onClear={clearQueue}
         onReorder={reorderQueueEntry}
         onRemove={removeQueueEntry}
+        onRetry={retryQueueEntry}
         onHoverEntry={hoverQueueEntry}
         onWarpPause={toggleWarpPaused}
         onWarpRemove={removeWarpEntry}
@@ -7420,6 +7512,16 @@ ${ENGINE_CSS}
 .dsh-cosmos-queue-paused{flex:none;font-size:10px;line-height:14px;padding:0 4px;white-space:nowrap;
   color:var(--dsw-alias-state-warn-primary,var(--cos-waiting,#ffaa4a));
   border:1px solid var(--dsw-alias-state-warn-primary,var(--cos-waiting,#ffaa4a))}
+/* 闲置态标识（second-add-cross-proposal-dependency-gating 3.2）：全部 queued 条目依赖未达标、
+   未暂停、无在途——与暂停态**视觉可辨**（暂停 = 警示色实线徽标 + ⏸ 图标；闲置 = 中性虚线
+   徽标 + 循环符号，暂停钮仍显示缺省运行图标）。 */
+.dsh-cosmos-queue-idle{flex:none;font-size:10px;line-height:14px;padding:0 4px;white-space:nowrap;
+  color:rgb(var(--cos-accent-ink-rgb,255 227 184) / .85);border:1px dashed rgb(var(--cos-accent-rgb,255 210 140) / .55)}
+/* 「下一执行」指示（同一提案）：让位扫描将启动的下一 queued 条目目标名（溢出省略）。 */
+.dsh-cosmos-queue-next{flex:1 1 auto;min-width:0;text-align:right;font-size:10px;line-height:14px;
+  letter-spacing:.5px;color:rgb(var(--cos-accent-ink-rgb,255 227 184) / .72);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dsh-cosmos-queue-next::before{content:"⇥ "}
 .dsh-cosmos-queue-auto{flex:1 1 auto;min-width:0;text-align:right;font-size:10px;letter-spacing:.5px;
   color:rgb(var(--cos-accent-ink-rgb,255 227 184) / .5);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .dsh-cosmos-queue-pause,.dsh-cosmos-queue-clear{flex:none;box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;
@@ -7493,6 +7595,13 @@ ${ENGINE_CSS}
 .dsh-cosmos-queue-row[data-state=grayed]:hover{opacity:.8}
 .dsh-cosmos-queue-badge[data-badge=waiting-session]{color:var(--dsw-alias-state-warn-primary,var(--cos-waiting,#ffaa4a));
   border-color:var(--dsw-alias-state-warn-primary,var(--cos-waiting,#ffaa4a))}
+/* 等待依赖子态徽标（second-add-cross-proposal-dependency-gating 3.1/3.2）：与「等待会话空闲」
+   同族琥珀色，但**加宽**以容纳「等待依赖 <前置提案名>」前缀（超长仍省略）。 */
+.dsh-cosmos-queue-badge[data-badge=waiting-dependency]{max-width:120px;
+  color:var(--dsw-alias-state-warn-primary,var(--cos-waiting,#ffaa4a));
+  border-color:var(--dsw-alias-state-warn-primary,var(--cos-waiting,#ffaa4a))}
+/* 等待原因（等修复）行内诊断：琥珀色（非错误色——前置失败不是本条目失败）。 */
+.dsh-cosmos-queue-row[data-badge=waiting-dependency] .dsh-cosmos-queue-detail{color:var(--dsw-alias-state-warn-primary,var(--cos-waiting,#ffaa4a))}
 /* 曲率按钮（two-add-cosmos-proposal-warp 6.1；按用户反馈加宽加高并强化辨识）：
    独立一枚悬在动作条右缘外，**与主按钮同高**（top/bottom 6 对齐条内容区）、宽度接近
    一个主按钮；暖金渐变填充 + 左侧轨道弧 + 双层描边 + 外辉光，与「实心主按钮 / 虚线
@@ -9174,6 +9283,30 @@ const DICT = {
     "cosmos.queue.clearFailed": "清空队列失败",
     "cosmos.queue.reorderFailed": "调整顺序失败",
     "cosmos.queue.removeFailed": "移出队列失败",
+    /* failed 残留重试（two-add-cosmos-queue-failed-entry-retry 3.1 / design D2–D4）：
+       钮名 / 双形态 toast（暂停态明示点继续）/ 失败兜底 / 非 failed 拒绝码文案。 */
+    "cosmos.queue.retry": "重试",
+    "cosmos.queue.retried": "已转回队首",
+    "cosmos.queue.retriedPaused": "已转回队首，队列暂停中（点继续恢复推进）",
+    "cosmos.queue.retryFailed": "重试失败",
+    "cosmos.queue.notFailed": "仅失败的条目可重试",
+    /* 停机分类处置的原因族标签（one-add-cosmos-queue-stop-reason-policy 6.1）：
+       追加在 failed/skipped 残留诊断行的 `(reason)` 后，让异常停机的族别可辨。 */
+    "cosmos.queue.stop.quota": "欠费停机",
+    "cosmos.queue.stop.error": "回合错误",
+    "cosmos.queue.stop.aborted": "用户停止",
+    "cosmos.queue.stop.interrupted": "回合中断",
+    "cosmos.queue.stop.blocked": "回合阻塞",
+    "cosmos.queue.stop.exhausted": "截断耗尽",
+    /* 跨提案依赖门控（second-add-cross-proposal-dependency-gating 3.3）：等待依赖子态、
+       全等待闲置态、头部「下一执行」指示、入队预警 toast、等待原因（等修复）。 */
+    "cosmos.queue.waitDep": "等待依赖",
+    "cosmos.queue.waitRepair": "等修复",
+    "cosmos.queue.idle": "全部等待依赖",
+    "cosmos.queue.idleTitle": "全部条目都在等待依赖达标（非暂停：暂停钮仍为运行态）",
+    "cosmos.queue.nextExecution": "下一执行",
+    "cosmos.queue.nextExecutionTitle": "让位扫描将启动的下一队列条目",
+    "cosmos.queue.depWarning": "依赖 {dep} 未达标，该条目将在队列中等待",
     "cosmos.actions.enqueue": "加入脉冲队列",
     "cosmos.actions.enqueueLabel": "＋ 入队",
     /* 曲率队列 / 曲率按钮 / 曲率引擎页签（two-add-cosmos-proposal-warp 6.1–6.4 / 5.2）。 */
@@ -9601,6 +9734,27 @@ const DICT = {
     "cosmos.queue.clearFailed": "Could not clear the queue",
     "cosmos.queue.reorderFailed": "Could not reorder",
     "cosmos.queue.removeFailed": "Could not remove from the queue",
+    /* Failed-entry retry (two-add-cosmos-queue-failed-entry-retry 3.1). */
+    "cosmos.queue.retry": "Retry",
+    "cosmos.queue.retried": "Moved back to the queue head",
+    "cosmos.queue.retriedPaused": "Moved back to the queue head; the queue is paused (press Continue to resume)",
+    "cosmos.queue.retryFailed": "Could not retry",
+    "cosmos.queue.notFailed": "Only failed entries can be retried",
+    /* Stop-reason family labels (one-add-cosmos-queue-stop-reason-policy 6.1). */
+    "cosmos.queue.stop.quota": "quota",
+    "cosmos.queue.stop.error": "turn error",
+    "cosmos.queue.stop.aborted": "stopped by user",
+    "cosmos.queue.stop.interrupted": "turn interrupted",
+    "cosmos.queue.stop.blocked": "turn blocked",
+    "cosmos.queue.stop.exhausted": "truncation limit",
+    /* Cross-proposal dependency gating (second-add-cross-proposal-dependency-gating 3.3). */
+    "cosmos.queue.waitDep": "Waiting for",
+    "cosmos.queue.waitRepair": "awaiting fix",
+    "cosmos.queue.idle": "All waiting on dependencies",
+    "cosmos.queue.idleTitle": "Every entry is waiting for its dependencies (not paused: the pause button still shows run)",
+    "cosmos.queue.nextExecution": "Next",
+    "cosmos.queue.nextExecutionTitle": "The next queue entry the skip-over scan will start",
+    "cosmos.queue.depWarning": "Dependency {dep} is not satisfied; this entry will wait in the queue",
     "cosmos.actions.enqueue": "Add to impulse queue",
     "cosmos.actions.enqueueLabel": "＋ Queue",
     /* Warp queue / warp button / warp engine tab (two-add-cosmos-proposal-warp). */

@@ -13,6 +13,9 @@
  *      proposalDir?,                       // 仅 proposal 目标（提案目录绝对路径）
  *      anchorSlugs?,                       // 仅 embryo 目标（附着时刻锚点 slug 清单）
  *      explorerSessionId?,                 // 仅 embryo 目标（锚点绑定的探索会话）
+ *      deps?,                              // 附着时刻依赖快照 `[{slug, state}]`
+ *                                          // （second-add-cross-proposal-dependency-gating 1.1；
+ *                                          //  形状与 dep-resolve.normalizeRequires 同形，缺失 = 无守卫）
  *      button: { name, prompt, model?, prepend?, preState? },
  *      rule: "direct" | "queue",
  *      state: "grayed"|"ready"|"launching"|"executing"|"failed"|"skipped",
@@ -37,6 +40,7 @@ import { closeSync, fdatasyncSync, mkdirSync, openSync, readFileSync, renameSync
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { isPreState, normalizeButtonModel } from "./buttons.mjs";
+import { normalizeRequires } from "./dep-resolve.mjs";
 
 /** 曲率文档版本（首版；版本漂移按空文档重建）。 */
 export const WARP_VERSION = 1;
@@ -141,6 +145,11 @@ export function normalizeWarpEntry(raw) {
   if (typeof raw.explorerSessionId === "string" && raw.explorerSessionId.trim()) {
     entry.explorerSessionId = raw.explorerSessionId.trim();
   }
+  /* 依赖快照（second-add-cross-proposal-dependency-gating 1.1）：归一口径单点 =
+     `dep-resolve.normalizeRequires`（非法/重复 → 整份按无依赖，安全方向恒少守卫）。
+     空数组不落键（存储最小形：无守卫 = 无字段）。 */
+  const deps = normalizeRequires(raw.deps);
+  if (deps !== null && deps.length > 0) entry.deps = deps;
   if (typeof raw.sessionId === "string" && raw.sessionId.trim()) entry.sessionId = raw.sessionId.trim();
   if (Number.isFinite(Number(raw.startedAt)) && Number(raw.startedAt) > 0) entry.startedAt = Number(raw.startedAt);
   if (typeof raw.reason === "string" && raw.reason.trim()) entry.reason = raw.reason.trim();
@@ -258,13 +267,60 @@ function withEntries(doc, wsId, warp, entries) {
 }
 
 /**
+ * 依赖反向索引（second-add-cross-proposal-dependency-gating 1.3）：`wsId\0<依赖提案 slug>`
+ * → 等待它的目标集合 `[{wsId, targetKey}]`。
+ *
+ * 口径：
+ *  - 输入 = 文档内**非终态**条目（grayed/ready/launching/executing）的 deps 快照——
+ *    failed/skipped 残留不再参与调度，自然不唤醒；
+ *  - **不独立持久化**：索引每次都从条目集现算（「随条目集变更重算」= 无缓存漂移面），
+ *    重启对账时条目 deps 随存储回读，索引自动等价重建（design D2）；
+ *  - 同 `(wsId, targetKey)` 对同 slug 去重（同目标多按钮条目共享一份等待关系）。
+ * @param {object} doc 曲率文档
+ * @returns {Map<string, Array<{wsId: string, targetKey: string}>>}
+ */
+export function warpDependencyWaitersOf(doc) {
+  const index = new Map();
+  for (const [wsId, warp] of Object.entries(doc?.warps ?? {})) {
+    for (const entry of Array.isArray(warp?.entries) ? warp.entries : []) {
+      if (!entry || entry.state === "failed" || entry.state === "skipped") continue;
+      const deps = Array.isArray(entry.deps) ? entry.deps : [];
+      if (deps.length === 0) continue;
+      for (const dep of deps) {
+        const slug = typeof dep?.slug === "string" ? dep.slug : "";
+        if (!slug) continue;
+        const key = wsId + "\u0000" + slug;
+        const row = { wsId, targetKey: entry.targetKey };
+        const list = index.get(key);
+        if (list === undefined) {
+          index.set(key, [row]);
+          continue;
+        }
+        if (!list.some((item) => item.wsId === row.wsId && item.targetKey === row.targetKey)) list.push(row);
+      }
+    }
+  }
+  return index;
+}
+
+/**
+ * 单条依赖反向索引键（等待关系查询用；与 `warpDependencyWaitersOf` 同域）。
+ * @param {unknown} wsId
+ * @param {unknown} slug
+ * @returns {string}
+ */
+export function warpDependencyKeyOf(wsId, slug) {
+  return String(wsId ?? "") + "\u0000" + String(slug ?? "");
+}
+
+/**
  * 附着曲率计划快照（服务端按当前按钮配置解析后的条目入队）。
  * 重复附着（同目标非终态条目）→ `duplicate`；空条目 → `empty`。
  *
  * @param {object} doc
  * @param {{wsId: string, targetKey: string, targetKind: string, targetLabel?: string,
  *          proposalDir?: string, anchorSlugs?: string[], explorerSessionId?: string,
- *          entries: Array<{button: object, rule?: string}>, now?: number,
+ *          deps?: Array<{slug: string, state: string}>, entries: Array<{button: object, rule?: string}>, now?: number,
  *          idFactory?: () => string}} input
  * @returns {{ok: true, doc: object, entries: object[]} | {ok: false, doc: object, error: string}}
  *          error 枚举：invalid / empty / duplicate
@@ -279,6 +335,8 @@ export function attachWarpEntries(doc, input) {
   }
   const now = Number.isFinite(Number(input?.now)) ? Number(input.now) : Date.now();
   const idFactory = typeof input?.idFactory === "function" ? input.idFactory : () => "w_" + randomUUID();
+  /* 依赖快照（附着时刻解析结果；调用方已完成解析，本层只做形状归一）。 */
+  const deps = normalizeRequires(input?.deps);
   const warp = warpOf(doc, wsId);
   const duplicated = warp.entries.some((entry) => entry.targetKey === targetKey && !TERMINAL.has(entry.state));
   if (duplicated) return { ok: false, doc, error: "duplicate" };
@@ -293,6 +351,7 @@ export function attachWarpEntries(doc, input) {
       proposalDir: targetKind === "proposal" ? textOf(input?.proposalDir) : undefined,
       anchorSlugs: targetKind === "embryo" ? input?.anchorSlugs : undefined,
       explorerSessionId: targetKind === "embryo" ? textOf(input?.explorerSessionId) : undefined,
+      deps: deps !== null && deps.length > 0 ? deps : undefined,
       button: item?.button,
       rule: item?.rule,
       enqueuedAt: now,
@@ -474,15 +533,23 @@ export function setWarpPaused(doc, input) {
  *    （waiting > 0 → 「等待决策」；running → 呼吸点）；
  *  - `{ waitingSession?: boolean }`：ready 的 proto 条目「等待会话空闲」呈现子态。
  *
+ * `wait` 由调用方（宿主依赖求值）传入（second-add-cross-proposal-dependency-gating 1.2）：
+ *  - `{ dep: string, reason?: "repair" }`：grayed 条目的依赖未达标呈现信息——条目
+ *    `subState` 派生为 `waiting-dependency`（呈现子态，不落枚举），`dep` = 首个未达标
+ *    依赖提案 slug、`reason` = 等修复原因码（缺省 = 正常等待前置推进）。
+ *
  * @param {object} entry
  * @param {object|null} [activity]
+ * @param {{dep: string, reason?: string}|null} [wait]
  * @returns {object}
  */
-export function publicWarpEntryOf(entry, activity = null) {
+export function publicWarpEntryOf(entry, activity = null, wait = null) {
   const waiting = activity?.waiting === true || (Number.isFinite(activity?.waiting) && activity.waiting > 0);
+  const depWait = wait !== null && typeof wait === "object" && typeof wait.dep === "string" && wait.dep ? wait : null;
   let subState = null;
   if (entry.state === "executing") subState = waiting ? "waiting" : activity?.running === true ? "running" : null;
   else if (entry.state === "ready" && activity?.waitingSession === true) subState = "waiting-session";
+  else if (entry.state === "grayed" && depWait !== null) subState = "waiting-dependency";
   const out = {
     id: entry.id,
     wsId: entry.wsId,
@@ -496,6 +563,10 @@ export function publicWarpEntryOf(entry, activity = null) {
     enqueuedAt: entry.enqueuedAt
   };
   if (subState !== null) out.subState = subState;
+  if (depWait !== null) {
+    out.waiting = { dep: depWait.dep };
+    if (typeof depWait.reason === "string" && depWait.reason) out.waiting.reason = depWait.reason;
+  }
   if (entry.targetKind === "embryo" && Array.isArray(entry.anchorSlugs)) out.anchorSlugs = [...entry.anchorSlugs];
   if (entry.startedAt !== undefined) out.startedAt = entry.startedAt;
   if (entry.sessionId !== undefined) out.sessionId = entry.sessionId;
@@ -508,16 +579,22 @@ export function publicWarpEntryOf(entry, activity = null) {
  * 全量对外快照（`GET /warp`）：每队列 `{paused, pausedAt, counts, entries}`。
  * @param {object} doc
  * @param {(wsId: string, entry: object) => (object|null)} [activityOf]
+ * @param {(wsId: string, entry: object) => ({dep: string, reason?: string}|null)} [waitOf]
+ *        依赖未达标等待信息（宿主注入；缺省 null = 无等待呈现）
  * @returns {{version: number, warps: Record<string, object>}}
  */
-export function publicWarpSnapshotOf(doc, activityOf = null) {
+export function publicWarpSnapshotOf(doc, activityOf = null, waitOf = null) {
   const warps = {};
   for (const [wsId, warp] of Object.entries(doc.warps ?? {})) {
     warps[wsId] = {
       paused: warp.paused === true,
       pausedAt: warp.pausedAt ?? 0,
       counts: warpCountsOf(warp),
-      entries: warp.entries.map((entry) => publicWarpEntryOf(entry, typeof activityOf === "function" ? activityOf(wsId, entry) : null))
+      entries: warp.entries.map((entry) => publicWarpEntryOf(
+        entry,
+        typeof activityOf === "function" ? activityOf(wsId, entry) : null,
+        typeof waitOf === "function" ? waitOf(wsId, entry) : null
+      ))
     };
   }
   return { version: WARP_VERSION, warps };

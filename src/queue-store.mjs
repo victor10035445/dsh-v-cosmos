@@ -14,12 +14,15 @@
  *  - 状态枚举 `queued | launching | executing | failed | skipped`；`running` / `等待决策`
  *    是 executing 的**呈现**子态（由会话交互态推导，不落枚举——spec 同款）。
  *  - 操作矩阵（spec「条目操作矩阵与复验跳过」）：排序仅 `queued`；移出/清空覆盖 `queued`
- *    与终态残留（failed/skipped）；`launching` / `executing` 完全锁定（服务端拒绝；
- *    v1 无中止入口）。清空保留在途条目。
+ *    与终态残留（failed/skipped）；**重试仅 `failed` 残留**（two-add-cosmos-queue-failed-entry-retry）
+ *    ——转回 `queued` 并归队首；skipped 不提供重试（复验跳过语义下条目可随时经入队钮
+ *    重新排队）；`launching` / `executing` 完全锁定（服务端拒绝；v1 无中止入口）。
+ *    清空保留在途条目。
  *  - 在途上限 32（对齐 `MAX_BUTTONS`），只计 `queued/launching/executing`；终态残留不计数
- *    （残留可被移出/清空，不会无限堆积）。
+ *    （残留可被移出/清空，不会无限堆积）；重试转回 `queued` 后重新计数（超限拒绝）。
  *  - 重复入队拒绝：同一 `(wsId, proposalId, button.name)` 已存在 **queued** 条目 → 拒绝
- *    （终态残留不构成重复——用户可能想重试失败条目）。
+ *    （终态残留不构成重复——用户可重试失败条目；重试沿用**同一口径**：同组合已有 queued
+ *    条目时重试被拒绝，failed 残留保持原样）。
  *
  * 原子写：temp 写（`.<uuid>.tmp`）+ `fsync` + `rename` 替换（与 index.mjs 关联存储同款）；
  * 读面容错：文件缺失/损坏/版本漂移 → 空文档（首写即建，无迁移）。
@@ -299,6 +302,70 @@ export function removeEntry(doc, input) {
 }
 
 /**
+ * 条目可重试判定（spec「条目操作矩阵与复验跳过」）：**仅 `failed`** 残留可重试。
+ * skipped 不提供重试（复验跳过语义下条目可随时经入队钮重新排队）；其余状态（含未知态）
+ * 一律不可重试（防御：MUST NOT 放行未知态）。
+ * @param {unknown} entry
+ * @returns {boolean}
+ */
+export function canRetryEntry(entry) {
+  return entry?.state === "failed";
+}
+
+/**
+ * 重试 failed 残留（spec「条目操作矩阵与复验跳过」/ design D1–D3）：
+ * `failed → queued` 转态**复用条目对象**——`button` 快照逐字保留（model/prepend/preState
+ * 随快照定格语义不变）、`reason`/`message`/`sessionId`/`startedAt` 等终态记账字段清除、
+ * `stateAt` 刷新为重试时刻、`enqueuedAt` 保留原值；转回位置 = **队首**（失败任务往往是
+ * 链头，修复后最先推进最符合「恢复依赖链」直觉）。
+ *
+ * 校验顺序与 `enqueueEntry` 同族：missing → not-failed → limit（转回 queued 使其重新计入
+ * 32 上限）→ duplicate（同组合已有 queued 条目拒绝，failed 残留保持不变）。
+ * **不改变队列暂停态**：推进与否由调度器 `nextLaunchable` 的暂停守卫决定（调用方在转态
+ * 成功后与入队同语义 kick 一次）。
+ *
+ * @param {object} doc
+ * @param {{wsId: string, entryId: string, now?: number}} input
+ * @returns {{ok: true, doc: object, entry: object} | {ok: false, doc: object, error: string}}
+ *          error 枚举：invalid / missing / not-failed / limit / duplicate
+ */
+export function retryEntry(doc, input) {
+  const wsId = typeof input?.wsId === "string" ? input.wsId.trim() : "";
+  const entryId = typeof input?.entryId === "string" ? input.entryId : "";
+  if (!wsId) return { ok: false, doc, error: "invalid" };
+  const queue = queueOf(doc, wsId);
+  const index = queue.entries.findIndex((entry) => entry.id === entryId);
+  if (index < 0) return { ok: false, doc, error: "missing" };
+  const entry = queue.entries[index];
+  if (!canRetryEntry(entry)) return { ok: false, doc, error: "not-failed" };
+  if (queueCountsOf(queue).active >= QUEUE_INFLIGHT_LIMIT) return { ok: false, doc, error: "limit" };
+  const duplicated = queue.entries.some(
+    (item) => item.state === "queued" && item.proposalId === entry.proposalId && item.button.name === entry.button.name
+  );
+  if (duplicated) return { ok: false, doc, error: "duplicate" };
+  const now = Number.isFinite(Number(input?.now)) ? Number(input.now) : Date.now();
+  /* 转态 = 快照原样 + 记账清除：白名单重建（MUST NOT 用展开合并——终态字段没有「删除」
+     语义，`patchQueueEntry` 的合并口径不适用本转态）。 */
+  const revived = {
+    id: entry.id,
+    wsId: entry.wsId,
+    proposalId: entry.proposalId,
+    proposalDir: entry.proposalDir,
+    button: { ...entry.button },
+    enqueuedAt: entry.enqueuedAt,
+    state: "queued",
+    stateAt: now
+  };
+  const entries = queue.entries.filter((item) => item.id !== entryId);
+  entries.unshift(revived);
+  return {
+    ok: true,
+    doc: { version: QUEUE_VERSION, queues: { ...doc.queues, [wsId]: { ...queue, entries } } },
+    entry: revived
+  };
+}
+
+/**
  * 清空：移除 queued 与终态残留，**保留** launching/executing（spec「清空保留执行中条目」）。
  * @returns {{ok: true, doc: object, removed: number} | {ok: false, doc: object, error: string}}
  */
@@ -355,14 +422,32 @@ export function setQueuePaused(doc, input) {
 
 /**
  * 取下一个可启动条目（**不改状态**）：队列未暂停、无在途条目、队首 queued。
+ *
+ * 依赖让位（second-add-cross-proposal-dependency-gating 2.1）**不在此层**：本函数只做
+ * 「结构可启动」判定（暂停 / 在途 / 顺序），依赖子句在调度器扫描时逐条求值——存储层
+ * 不感知依赖，条目模型零改动（design D5）。
  * @returns {object|null}
  */
 export function nextLaunchable(doc, wsId) {
+  return launchableEntries(doc, wsId)[0] ?? null;
+}
+
+/**
+ * 让位扫描候选集（**不改状态**，second-add-cross-proposal-dependency-gating 2.1）：
+ * 队列未暂停且无在途条目时返回全部 queued 条目（入队序）；否则空数组。
+ *
+ * 依赖求值由调度器按此顺序逐条进行（跳过依赖未达标者，启动首个达标条目）——存储顺序
+ * （入队 FIFO）保持权威，执行序经扫描自然收敛为拓扑序。
+ * @param {object} doc
+ * @param {string} wsId
+ * @returns {Array<object>}
+ */
+export function launchableEntries(doc, wsId) {
   const queue = queueOf(doc, wsId);
-  if (queue.paused) return null;
+  if (queue.paused) return [];
   const inflight = queue.entries.some((entry) => entry.state === "launching" || entry.state === "executing");
-  if (inflight) return null;
-  return queue.entries.find((entry) => entry.state === "queued") ?? null;
+  if (inflight) return [];
+  return queue.entries.filter((entry) => entry.state === "queued");
 }
 
 /**
@@ -378,15 +463,27 @@ export function hasInflight(doc, wsId) {
 /**
  * 对外投影（API/UI 消费，**不含 prompt 正文**）：`subState` 由调用方传入的运行态推导
  * （`waiting` 优先于 `running`；两者皆无 → null）。
+ *
+ * `wait` 由调用方（宿主依赖求值）传入（second-add-cross-proposal-dependency-gating 2.1 /
+ * 呈现 3.2）：`{dep: string, reason?: "repair"}` —— queued 条目的依赖未达标等待信息；
+ * 条目 `subState` 派生为 `waiting-dependency`（呈现子态，不落枚举），条目模型零改动。
  * @param {object} entry 队列条目
  * @param {{running?: boolean, waiting?: boolean}|null} [activity]
+ * @param {{dep: string, reason?: string}|null} [wait]
  * @returns {object}
  */
-export function publicEntryOf(entry, activity = null) {
+export function publicEntryOf(entry, activity = null, wait = null) {
   /* `waiting` 兼容布尔与计数两种形态：调度器活动信号用计数（同会话可并存多个交互），
      外部调用方可能只给布尔；>0 / true 皆视为「等待决策」。 */
   const waiting = activity?.waiting === true || (Number.isFinite(activity?.waiting) && activity.waiting > 0);
-  const subState = waiting ? "waiting" : activity?.running === true ? "running" : null;
+  const depWait = wait !== null && typeof wait === "object" && typeof wait.dep === "string" && wait.dep ? wait : null;
+  const subState = waiting
+    ? "waiting"
+    : activity?.running === true
+      ? "running"
+      : entry.state === "queued" && depWait !== null
+        ? "waiting-dependency"
+        : null;
   const out = {
     id: entry.id,
     wsId: entry.wsId,
@@ -398,6 +495,10 @@ export function publicEntryOf(entry, activity = null) {
     stateAt: entry.stateAt
   };
   if (subState !== null) out.subState = subState;
+  if (depWait !== null) {
+    out.waiting = { dep: depWait.dep };
+    if (typeof depWait.reason === "string" && depWait.reason) out.waiting.reason = depWait.reason;
+  }
   if (entry.startedAt !== undefined) out.startedAt = entry.startedAt;
   if (entry.sessionId !== undefined) out.sessionId = entry.sessionId;
   if (entry.reason !== undefined) out.reason = entry.reason;
@@ -409,16 +510,22 @@ export function publicEntryOf(entry, activity = null) {
  * 全量对外快照（`GET /queue`）：每队列 `{paused, pausedAt, entries, counts}`。
  * @param {object} doc
  * @param {(wsId: string, entry: object) => ({running?: boolean, waiting?: boolean}|null)} [activityOf]
+ * @param {(wsId: string, entry: object) => ({dep: string, reason?: string}|null)} [waitOf]
+ *        依赖未达标等待信息（宿主注入；缺省 null = 无等待呈现）
  * @returns {{version: number, revisedAt: number, queues: Record<string, object>}}
  */
-export function publicSnapshotOf(doc, activityOf = null) {
+export function publicSnapshotOf(doc, activityOf = null, waitOf = null) {
   const queues = {};
   for (const [wsId, queue] of Object.entries(doc.queues ?? {})) {
     queues[wsId] = {
       paused: queue.paused === true,
       pausedAt: queue.pausedAt ?? 0,
       counts: queueCountsOf(queue),
-      entries: queue.entries.map((entry) => publicEntryOf(entry, typeof activityOf === "function" ? activityOf(wsId, entry) : null))
+      entries: queue.entries.map((entry) => publicEntryOf(
+        entry,
+        typeof activityOf === "function" ? activityOf(wsId, entry) : null,
+        typeof waitOf === "function" ? waitOf(wsId, entry) : null
+      ))
     };
   }
   return { version: QUEUE_VERSION, queues };
@@ -546,6 +653,10 @@ export function createQueueStore(options = {}) {
     remove(input) {
       return commit(removeEntry(doc, input));
     },
+    /** failed 残留重试（转回队首 queued；暂停态由调用方保持，不在此处触碰）。 */
+    retry(input) {
+      return commit(retryEntry(doc, { ...input, now: input?.now ?? now() }));
+    },
     /** 调度器内部出队（完成收敛，无矩阵校验）。 */
     drop(input) {
       return commit(dropEntry(doc, input));
@@ -560,6 +671,8 @@ export function createQueueStore(options = {}) {
       return commit(setQueuePaused(doc, { ...input, now: input?.now ?? now() }));
     },
     nextLaunchable: (wsId) => nextLaunchable(doc, wsId),
+    /** 让位扫描候选集（未暂停、无在途时返回全部 queued；依赖求值在调度器）。 */
+    launchable: (wsId) => launchableEntries(doc, wsId),
     hasInflight: (wsId) => hasInflight(doc, wsId)
   };
 }

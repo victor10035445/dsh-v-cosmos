@@ -1,9 +1,12 @@
 /**
- * 点燃谱系台账冒烟（add-cosmos-panel-birthline-sort 1.2 / spec cosmos-birthline-ledger）：
- * 八组断言——点燃配对写入、dismiss 不误记（sighting 仅 TTL 过期）、手工创建提案不写行、
+ * 点燃谱系台账冒烟（add-cosmos-panel-birthline-sort 1.2 / spec cosmos-birthline-ledger；
+ * first-add-proposal-dependency-declaration 4.2 补 requires 承接场景）：
+ * 十组断言——点燃配对写入、dismiss 不误记（sighting 仅 TTL 过期）、手工创建提案不写行、
  * 同 slug 重复点燃覆盖为最新谱系、停机跨帧配对（sighting 持久化语义）、TTL 过期清理、
  * 容量上限淘汰、非法行剔除；另覆盖存储文档解析/序列化（损坏兜底、跨工作区命名空间、
- * 确定性字节）与投影容错。
+ * 确定性字节）与投影容错；第 10 组覆盖依赖声明快照承接（sighting 捕获、点燃配对同帧
+ * 带入、非法不落键、锚点声明更新刷新快照、同 slug 覆盖更新、停机跨帧、行归一与序列化
+ * 确定性）。
  * 运行：node test/birthline-smoke.mjs
  */
 import assert from "node:assert/strict";
@@ -199,6 +202,100 @@ function step(doc, { pending = [], active = [], now = NOW, workspacePath = WS } 
   const untouched = observeWorkspaceBirthlines(emptyBirthlineDoc(), { workspacePath: "", pending: [anchor("x", 1)], activeSlugs: ["x"], now: NOW });
   assert.equal(untouched.changed, false, "空工作区路径 → 不写台账");
   assert.equal(Object.keys(untouched.doc.workspaces).length, 0);
+}
+
+/* ── 10. requires 承接（依赖声明快照；first-add-proposal-dependency-declaration 3.3/3.4） ── */
+{
+  const requires = (slug, state = "executed") => [{ slug, state }];
+  const anchorWith = (name, at, sessionId, req) => ({ name, by: "cosmos-explore", at, sessionId, requires: req });
+
+  /* 10.1 锚点登记即捕获快照；同帧配对带入台账行；骨架投影透传（解析面台账输入）。 */
+  const registered = step(emptyBirthlineDoc(), { pending: [anchorWith("two-add-y", 7000, "sess-R", requires("one-add-x"))] });
+  assert.deepEqual(
+    registered.sightings,
+    [{ slug: "two-add-y", at: 7000, sessionId: "sess-R", seenAt: NOW, requires: requires("one-add-x") }],
+    "sighting 行捕获锚点 requires 快照"
+  );
+  const lit = step(registered.doc, { active: ["two-add-y"] });
+  assert.deepEqual(
+    lit.lineages,
+    [{ slug: "two-add-y", embryoAt: 7000, embryoSessionId: "sess-R", ignitedMs: NOW, requires: requires("one-add-x") }],
+    "点燃配对同帧承接 requires 快照"
+  );
+  assert.deepEqual(lineagesOf(lit.doc, WS), lit.lineages, "骨架投影透传 requires（解析面台账输入）");
+  assert.equal(step(lit.doc, { active: ["two-add-y"] }).changed, false, "同态重复观察 → 零变更（requires 不引入抖动）");
+
+  /* 10.2 非法 requires → 不落键（sighting / 台账行均无该键）；谱系字段照常写入。 */
+  const badDeclarations = [
+    "not-an-array", // 非数组
+    { slug: "one-add-x", state: "executed" }, // 非数组对象
+    [{ slug: "one-add-x", state: "proto" }], // proto 不可作依赖目标
+    [{ slug: "one-add-x", state: "executed" }, { slug: "one-add-x", state: "reviewed" }] // 同 slug 重复
+  ];
+  for (const bad of badDeclarations) {
+    const badRegistered = step(emptyBirthlineDoc(), { pending: [anchorWith("bad-req", 7100, "sess-B", bad)] });
+    assert.deepEqual(
+      badRegistered.sightings,
+      [{ slug: "bad-req", at: 7100, sessionId: "sess-B", seenAt: NOW }],
+      "非法 requires 不落 sighting 键: " + JSON.stringify(bad)
+    );
+    const badLit = step(badRegistered.doc, { active: ["bad-req"] });
+    assert.deepEqual(
+      badLit.lineages,
+      [{ slug: "bad-req", embryoAt: 7100, embryoSessionId: "sess-B", ignitedMs: NOW }],
+      "非法 requires 不落台账键（谱系字段照常）: " + JSON.stringify(bad)
+    );
+  }
+
+  /* 10.3 锚点 requires 更新 → 在册快照刷新（同值跳过，变化触发落盘）。 */
+  const first = step(emptyBirthlineDoc(), { pending: [anchorWith("three-add-z", 7200, "sess-U", requires("two-add-y", "reviewed"))] });
+  const updated = step(first.doc, { pending: [anchorWith("three-add-z", 7200, "sess-U", requires("two-add-y", "executed"))] });
+  assert.deepEqual(
+    updated.sightings,
+    [{ slug: "three-add-z", at: 7200, sessionId: "sess-U", seenAt: NOW, requires: requires("two-add-y", "executed") }],
+    "锚点声明更新 → sighting 快照刷新（requires 纳入同值比较）"
+  );
+  assert.equal(updated.changed, true, "快照更新属变更（宿主落盘）");
+  assert.equal(
+    step(updated.doc, { pending: [anchorWith("three-add-z", 7200, "sess-U", requires("two-add-y", "executed"))] }).changed,
+    false,
+    "同快照重复观察 → 零变更（零落盘抖动）"
+  );
+
+  /* 10.4 同 slug 重复点燃覆盖：requires 随新锚点快照更新（旧声明不残留）。 */
+  const firstLit = step(first.doc, { active: ["three-add-z"], now: NOW + 10 });
+  assert.deepEqual(firstLit.lineages[0].requires, requires("two-add-y", "reviewed"), "首次点燃承接当帧声明");
+  const reAnchored = step(firstLit.doc, { pending: [anchorWith("three-add-z", 7300, "sess-V", requires("one-add-x"))], now: NOW + 20 });
+  const relit = step(reAnchored.doc, { active: ["three-add-z"], now: NOW + 30 });
+  assert.deepEqual(
+    relit.lineages,
+    [{ slug: "three-add-z", embryoAt: 7300, embryoSessionId: "sess-V", ignitedMs: NOW + 30, requires: requires("one-add-x") }],
+    "同 slug 再次点燃 → requires 快照随覆盖更新"
+  );
+
+  /* 10.5 停机跨帧配对：requires 随 sighting 持久化，重启回读后照常承接。 */
+  const persisted = step(emptyBirthlineDoc(), { pending: [anchorWith("two-add-persist", 7400, "sess-W", requires("one-add-x"))] });
+  const persistedText = serializeBirthlineDoc(persisted.doc, NOW);
+  assert.equal(persistedText.includes("one-add-x"), true, "requires 快照落盘");
+  const reloaded = parseBirthlineDoc(persistedText, NOW + 60_000); // 重启（未过 TTL）
+  const paired = step(reloaded, { active: ["two-add-persist"], now: NOW + 61_000 });
+  assert.deepEqual(
+    paired.lineages,
+    [{ slug: "two-add-persist", embryoAt: 7400, embryoSessionId: "sess-W", ignitedMs: NOW + 61_000, requires: requires("one-add-x") }],
+    "重启后跨帧配对照常承接 requires"
+  );
+
+  /* 10.6 行归一保留合法 requires / 非法剔除 / 缺省不落键；含 requires 序列化确定性。 */
+  const rowsWith = normalizeLineages([{ slug: "r", embryoAt: 1, ignitedMs: 2, requires: requires("q") }]);
+  assert.deepEqual(rowsWith[0].requires, requires("q"), "台账行归一保留合法 requires");
+  const rowsWithout = normalizeLineages([{ slug: "r", embryoAt: 1, ignitedMs: 2 }]);
+  assert.equal("requires" in rowsWithout[0], false, "缺省不落键（旧行零迁移）");
+  const invalidRow = normalizeLineages([{ slug: "r", embryoAt: 1, ignitedMs: 2, requires: [{ slug: "", state: "created" }] }]);
+  assert.equal("requires" in invalidRow[0], false, "非法 requires 行归一剔除（不抛错）");
+  const sightingWith = normalizeSightings([{ slug: "s", at: 1, seenAt: NOW, requires: requires("q") }], NOW);
+  assert.deepEqual(sightingWith[0].requires, requires("q"), "sighting 归一保留合法 requires");
+  const text1 = serializeBirthlineDoc(relit.doc, NOW);
+  assert.equal(serializeBirthlineDoc(parseBirthlineDoc(text1, NOW), NOW), text1, "含 requires 的台账序列化确定性（跨重启零抖动）");
 }
 
 console.log("birthline-smoke: all assertions passed");

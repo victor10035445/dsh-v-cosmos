@@ -10,7 +10,7 @@ metadata:
   contractVersion: "1"
 ---
 
-读取（read 工具） OPENSPEC_PATH/openspec-explore/SKILL.md，探索并讨论功能需求，如果建议多提案的时候，多个提案如有先后依赖顺序（注意不要以数字开头），则在提案命名前缀上体现出来。
+读取（read 工具） OPENSPEC_PATH/openspec-explore/SKILL.md，探索并讨论功能需求，如果建议多提案的时候，多个提案如有先后依赖顺序（注意不要以数字开头），则在提案命名前缀上体现出来（两族序数词前缀并存：`one-/two-/…` 与 `first-/second-/…`，供无显式声明时的前缀链推导兜底），**并在后序提案的锚点上写 `requires` 显式声明**（显式声明优先于推导，命名不规范时推导静默失效而声明不失效）。
 
 并且按以下流程调整提案状态：
 **状态步骤：探索结论建议创建提案时，写待创建锚点**
@@ -21,6 +21,16 @@ metadata:
 - 内容：`{ "name": "<slug>", "by": "cosmos-explore", "at": <epoch 毫秒>, "sessionId": $env:DSH_SESSION_ID }`
   （`sessionId` 取当前写入会话 id——与锚点写入同为会话动作，供 Cosmos 把同一探索
   会话的多个锚点归并为一张星胚卡片；环境变量缺失时省略该字段，读取方按无关联处理）
+- 可选依赖声明 `requires`（CONTRACT §3；形状/容错唯一定义点 = cosmos-spec capability
+  `cosmos-proposal-dependency`）：建议**链式多提案**（后序提案依赖前序先执行）时，为后序
+  提案锚点追加
+  `"requires": [{ "slug": "<前置提案 slug>", "state": "executed" }]`
+  （`slug` = 前置提案的同工作区 kebab-case slug；`state` 取
+  `"created" | "reviewed" | "executed"`，执行序依赖建议用 `"executed"`）。无依赖意图的
+  提案 MUST NOT 落该键（存储最小形——缺省由解析面的谱系块前缀链推导兜底）；MUST NOT
+  落盘非法形状（非数组 / 条目非法 / 同 slug 重复；写入方写出前自查，读取方对非法值按
+  无声明容错）；锚点是持久工件，MUST NOT 携带 `OPENSPEC_PATH` 令牌（CONTRACT §9，
+  只写解析后的真实路径或相对路径）。
 - 纪律（CONTRACT §3/§7）：
   - `name` MUST 与文件名（去 `.json`）一致；
   - 文件为 UTF-8 无 BOM 的合法 JSON；

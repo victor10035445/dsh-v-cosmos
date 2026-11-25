@@ -66,6 +66,35 @@ upgrading the plugin.
   message = prompt + `@proposal dir` → optional auto-send → jump or stay per button
   config". The fresh session gets its own draft; existing sessions and drafts are never
   touched.
+- **Impulse queue**: the "＋ Queue" button beside each action bar entry enqueues it into the
+  current constellation's auto-run queue (the snapshot freezes the button config at enqueue
+  time; the precondition is re-validated at launch). Panel rows can be moved up / down /
+  removed, and a **failed residue can be retried** — moved back to the queue head and
+  re-validated at launch. A retry never changes the pause flag: a paused queue resumes only
+  via "Continue", while an unpaused queue advances naturally (launched at once when idle).
+- **Stop-reason disposition** (same table for impulse and warp): an entry's settle decision
+  looks at **why the host stopped the session** (`turn/end`'s `reason.kind`, with error codes
+  from `agent/error` / `turn/end.reason.error`), not just at "the session stopped":
+
+  | Stop reason | Disposition |
+  |---|---|
+  | `completed` | dequeue (impulse) / remove and re-review the target (warp) |
+  | `max-tokens` (output truncated) | auto-continue in the same session ("继续", bounded: 3 consecutive truncations → failed + pause) |
+  | quota-family codes (`QUOTA` / `ACCOUNT_QUOTA` / `ACCOUNT_SIGN_IN_REQUIRED`) | failed + pause (whole queue / warp ignition) + quota notice |
+  | other `error` / `interrupted` / `blocked` / `aborted` (user) | failed + pause (no blind quota retry; user took over) |
+
+  Failed residues carry the reason family (truncation limit / quota / turn error / user stop)
+  in the diagnostic line. A host-disposed session (`aborted` with `disposed`) follows the
+  existing `session-gone` path: failed, **no pause**, queue advances.
+
+  > **Limitations (stated as-is)**: when the stop signal is unavailable (old host without
+  > `session/event`/`agent/error`, or an unavailable event surface) the decision **falls back
+  > to "completed"** — a defensive pause would stall healthy queues; abnormal stops are then
+  > treated as completions (same as before this change) and cold reconcile is the safety net.
+  > Cold-read stop reasons are only available for **live** sessions (host `SessionSummary`
+  > has no such field); the `list()` fallback uses the same "signal missing" fallback. There
+  > is also no reply-content-level success check: a model that ends with a natural-language
+  > question and no pendingInteraction counts as completed.
 - **Info cards**: planet / comet cards carry "Open session" and "Archive session"; embryo
   cards carry "Dismiss embryo"; satellites have no card.
 

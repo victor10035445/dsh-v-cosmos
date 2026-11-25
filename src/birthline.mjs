@@ -1,5 +1,6 @@
 /**
- * 点燃谱系台账纯逻辑单点（add-cosmos-panel-birthline-sort 1.1 / design D1–D6）。
+ * 点燃谱系台账纯逻辑单点（add-cosmos-panel-birthline-sort 1.1 / design D1–D6；
+ * first-add-proposal-dependency-declaration 3.3/3.4 增 `requires` 快照承接）。
  *
  * 独立模块——宿主 index.mjs 消费（持久化 store 接线 / 扫描差分观察 / 骨架投影）、
  * test/birthline-smoke.mjs 冒烟直测。模块**零 node 内建依赖**（对齐 scan.mjs /
@@ -16,12 +17,19 @@
  *
  * 捕获 = **扫描差分**（不依赖 fs.watch 事件顺序）：
  *  1. **sighting 登记**：本帧在册 pending 锚点 upsert 进持久 sighting 映射
- *     `{ slug → { at, sessionId, seenAt } }`（跨重启保配对能力）；
+ *     `{ slug → { at, sessionId, seenAt, requires? } }`（跨重启保配对能力）；
  *  2. **点燃配对**：本帧活跃提案 slug 命中 sighting → 写台账行
- *     `{ slug, embryoAt, embryoSessionId, ignitedMs }` 并消费该 sighting；
+ *     `{ slug, embryoAt, embryoSessionId, ignitedMs, requires? }` 并消费该 sighting；
  *     未命中（手工 `opsx:new` 创建）→ 不写行，面板走 `birthMs` 兜底；
  *  3. **dismiss 天然不误记**：dismiss 带同名提案目录守卫，锚点消失后同名提案永不
  *     出现 → sighting 仅靠 TTL 过期，不产生台账行。
+ *
+ * 依赖声明承接（first-add-proposal-dependency-declaration 3.3/3.4）：锚点可选
+ * `requires`（`[{ slug, state }]`，schema 与容错唯一定义点 = `dep-resolve.mjs`
+ * `normalizeRequires`）。本模块只在**落键与否**上按该容错契约做 syntactic 校验
+ * （缺失/非法 → 不落键，原样不二次校验引用语义——前置是否在册、是否成环归解析面）；
+ * sighting 与台账行同帧捕获、同 slug 覆盖随新快照更新。台账是依赖声明的**唯一持久
+ * 载体**（锚点在 ff 清理步骤即被删除，点燃配对是唯一捕获窗口）。
  *
  * 持久化形状（宿主索引 = 工作区**路径**命名空间，跨工作区同名 slug 互不串扰）：
  *
@@ -36,6 +44,7 @@
  * 容错纪律（spec「台账读取容错」）：损坏 / 缺失 / 解析失败一律按**空台账**兜底，
  * 非法行剔除，SHALL NOT 抛错、SHALL NOT 中断骨架扫描。
  */
+import { normalizeRequires } from "./dep-resolve.mjs";
 
 /** 存储文档版本（与宿主 storage-json 同款「超版本即兜底」语义）。 */
 export const BIRTHLINE_VERSION = 1;
@@ -68,9 +77,11 @@ function optionalSessionId(value) {
 
 /**
  * 台账行校验归一（纯函数）：`slug` 空值、`embryoAt` / `ignitedMs` 非正数 → null
- * （整行剔除，spec「非法行剔除」）；`embryoSessionId` 缺失 / 空值 → null。
+ * （整行剔除，spec「非法行剔除」）；`embryoSessionId` 缺失 / 空值 → null；
+ * `requires` 缺失 / 非法（非数组 / 条目非法 / 同 slug 重复）→ 不落键，合法则原样
+ * 快照（syntactic 校验归 `dep-resolve.normalizeRequires`，本层不二次校验引用语义）。
  * @param {unknown} raw 原始行
- * @returns {{slug: string, embryoAt: number, embryoSessionId: string|null, ignitedMs: number}|null}
+ * @returns {{slug: string, embryoAt: number, embryoSessionId: string|null, ignitedMs: number, requires?: Array<{slug: string, state: string}>}|null}
  */
 export function normalizeLineageRow(raw) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
@@ -78,7 +89,10 @@ export function normalizeLineageRow(raw) {
   const embryoAt = positiveMs(raw.embryoAt);
   const ignitedMs = positiveMs(raw.ignitedMs);
   if (!slug || embryoAt === null || ignitedMs === null) return null;
-  return { slug, embryoAt, embryoSessionId: optionalSessionId(raw.embryoSessionId), ignitedMs };
+  const row = { slug, embryoAt, embryoSessionId: optionalSessionId(raw.embryoSessionId), ignitedMs };
+  const requires = normalizeRequires(raw.requires);
+  if (requires !== null) row.requires = requires;
+  return row;
 }
 
 /**
@@ -106,9 +120,9 @@ export function normalizeLineages(raw) {
 
 /**
  * sighting 行校验归一（纯函数）：`slug` 空值、`at` / `seenAt` 非正数 → null；
- * `sessionId` 缺失 / 空值 → null。
+ * `sessionId` 缺失 / 空值 → null；`requires` 缺失 / 非法 → 不落键（同台账行口径）。
  * @param {unknown} raw 原始行
- * @returns {{slug: string, at: number, sessionId: string|null, seenAt: number}|null}
+ * @returns {{slug: string, at: number, sessionId: string|null, seenAt: number, requires?: Array<{slug: string, state: string}>}|null}
  */
 export function normalizeSightingRow(raw) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
@@ -116,7 +130,10 @@ export function normalizeSightingRow(raw) {
   const at = positiveMs(raw.at);
   const seenAt = positiveMs(raw.seenAt);
   if (!slug || at === null || seenAt === null) return null;
-  return { slug, at, sessionId: optionalSessionId(raw.sessionId), seenAt };
+  const row = { slug, at, sessionId: optionalSessionId(raw.sessionId), seenAt };
+  const requires = normalizeRequires(raw.requires);
+  if (requires !== null) row.requires = requires;
+  return row;
 }
 
 /**
@@ -230,11 +247,12 @@ export function serializeBirthlineDoc(doc, now = Date.now()) {
 }
 
 /**
- * 工作区谱系投影（纯函数，merge 层以 slug 回查的数据源）：
+ * 工作区谱系投影（纯函数，merge 层以 slug 回查的数据源；依赖解析面的台账输入）：
  * 台账缺席 / 工作区无记录 → 空清单（调用方按「无谱系」兜底，SHALL NOT 抛错）。
+ * `requires` 快照仅在行内存在时透传（旧行零迁移、形状最小）。
  * @param {object|null} doc 台账文档
  * @param {unknown} workspacePath 工作区路径（命名空间键）
- * @returns {Array<{slug: string, embryoAt: number, embryoSessionId: string|null, ignitedMs: number}>}
+ * @returns {Array<{slug: string, embryoAt: number, embryoSessionId: string|null, ignitedMs: number, requires?: Array<{slug: string, state: string}>}>}
  */
 export function lineagesOf(doc, workspacePath) {
   const path = typeof workspacePath === "string" ? workspacePath : "";
@@ -243,22 +261,38 @@ export function lineagesOf(doc, workspacePath) {
     ? doc.workspaces[path]
     : null;
   if (!ws || !Array.isArray(ws.lineages)) return [];
-  return ws.lineages.map((row) => ({
-    slug: row.slug,
-    embryoAt: row.embryoAt,
-    embryoSessionId: row.embryoSessionId ?? null,
-    ignitedMs: row.ignitedMs
-  }));
+  return ws.lineages.map((row) => {
+    const projected = {
+      slug: row.slug,
+      embryoAt: row.embryoAt,
+      embryoSessionId: row.embryoSessionId ?? null,
+      ignitedMs: row.ignitedMs
+    };
+    if (Array.isArray(row.requires)) {
+      projected.requires = row.requires.map((item) => ({ slug: item.slug, state: item.state }));
+    }
+    return projected;
+  });
 }
 
-/** 台账行规范签名（变更判定用；值域已归一，逐字段可逆比较）。 */
+/** `requires` 快照比较键（缺失与空数组区分；值域已归一 → 序列化确定性）。 */
+function requiresKeyOf(requires) {
+  return JSON.stringify(requires ?? null);
+}
+
+/** 台账行规范签名（变更判定用；值域已归一，逐字段可逆比较；`requires` 入签名
+ *  → 锚点声明更新可刷新快照并触发落盘）。 */
 function lineageSignature(rows) {
-  return rows.map((row) => [row.slug, row.embryoAt, row.embryoSessionId ?? "", row.ignitedMs].join("\u0001")).join("\u0002");
+  return rows
+    .map((row) => [row.slug, row.embryoAt, row.embryoSessionId ?? "", row.ignitedMs, requiresKeyOf(row.requires)].join("\u0001"))
+    .join("\u0002");
 }
 
-/** sighting 行规范签名（变更判定用）。 */
+/** sighting 行规范签名（变更判定用；`requires` 同口径入签名）。 */
 function sightingSignature(rows) {
-  return rows.map((row) => [row.slug, row.at, row.sessionId ?? "", row.seenAt].join("\u0001")).join("\u0002");
+  return rows
+    .map((row) => [row.slug, row.at, row.sessionId ?? "", row.seenAt, requiresKeyOf(row.requires)].join("\u0001"))
+    .join("\u0002");
 }
 
 /**
@@ -266,11 +300,13 @@ function sightingSignature(rows) {
  * → 返回更新后的**整份台账文档**。宿主每帧装配骨架时逐工作区调用。
  *
  * 语义要点：
- *  - sighting 登记只在本帧锚点取值（`at` / `sessionId`）与既有记录**不同**时刷新
- *    `seenAt`（同值不重写 → 每帧零落盘抖动）；`at` 非正数（旧锚点缺 `at`）不登记
- *    （配对出的台账行会因 `embryoAt` 非法被剔除，不如直接走 `birthMs` 兜底）；
+ *  - sighting 登记只在本帧锚点取值（`at` / `sessionId` / `requires`）与既有记录**不同**
+ *    时刷新 `seenAt`（同值不重写 → 每帧零落盘抖动，但锚点 `requires` 更新可刷新快照）；
+ *    `at` 非正数（旧锚点缺 `at`）不登记（配对出的台账行会因 `embryoAt` 非法被剔除，
+ *    不如直接走 `birthMs` 兜底）；
  *  - 点燃配对 = 本帧活跃提案 slug ∩ sighting（大小写敏感的精确 slug）；命中即写台账行
- *    并以**当前时刻**作 `ignitedMs`，随后消费该 sighting（同一 sighting 只配一次）；
+ *    并以**当前时刻**作 `ignitedMs`，`requires` 快照与谱系字段**同帧**带入（锚点缺失/
+ *    非法该字段 → 行不落该键），随后消费该 sighting（同一 sighting 只配一次）；
  *  - 无 `sessionId` 的 solo 锚点照常登记（配对出 `embryoSessionId: null` 的台账行，
  *    面板按其 slug 自成块）；
  *  - `changed` = 台账行或 sighting 任一有差异（宿主据此落盘）；`lineagesChanged` =
@@ -279,7 +315,7 @@ function sightingSignature(rows) {
  * @param {object|null} doc 当前台账文档
  * @param {object} input
  * @param {unknown} input.workspacePath 工作区路径（命名空间键；空 → 不写、返回原文档）
- * @param {Array<{name?: unknown, at?: unknown, sessionId?: unknown}>} [input.pending]
+ * @param {Array<{name?: unknown, at?: unknown, sessionId?: unknown, requires?: unknown}>} [input.pending]
  *        本帧在册 pending 锚点（scan.mjs 归一后条目）
  * @param {Array<unknown>} [input.activeSlugs] 本帧活跃提案 slug（扫描恒星 id）
  * @param {number} [input.now] 判定时刻（缺省 Date.now()）
@@ -308,20 +344,29 @@ export function observeWorkspaceBirthlines(doc, input = {}) {
      宿主据此把清理结果落盘（陈旧残影不无限累积）。 */
   const beforeSightings = sightingSignature(normalizedSightingRows(current.sightings));
 
-  /* 1) sighting 登记：本帧在册锚点 upsert（同值不刷新 seenAt → 扫码零抖动）。 */
+  /* 1) sighting 登记：本帧在册锚点 upsert（同值不刷新 seenAt → 扫码零抖动；
+        requires 入比较：锚点声明更新可刷新快照）。 */
   const sightingBySlug = new Map(sightings.map((row) => [row.slug, row]));
   for (const anchor of Array.isArray(input.pending) ? input.pending : []) {
     if (!anchor || typeof anchor.name !== "string" || !anchor.name) continue;
     const at = positiveMs(anchor.at);
     if (at === null) continue; // 缺 at 的旧锚点：配对产物必然非法 → 不登记
     const sessionId = optionalSessionId(anchor.sessionId);
+    const requires = normalizeRequires(anchor.requires);
     const existing = sightingBySlug.get(anchor.name);
-    if (existing && existing.at === at && existing.sessionId === sessionId) continue;
-    sightingBySlug.set(anchor.name, { slug: anchor.name, at, sessionId, seenAt: now });
+    if (
+      existing &&
+      existing.at === at &&
+      existing.sessionId === sessionId &&
+      requiresKeyOf(existing.requires) === requiresKeyOf(requires)
+    ) continue;
+    const next = { slug: anchor.name, at, sessionId, seenAt: now };
+    if (requires !== null) next.requires = requires;
+    sightingBySlug.set(anchor.name, next);
   }
   sightings = capSightings([...sightingBySlug.values()]);
 
-  /* 2) 点燃配对：活跃提案 slug ∩ sighting → 台账行 + 消费 sighting。 */
+  /* 2) 点燃配对：活跃提案 slug ∩ sighting → 台账行（requires 快照同帧带入）+ 消费 sighting。 */
   const lineageBySlug = new Map(lineages.map((row) => [row.slug, row]));
   const activeSet = new Set(
     (Array.isArray(input.activeSlugs) ? input.activeSlugs : []).filter((slug) => typeof slug === "string" && slug)
@@ -329,12 +374,16 @@ export function observeWorkspaceBirthlines(doc, input = {}) {
   const consumed = [];
   for (const sighting of sightings) {
     if (!activeSet.has(sighting.slug)) continue;
-    lineageBySlug.set(sighting.slug, {
+    const row = {
       slug: sighting.slug,
       embryoAt: sighting.at,
       embryoSessionId: sighting.sessionId,
       ignitedMs: now
-    });
+    };
+    if (Array.isArray(sighting.requires)) {
+      row.requires = sighting.requires.map((item) => ({ slug: item.slug, state: item.state }));
+    }
+    lineageBySlug.set(sighting.slug, row);
     consumed.push(sighting.slug);
   }
   if (consumed.length > 0) {

@@ -367,6 +367,10 @@ function afterWarpEntry(warp, buttonName) {
   /* 完成收尾：proto 出队（未点燃 slug → 不展开） */
   const status = ctx.listeners.find((record) => record.event === "agent/status");
   status.listener({ agent: { id: "explorer-1" }, status: "running" });
+  /* 停机原因主信号（真实宿主次序：turn/end 先于 idle） */
+  const turnEnd = ctx.listeners.find((record) => record.event === "session/event");
+  assert.ok(turnEnd, "session/event 监听已挂");
+  turnEnd.listener({ id: "explorer-1" }, { type: "turn/end", data: { reason: { kind: "completed" } } });
   status.listener({ agent: { id: "explorer-1" }, status: "idle" });
   await sleep(20);
   const after = await warpOfApi();

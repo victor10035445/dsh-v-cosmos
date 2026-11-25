@@ -29,6 +29,16 @@ const tempDir = (prefix) => {
 };
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
 
+/**
+ * 停机原因主信号：`session/event` 的 `turn/end`（真实宿主次序 = `turn/end` 先于
+ * `agent/status` idle；one-add-cosmos-queue-stop-reason-policy 1.1 实证）。
+ */
+function emitTurnEnd(ctx, sessionId, reason) {
+  const record = ctx.listeners.find((entry) => entry.event === "session/event");
+  assert.ok(record, "session/event 监听已挂");
+  record.listener({ id: sessionId }, { type: "turn/end", data: { reason } });
+}
+
 /* ── 夹具：临时工作区（openspec/changes/{add-a,add-b}） ── */
 const wsRoot = tempDir("dsh-cosmos-qbind-ws-");
 const wsRoot2 = tempDir("dsh-cosmos-qbind-ws2-");
@@ -372,6 +382,7 @@ try {
   assert.equal(gatedSame.body.error, "gate", "失败原因 = gate（无新失败原因族）");
 
   /* 回合跑完 → 完成出队 → 下一条（add-b）推进而不是被误判 prestate-drift 跳过。 */
+  emitTurnEnd(first.ctx, "session-1", { kind: "completed" });
   statusListener.listener({ agent: { id: "session-1" }, status: "idle" });
   await sleep(40);
   const afterIdle = await queueOf();

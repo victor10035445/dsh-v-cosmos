@@ -50,9 +50,10 @@
  * 再含**动作队列投影**（add-cosmos-action-queue 5.1–5.4 / spec cosmos-action-queue
  * 「队列呈现（面板与配套入队钮）」「条目操作矩阵与复验跳过」）：`projectQueuePanel`
  * 把服务端权威队列快照（条目投影无 prompt 正文）投影为面板行数据（徽标 / 锁定 /
- * 排序与移出可用性 / title 文案）；`queueEntryLockedOf` /
- * `queueEntryRemovableOf` / `queueOrderFlagsOf` 为操作矩阵单一来源（前端禁用先行、
- * 服务端 400 兜底，design D6）；`queuePendingKeysOf` 供动作条配套入队钮的「已在队列中」
+ * 排序与移出/重试可用性 / title 文案）；`queueEntryLockedOf` /
+ * `queueEntryRemovableOf` / `queueEntryRetryableOf` / `queueOrderFlagsOf` 为操作矩阵
+ * 单一来源（前端禁用先行、服务端 400 兜底，design D6）；`queuePendingKeysOf` 供动作条
+ * 配套入队钮的「已在队列中」
  * 禁用判定（**仅 queued 命中**——failed/skipped 残留不构成重复，与服务端同口径）；
  * `queueScopeOf` 决定面板作用域（钻取优先 / 选中兜底 / 空队列零布局）——同样零 DOM、
  * 零网络、冒烟直测。
@@ -878,6 +879,7 @@ export const QUEUE_BADGES = Object.freeze({
   launching: Object.freeze({ key: "running", label: "执行中" }),
   executing: Object.freeze({ key: "running", label: "执行中" }),
   waiting: Object.freeze({ key: "waiting", label: "等待决策" }),
+  waitingDependency: Object.freeze({ key: "waiting-dependency", label: "等待依赖" }),
   failed: Object.freeze({ key: "failed", label: "失败" }),
   skipped: Object.freeze({ key: "skipped", label: "跳过" })
 });
@@ -902,14 +904,24 @@ function queueStateOf(entry) {
 }
 
 /**
- * 徽标解析：`executing + subState = "waiting"` → 「等待决策」（琥珀）；其余按 state
- * 取表，未知状态 → 「未知」兜底。
+ * 徽标解析：`executing + subState = "waiting"` → 「等待决策」（琥珀）；
+ * `queued + subState = "waiting-dependency"` → 「等待依赖 <前置提案名>」（依赖未达标，
+ * 第二件提案 second-add-cross-proposal-dependency-gating 3.2；与「等待决策」同族呈现
+ * 子态，不落枚举）；其余按 state 取表，未知状态 → 「未知」兜底。
  * @param {unknown} entry
+ * @param {{dependency: string}|null} [labels] 等待依赖文案覆盖（词典注入；缺省中文）
  * @returns {{key: string, label: string}}
  */
-function queueBadgeOf(entry) {
+function queueBadgeOf(entry, labels = null) {
   const state = queueStateOf(entry);
   if (state === "executing" && entry?.subState === "waiting") return QUEUE_BADGES.waiting;
+  if (state === "queued" && entry?.subState === "waiting-dependency") {
+    const base = labels !== null && typeof labels?.dependency === "string" && labels.dependency
+      ? labels.dependency
+      : QUEUE_BADGES.waitingDependency.label;
+    const dep = typeof entry?.waiting?.dep === "string" ? entry.waiting.dep : "";
+    return { key: QUEUE_BADGES.waitingDependency.key, label: dep ? base + " " + dep : base };
+  }
   return QUEUE_BADGES[state] ?? QUEUE_BADGE_UNKNOWN;
 }
 
@@ -933,6 +945,17 @@ export function queueEntryLockedOf(entry) {
 export function queueEntryRemovableOf(entry) {
   const state = queueStateOf(entry);
   return state === "queued" || state === "failed" || state === "skipped";
+}
+
+/**
+ * 条目可重试判定（spec「条目操作矩阵与复验跳过」/ two-add-cosmos-queue-failed-entry-retry）：
+ * **仅 `failed`** 残留可重试（skipped 不提供重试——复验跳过语义下经入队钮重新排队即可）；
+ * 未知状态不可操作（防御：MUST NOT 放行未知态）。
+ * @param {unknown} entry
+ * @returns {boolean}
+ */
+export function queueEntryRetryableOf(entry) {
+  return queueStateOf(entry) === "failed";
 }
 
 /**
@@ -1084,42 +1107,123 @@ function queueCountsOf(queue, entries) {
 }
 
 /**
- * 失败 / 跳过残留的诊断摘要（`message` 与 `reason` 并置；无信息 → null）。终态残留行
- * 据此给出可见记录（spec「执行时刻复验跳过前进」：留下可见记录）。
- * @param {unknown} entry
+ * 停机分类处置的原因族 → 诊断行文案（one-add-cosmos-queue-stop-reason-policy 6.1）。
+ *
+ * 行内诊断由服务端 `message`（已含事实与错误码）+ 既有 `(reason)` 组成；命中本表的
+ * 原因族追加可读族标签，让「截断耗尽 / 欠费 / 回合错误 / 用户停止」在残留行里一眼可辨。
+ * 客户端可经 `projectQueuePanel({stopLabels})` / `projectWarpPanel({stopLabels})` 注入
+ * 词典文案（zh/en），缺省即本表（与徽标等既有面板文案同口径恒中文）。
+ */
+export const STOP_REASON_LABELS = Object.freeze({
+  "turn-quota": "欠费停机",
+  "turn-error": "回合错误",
+  "turn-aborted": "用户停止",
+  "turn-interrupted": "回合中断",
+  "turn-blocked": "回合阻塞",
+  "turn-max-tokens-exhausted": "截断耗尽"
+});
+
+/**
+ * 停机原因族 → 诊断行文案（`projectQueuePanel` / `projectWarpPanel` 的 `stopLabels` 选项）。
+ */
+function stopLabelsOf(options) {
+  const labels = options?.stopLabels;
+  return labels !== null && typeof labels === "object" ? labels : null;
+}
+
+/**
+ * 依赖等待原因 → 行内诊断文案（second-add-cross-proposal-dependency-gating 3.1/3.2）。
+ *
+ * 原因恒由**依赖提案当前生命周期与其队列条目在册态**实时推导（MUST NOT 新增持久状态）：
+ *  - `repair`：前置条目 failed / skipped → 等修复（`failed → queued` 重试成功或将前置
+ *    手动推进后经同一触发沿唤醒）；
+ *  - 缺失：正常等待前置推进（不附原因）。
+ * 客户端可经 `projectQueuePanel({waitLabels})` / `projectWarpPanel({waitLabels})` 注入
+ * 词典文案（zh / en），`dependency` 键覆盖「等待依赖」徽标前缀。
+ */
+export const WAIT_REASON_LABELS = Object.freeze({
+  repair: "等修复"
+});
+
+/** 等待文案覆盖选择（`waitLabels` 选项；缺省中文基线）。 */
+function waitLabelsOf(options) {
+  const labels = options?.waitLabels;
+  return labels !== null && typeof labels === "object" ? labels : null;
+}
+
+/**
+ * 等待原因文案（缺省基线 + 词典覆盖；`null` = 无原因）。
+ * @param {unknown} reason 原因码（`repair`）
+ * @param {{repair?: string}|null} [labels]
  * @returns {string|null}
  */
-function queueEntryDetailOf(entry) {
+function waitReasonLabelOf(reason, labels = null) {
+  if (typeof reason !== "string" || !reason) return null;
+  const custom = labels !== null && typeof labels === "object" ? labels[reason] : undefined;
+  if (typeof custom === "string" && custom) return custom;
+  const fallback = WAIT_REASON_LABELS[reason];
+  return typeof fallback === "string" && fallback ? fallback : null;
+}
+
+/**
+ * 失败 / 跳过残留的诊断摘要（`message` 与 `reason` 并置；命中停机原因族时追加族标签）。
+ * @param {unknown} entry
+ * @param {Record<string, string>|null} [labels] 原因族文案覆盖（缺省 `STOP_REASON_LABELS`）
+ * @returns {string|null}
+ */
+function queueEntryDetailOf(entry, labels = null) {
   const state = queueStateOf(entry);
   if (state !== "failed" && state !== "skipped") return null;
   const message = typeof entry?.message === "string" ? entry.message.trim() : "";
   const reason = typeof entry?.reason === "string" ? entry.reason.trim() : "";
   const parts = [];
   if (message) parts.push(message);
-  if (reason) parts.push("(" + reason + ")");
+  const family = stopReasonLabelOf(reason, labels);
+  if (reason) parts.push(family === null ? "(" + reason + ")" : "(" + reason + " · " + family + ")");
   return parts.length > 0 ? parts.join(" ") : null;
 }
 
 /**
- * 单行装配（UI 零二次推导）：徽标 / 锁定 / 排序与移出可用性 / 三档 title 文案。
+ * 停机原因族标签查询（`null` = 非停机原因族 / 未提供文案）。
+ * @param {string} reason 条目 `reason` 码
+ * @param {Record<string, string>|null} labels 文案覆盖
+ * @returns {string|null}
+ */
+function stopReasonLabelOf(reason, labels) {
+  if (typeof reason !== "string" || !reason) return null;
+  const table = labels !== null && typeof labels === "object" ? labels : STOP_REASON_LABELS;
+  const label = table?.[reason];
+  return typeof label === "string" && label ? label : null;
+}
+
+/**
+ * 单行装配（UI 零二次推导）：徽标 / 锁定 / 排序与移出/重试可用性 / title 文案
+ * （排序三档 + 移出 + 重试按暂停态双形态）。
  * @param {object} entry 条目投影（无 prompt 正文）
  * @param {number} index 服务端顺序下标
  * @param {Array<object>} entries 全量条目（排序可用性判定用）
  * @param {string} wsId 作用域星座 id
  * @param {number} now 当前时刻（入队相对时间）
+ * @param {boolean} paused 队列暂停态（重试 title 的推进免责语境：暂停态需点继续）
+ * @param {Record<string, string>|null} [stopLabels] 停机原因族文案覆盖
+ * @param {{dependency?: string, repair?: string}|null} [waitLabels] 依赖等待文案覆盖
  * @returns {object}
  */
-function queueRowOf(entry, index, entries, wsId, now) {
+function queueRowOf(entry, index, entries, wsId, now, paused = false, stopLabels = null, waitLabels = null) {
   const id = typeof entry?.id === "string" ? entry.id : "";
   const proposalId = typeof entry?.proposalId === "string" ? entry.proposalId : "";
   const buttonName = typeof entry?.buttonName === "string" ? entry.buttonName : "";
   const state = queueStateOf(entry);
   const subState = typeof entry?.subState === "string" ? entry.subState : null;
-  const badge = queueBadgeOf(entry);
+  const badge = queueBadgeOf(entry, waitLabels);
   const locked = queueEntryLockedOf(entry);
   const flags = queueOrderFlagsOf(entries, index);
   const canRemove = queueEntryRemovableOf(entry);
-  const failedDetail = queueEntryDetailOf(entry);
+  const canRetry = queueEntryRetryableOf(entry);
+  const failedDetail = queueEntryDetailOf(entry, stopLabels);
+  /* 依赖等待子态（3.2）：`waiting.dep` 进徽标文案，等待原因（等修复）进行内诊断与 title。 */
+  const waitingDep = typeof entry?.waiting?.dep === "string" ? entry.waiting.dep : "";
+  const waitingDetail = waitReasonLabelOf(entry?.waiting?.reason, waitLabels);
   const enqueuedAt = Number(entry?.enqueuedAt) || 0;
   /* title 文案三档（禁用态必须解释为什么，spec「executing 条目操作被拒」）：
      锁定 → 执行中不可调整；非 queued → 仅等待中可排序；相邻非 queued → 邻居不可调整；
@@ -1138,10 +1242,18 @@ function queueRowOf(entry, index, entries, wsId, now) {
     : canRemove
       ? "移出队列"
       : "该条目不可移出";
+  /* 重试 title 按暂停态双形态（design D4）：暂停态明示「需点继续恢复推进」（重试不越
+     暂停守卫）；非暂停态自然推进无需免责文案。 */
+  const retryTitle = !canRetry
+    ? "仅失败条目可重试"
+    : paused
+      ? "重试：转回队列队首（队列暂停中，需点继续恢复推进）"
+      : "重试：转回队列队首";
   /* 行 title：状态徽标 + 自动发送标注（spec「队列执行恒自动发送」：条目呈现标注）+
-     残留诊断 + 入队相对时间。 */
+     残留诊断 + 等待依赖原因 + 入队相对时间。 */
   const rowParts = [badge.label, "自动发送"];
   if (failedDetail) rowParts.push(failedDetail);
+  if (waitingDetail) rowParts.push(waitingDetail);
   if (enqueuedAt > 0) rowParts.push("入队 " + relativeTime(enqueuedAt, now));
   return {
     id,
@@ -1155,11 +1267,15 @@ function queueRowOf(entry, index, entries, wsId, now) {
     subState,
     badgeKey: badge.key,
     badgeLabel: badge.label,
+    waitingDep,
+    waitingDetail,
     locked,
     canMoveUp: flags.canMoveUp,
     canMoveDown: flags.canMoveDown,
     canRemove,
     removeTitle,
+    canRetry,
+    retryTitle,
     orderTitle,
     rowTitle: rowParts.join(" · "),
     failedDetail
@@ -1174,6 +1290,10 @@ function queueRowOf(entry, index, entries, wsId, now) {
  *  - `indicator`：存在「等待决策」→ `"waiting"`（琥珀优先，spec「执行指示与状态徽标」）；
  *    否则存在 `executing` / `launching` → `"running"`（呼吸点）；否则 null；
  *  - `counts`：服务端 `counts` 透传（缺键按 entries 现算兜底；`active` = 在途计数）；
+ *  - `nextExecution`：让位扫描将启动的下一 queued 条目（`{proposalId, buttonName}`；
+ *    服务端透传，缺席 / 畸形 → null）——头部「下一执行」指示的数据源；
+ *  - `idle`：**闲置态**（全部 queued 条目依赖未达标、未暂停、无在途）——服务端透传；
+ *    与暂停态正交（暂停标志恒未被自动置位），呈现必须用不同标识区分；
  *  - `rows`：服务端顺序逐条投影（顺序即执行顺序，MUST NOT 二次排序）。
  *
  * @param {object} [options]
@@ -1181,10 +1301,14 @@ function queueRowOf(entry, index, entries, wsId, now) {
  *        亦接受全量快照（`{queues}`）——按 `wsId` 取（防御两种上游形状）
  * @param {string} [options.wsId] 作用域星座 id
  * @param {number} [options.now] 当前时刻（入队相对时间；缺省 Date.now()）
+ * @param {Record<string, string>|null} [options.stopLabels] 停机原因族文案覆盖
+ * @param {{dependency?: string, repair?: string}|null} [options.waitLabels] 依赖等待文案覆盖
  * @returns {{
  *   visible: boolean, wsId: string, paused: boolean,
  *   counts: {total: number, queued: number, launching: number, executing: number, failed: number, skipped: number, active: number},
  *   indicator: "running"|"waiting"|null,
+ *   nextExecution: {proposalId: string, buttonName: string}|null,
+ *   idle: boolean,
  *   rows: Array<object>
  * }}
  */
@@ -1194,7 +1318,9 @@ export function projectQueuePanel(options = {}) {
   const now = Number.isFinite(rawNow) && rawNow > 0 ? rawNow : Date.now();
   const queue = queueQueueOf(options?.queue, wsId);
   const entries = Array.isArray(queue?.entries) ? queue.entries : [];
-  const rows = entries.map((entry, index) => queueRowOf(entry, index, entries, wsId, now));
+  const paused = queue?.paused === true;
+  const waitLabels = waitLabelsOf(options);
+  const rows = entries.map((entry, index) => queueRowOf(entry, index, entries, wsId, now, paused, stopLabelsOf(options), waitLabels));
   const waiting = entries.some((entry) => queueStateOf(entry) === "executing" && entry?.subState === "waiting");
   const running = entries.some((entry) => {
     const state = queueStateOf(entry);
@@ -1203,10 +1329,28 @@ export function projectQueuePanel(options = {}) {
   return {
     visible: entries.length > 0,
     wsId,
-    paused: queue?.paused === true,
+    paused,
     counts: queueCountsOf(queue, entries),
     indicator: waiting ? "waiting" : running ? "running" : null,
+    nextExecution: queueNextExecutionOf(queue),
+    idle: queue?.idle === true,
     rows
+  };
+}
+
+/**
+ * 「下一执行」透传归一（服务端 `nextExecution`；畸形 → null——指示缺失优于错误指示）。
+ * @param {unknown} raw
+ * @returns {{proposalId: string, buttonName: string}|null}
+ */
+function queueNextExecutionOf(queue) {
+  const raw = queue?.nextExecution;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const proposalId = typeof raw.proposalId === "string" ? raw.proposalId : "";
+  if (!proposalId) return null;
+  return {
+    proposalId,
+    buttonName: typeof raw.buttonName === "string" ? raw.buttonName : ""
   };
 }
 
@@ -1235,6 +1379,7 @@ export const WARP_BADGES = Object.freeze({
   executing: Object.freeze({ key: "running", label: "执行中" }),
   waiting: Object.freeze({ key: "waiting", label: "等待决策" }),
   waitingSession: Object.freeze({ key: "waiting-session", label: "等待会话空闲" }),
+  waitingDependency: Object.freeze({ key: "waiting-dependency", label: "等待依赖" }),
   failed: Object.freeze({ key: "failed", label: "失败" }),
   skipped: Object.freeze({ key: "skipped", label: "跳过" })
 });
@@ -1255,11 +1400,22 @@ function warpStateOf(entry) {
   return WARP_STATE_KEYS.includes(state) ? state : "";
 }
 
-/** 徽标解析（executing+waiting → 等待决策；ready+waiting-session → 等待会话空闲）。 */
-function warpBadgeOf(entry) {
+/**
+ * 徽标解析（executing+waiting → 等待决策；ready+waiting-session → 等待会话空闲；
+ * grayed+waiting-dependency → 等待依赖 <前置提案名>，second-add-cross-proposal-dependency-
+ * gating 3.1——与「等待会话空闲」同级呈现子态，不落枚举）。
+ */
+function warpBadgeOf(entry, labels = null) {
   const state = warpStateOf(entry);
   if (state === "executing" && entry?.subState === "waiting") return WARP_BADGES.waiting;
   if (state === "ready" && entry?.subState === "waiting-session") return WARP_BADGES.waitingSession;
+  if (state === "grayed" && entry?.subState === "waiting-dependency") {
+    const base = labels !== null && typeof labels?.dependency === "string" && labels.dependency
+      ? labels.dependency
+      : WARP_BADGES.waitingDependency.label;
+    const dep = typeof entry?.waiting?.dep === "string" ? entry.waiting.dep : "";
+    return { key: WARP_BADGES.waitingDependency.key, label: dep ? base + " " + dep : base };
+  }
   return WARP_BADGES[state] ?? WARP_BADGE_UNKNOWN;
 }
 
@@ -1386,20 +1542,21 @@ function warpCountsOf(warp, entries) {
   return counts;
 }
 
-/** 失败 / 跳过残留诊断摘要（与脉冲同口径）。 */
-function warpEntryDetailOf(entry) {
+/** 失败 / 跳过残留诊断摘要（与脉冲同口径，含停机原因族标签）。 */
+function warpEntryDetailOf(entry, labels = null) {
   const state = warpStateOf(entry);
   if (state !== "failed" && state !== "skipped") return null;
   const message = typeof entry?.message === "string" ? entry.message.trim() : "";
   const reason = typeof entry?.reason === "string" ? entry.reason.trim() : "";
   const parts = [];
   if (message) parts.push(message);
-  if (reason) parts.push("(" + reason + ")");
+  const family = stopReasonLabelOf(reason, labels);
+  if (reason) parts.push(family === null ? "(" + reason + ")" : "(" + reason + " · " + family + ")");
   return parts.length > 0 ? parts.join(" ") : null;
 }
 
 /** 单行装配（UI 零二次推导）。 */
-function warpRowOf(entry, wsId, now) {
+function warpRowOf(entry, wsId, now, stopLabels = null, waitLabels = null) {
   const id = typeof entry?.id === "string" ? entry.id : "";
   const targetKey = typeof entry?.targetKey === "string" ? entry.targetKey : "";
   const targetKind = entry?.targetKind === "embryo" ? "embryo" : "proposal";
@@ -1408,13 +1565,17 @@ function warpRowOf(entry, wsId, now) {
   const rule = entry?.rule === "queue" ? "queue" : "direct";
   const state = warpStateOf(entry);
   const subState = typeof entry?.subState === "string" ? entry.subState : null;
-  const badge = warpBadgeOf(entry);
+  const badge = warpBadgeOf(entry, waitLabels);
   const locked = warpEntryLockedOf(entry);
   const canRemove = warpEntryRemovableOf(entry);
-  const failedDetail = warpEntryDetailOf(entry);
+  const failedDetail = warpEntryDetailOf(entry, stopLabels);
+  /* 依赖等待子态（3.1）：`waiting.dep` 进徽标文案；等待原因（等修复）进 title。 */
+  const waitingDep = typeof entry?.waiting?.dep === "string" ? entry.waiting.dep : "";
+  const waitingDetail = waitReasonLabelOf(entry?.waiting?.reason, waitLabels);
   const enqueuedAt = Number(entry?.enqueuedAt) || 0;
   const rowParts = [badge.label, rule === "queue" ? "转入脉冲队列" : "曲率直航"];
   if (failedDetail) rowParts.push(failedDetail);
+  if (waitingDetail) rowParts.push(waitingDetail);
   if (enqueuedAt > 0) rowParts.push("附着 " + relativeTime(enqueuedAt, now));
   return {
     id,
@@ -1429,6 +1590,8 @@ function warpRowOf(entry, wsId, now) {
     subState,
     badgeKey: badge.key,
     badgeLabel: badge.label,
+    waitingDep,
+    waitingDetail,
     locked,
     canRemove,
     removeTitle: locked ? "执行中条目不可移出" : canRemove ? "移出曲率队列" : "该条目不可移出",
@@ -1446,6 +1609,8 @@ function warpRowOf(entry, wsId, now) {
  * @param {object|null} [options.warp] 单星座曲率队列或全量快照（`{warps}`）
  * @param {string} [options.wsId]
  * @param {number} [options.now]
+ * @param {Record<string, string>|null} [options.stopLabels] 停机原因族文案覆盖
+ * @param {{dependency?: string, repair?: string}|null} [options.waitLabels] 依赖等待文案覆盖
  * @returns {{
  *   visible: boolean, wsId: string, paused: boolean,
  *   counts: {total: number, grayed: number, ready: number, launching: number,
@@ -1460,7 +1625,8 @@ export function projectWarpPanel(options = {}) {
   const now = Number.isFinite(rawNow) && rawNow > 0 ? rawNow : Date.now();
   const warp = warpQueueOf(options?.warp, wsId);
   const entries = Array.isArray(warp?.entries) ? warp.entries : [];
-  const rows = entries.map((entry) => warpRowOf(entry, wsId, now));
+  const waitLabels = waitLabelsOf(options);
+  const rows = entries.map((entry) => warpRowOf(entry, wsId, now, stopLabelsOf(options), waitLabels));
   const waiting = entries.some((entry) => warpStateOf(entry) === "executing" && entry?.subState === "waiting");
   const running = entries.some((entry) => {
     const state = warpStateOf(entry);

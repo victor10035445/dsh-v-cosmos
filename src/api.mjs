@@ -77,8 +77,10 @@ export async function fetchQueue() {
 }
 
 /**
- * 队列操作（入队 / 排序 / 移出 / 清空 / 暂停 / 恢复）。
- * @param {"enqueue"|"reorder"|"remove"|"clear"|"pause"|"resume"} action
+ * 队列操作（入队 / 排序 / 移出 / 清空 / 暂停 / 恢复 / 失败残留重试）。
+ * `retry` = failed 残留转回队首 queued（two-add-cosmos-queue-failed-entry-retry）；
+ * 失败码 `not-failed` / `duplicate` / `limit` / `missing` 由服务端透出。
+ * @param {"enqueue"|"reorder"|"remove"|"clear"|"pause"|"resume"|"retry"} action
  * @param {object} [body]
  * @returns {Promise<{ok: true, [key: string]: unknown} | {ok: false, error: string, reason?: string, message?: string}>}
  */

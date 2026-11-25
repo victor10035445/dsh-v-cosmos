@@ -186,6 +186,17 @@ async function queueOfQueueApi() {
   return state.body.queue;
 }
 
+/** 挂一个 SSE 订阅（帧体收集进模块级 `frames`；`boot` 每次重置）。 */
+async function subscribeEvents() {
+  const sseRes = {
+    writeHead() {},
+    write(chunk) { frames.push(String(chunk)); },
+    end() {},
+    on() {}
+  };
+  await handler({ method: "GET", url: "/api/dsh-v-cosmos/events" }, sseRes);
+}
+
 const dataFrames = () => frames
   .map((line) => line.trim())
   .filter((line) => line.startsWith("data: "))
@@ -193,6 +204,19 @@ const dataFrames = () => frames
 const queueFrameCount = () => dataFrames().filter((frame) => frame.type === "queue-changed").length;
 
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
+
+/**
+ * 停机原因主信号：`session/event` 的 `turn/end`（真实宿主次序 = `turn/end` 先于
+ * `agent/status` idle；one-add-cosmos-queue-stop-reason-policy 1.1 实证）。
+ * @param {object} ctx stub 上下文（`listeners` 记录订阅）
+ * @param {string} sessionId 会话 id
+ * @param {{kind: string, code?: string}} reason 停机原因
+ */
+function emitTurnEnd(ctx, sessionId, reason) {
+  const record = ctx.listeners.find((entry) => entry.event === "session/event");
+  assert.ok(record, "session/event 监听已挂");
+  record.listener({ id: sessionId }, { type: "turn/end", data: { reason } });
+}
 
 /* ── 1. 基础路由与入队复验链 ── */
 {
@@ -418,6 +442,7 @@ const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
   const statusListener = ctx.listeners.find((record) => record.event === "agent/status");
   assert.ok(statusListener, "agent/status 监听已挂");
   statusListener.listener({ agent: { id: "session-new" }, status: "running" });
+  emitTurnEnd(ctx, "session-new", { kind: "completed" });
   statusListener.listener({ agent: { id: "session-new" }, status: "idle" });
   await sleep(20);
   const afterEvents = await queueOfQueueApi();
@@ -540,6 +565,7 @@ const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
   await sleep(5);
   const afterDecision = await queueOfQueueApi();
   assert.equal(afterDecision.queues.ws1.entries.length, 1, "决策后回合未跑完 → 仍在队列");
+  emitTurnEnd(ctx, "session-live", { kind: "completed" });
   statusListener.listener({ agent: { id: "session-live" }, status: "idle" });
   await sleep(20);
   const afterEvents = await queueOfQueueApi();
@@ -559,6 +585,116 @@ const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
   assert.equal(built.payload.title, "队列·B1·add-a", "标题 = 队列·按钮名·提案名");
   assert.equal(built.payload.text, "@" + dir + "\n执行", "消息 = @提案目录 + prompt");
   assert.equal(Array.from(queueTitleOf({ proposalId: "x", button: { name: "y".repeat(500) } })).length, 400, "标题按码点截断 400");
+}
+
+/* ── 7. failed 残留重试端点（two-add-cosmos-queue-failed-entry-retry 2.1 / design D2、D3） ── */
+{
+  const preloaded = (paused, entries) => ({
+    version: QUEUE_VERSION,
+    queues: { ws1: { paused, pausedAt: paused ? 1 : 0, entries } }
+  });
+  const entryOf = (id, state, name, extra = {}) => ({
+    id,
+    wsId: "ws1",
+    proposalId: "add-a",
+    proposalDir: proposalDirPath(wsRoot, "add-a"),
+    button: { name, prompt: "p-" + name },
+    enqueuedAt: 1,
+    state,
+    stateAt: 1,
+    ...extra
+  });
+  const failed = () => entryOf("q-retry", "failed", "RETRY", {
+    reason: "insufficient-balance",
+    message: "欠费",
+    sessionId: "s-old",
+    startedAt: 1
+  });
+  const queuedA = () => entryOf("q-a", "queued", "A");
+  const queuedB = () => entryOf("q-b", "queued", "B");
+
+  /* 7a. 暂停队列：拒绝族 + 转态归队首 + 暂停态不变 + 零投递（kick 为 no-op）+ 广播一次。 */
+  const pausedController = makeSessionController();
+  boot({ preload: preloaded(true, [failed(), queuedA(), queuedB()]), sessionController: pausedController });
+  await subscribeEvents();
+  const framesBefore = queueFrameCount();
+  assert.equal((await postJson("/queue/retry", { wsId: "ws1" })).body.error, "invalid", "缺 entryId → 400 invalid");
+  assert.equal((await postJson("/queue/retry", { wsId: "ws1", entryId: "ghost" })).body.error, "missing", "未知条目 → 400 missing");
+  assert.equal((await postJson("/queue/retry", { wsId: "ws1", entryId: "q-a" })).body.error, "not-failed", "非 failed → 400 not-failed");
+  assert.equal(queueFrameCount(), framesBefore, "拒绝不广播");
+  const retried = await postJson("/queue/retry", { wsId: "ws1", entryId: "q-retry" });
+  assert.equal(retried.status, 200, "重试 200");
+  assert.equal(retried.body.ok, true, "重试 ok:true");
+  assert.equal(retried.body.entry.state, "queued", "响应投影 = queued");
+  assert.equal(retried.body.entry.id, "q-retry", "id 不漂移");
+  assert.equal(retried.body.entry.autoSend, true, "投影标注恒自动发送");
+  assert.equal("prompt" in retried.body.entry, false, "投影不含 prompt 正文");
+  assert.equal("reason" in retried.body.entry, false, "投影无终态记账字段");
+  assert.equal(queueFrameCount(), framesBefore + 1, "重试广播一次 queue-changed");
+  await sleep(20);
+  const pausedSnapshot = await queueOfQueueApi();
+  assert.equal(pausedSnapshot.queues.ws1.paused, true, "重试不改变暂停态");
+  assert.deepEqual(pausedSnapshot.queues.ws1.entries.map((entry) => entry.id), ["q-retry", "q-a", "q-b"], "重试条目归队首");
+  assert.equal(pausedSnapshot.queues.ws1.counts.active, 3, "重试条目重新计入在途");
+  assert.equal(pausedController.calls.length, 0, "暂停队列 → 重试零投递（kick no-op）");
+  /* 落盘：快照原样 / 记账清除 / enqueuedAt 保留。 */
+  const stored = JSON.parse(readFileSync(join(process.env.DSH_HOME, "storages", "dsh-v-cosmos.queues.json"), "utf8"));
+  const storedRetry = stored.queues.ws1.entries[0];
+  assert.equal(storedRetry.state, "queued", "落盘转态 queued");
+  assert.equal(storedRetry.enqueuedAt, 1, "落盘 enqueuedAt 保留原值");
+  assert.equal(storedRetry.button.name, "RETRY", "落盘快照原样");
+  assert.equal(storedRetry.proposalDir, proposalDirPath(wsRoot, "add-a"), "落盘 proposalDir 原样");
+  for (const key of ["reason", "message", "sessionId", "startedAt"]) {
+    assert.equal(key in storedRetry, false, "落盘清除记账字段：" + key);
+  }
+
+  /* 7b. 判重：同组合已有 queued → duplicate，failed 残留保持不变。 */
+  boot({ preload: preloaded(true, [failed(), entryOf("q-dup", "queued", "RETRY")]) });
+  const duplicate = await postJson("/queue/retry", { wsId: "ws1", entryId: "q-retry" });
+  assert.equal(duplicate.status, 400, "判重 400");
+  assert.equal(duplicate.body.error, "duplicate", "判重 error=duplicate");
+  const duplicateSnapshot = await queueOfQueueApi();
+  assert.equal(duplicateSnapshot.queues.ws1.entries[0].state, "failed", "failed 残留保持不变");
+  assert.equal(duplicateSnapshot.queues.ws1.counts.active, 1, "判重不产生新在途条目");
+
+  /* 7c. 超限：32 在途 + failed 残留 → limit。 */
+  const saturated = Array.from({ length: 32 }, (_, index) => entryOf(`q-s-${index}`, "queued", `S${index}`));
+  boot({ preload: preloaded(true, [...saturated, failed()]) });
+  const limit = await postJson("/queue/retry", { wsId: "ws1", entryId: "q-retry" });
+  assert.equal(limit.status, 400, "超限 400");
+  assert.equal(limit.body.error, "limit", "超限 error=limit");
+
+  /* 7d. 非暂停空闲队列：重试即启动（占位 launching 后投递），无需后续操作。 */
+  const idleController = makeSessionController({ sessionId: "session-retry" });
+  boot({ preload: preloaded(false, [failed()]), sessionController: idleController });
+  await sleep(20);
+  assert.equal((await queueOfQueueApi()).queues.ws1.entries[0].state, "failed", "仅 failed 残留时启动无推进（无 queued 可取）");
+  const started = await postJson("/queue/retry", { wsId: "ws1", entryId: "q-retry" });
+  assert.equal(started.status, 200, "非暂停队列重试 200");
+  await sleep(30);
+  const afterRetry = await queueOfQueueApi();
+  assert.equal(afterRetry.queues.ws1.entries[0].state, "executing", "非暂停空闲队列 → 重试立即启动");
+  assert.equal(afterRetry.queues.ws1.entries[0].sessionId, "session-retry", "条目回填 sessionId");
+  assert.deepEqual(
+    idleController.calls.map((call) => call.method),
+    ["create", "rename", "prompt"],
+    "重试推进走与入队同语义的投递链（快照无模型 → 跳过 selectModel）"
+  );
+  assert.equal(afterRetry.queues.ws1.paused, false, "启动不改暂停态");
+
+  /* 7e. 共存：重试转回条目可移出、可被清空（与普通 queued 同语义）。 */
+  boot({ preload: preloaded(true, [failed(), queuedA()]) });
+  assert.equal((await postJson("/queue/retry", { wsId: "ws1", entryId: "q-retry" })).status, 200, "重试 200");
+  assert.equal((await postJson("/queue/remove", { wsId: "ws1", entryId: "q-retry" })).status, 200, "重试转回条目可移出");
+  const afterRemove = await queueOfQueueApi();
+  assert.deepEqual(afterRemove.queues.ws1.entries.map((entry) => entry.id), ["q-a"], "移出后仅余既有 queued");
+
+  boot({ preload: preloaded(true, [failed(), queuedA()]) });
+  assert.equal((await postJson("/queue/retry", { wsId: "ws1", entryId: "q-retry" })).status, 200, "重试 200（二次装配）");
+  const cleared = await postJson("/queue/clear", { wsId: "ws1" });
+  assert.equal(cleared.body.removed, 2, "清空包含重试转回条目");
+  const afterClear = await queueOfQueueApi();
+  assert.deepEqual(afterClear.queues.ws1.entries, [], "清空后无条目");
 }
 
 /* ── 收尾：注销工作区并拉一次 scene 摘除 fs.watch（Windows 删除监视目录安全） ── */

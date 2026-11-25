@@ -22,13 +22,31 @@
  *    零跟踪；脉冲在途满 → 保持 ready 下轮重试；复验不过 → skipped。
  *  - **proto 安静投递**：星胚目标的 proto 条目执行前要求探索会话活动计数归零；否则保持
  *    ready「等待会话空闲」子态（呈现子态由 `activityOf` 派生，不落枚举）。
- *  - **完成判定**（与脉冲同口径）：投递成功 → 见过 running → running=false ∧ 无 pendingInteraction
- *    → 出队 + 触发目标复查（星胚 proto 收尾先展开）。首忙窗内从未 running → failed。
+ *  - **完成判定（状态 + 停机原因双口径，与脉冲同表）**：投递成功 → 见过 running →
+ *    running=false ∧ 无 pendingInteraction ∧ **最近停机原因**按 `STOP_KIND_POLICY` 处置：
+ *    `completed`（及信号缺失兜底）→ 出队 + 触发目标复查（星胚 proto 收尾先展开）；
+ *    `max-tokens` → 同会话自动补投「继续」续跑（有界，耗尽 → failed 残留）；
+ *    `error`（欠费族额外暂停点火）/ `aborted` / `interrupted` / `blocked` → failed 残留
+ *    （失败收尾同样触发目标复查）。首忙窗内从未 running → failed。
+ *
+ * 停机原因数据面：**共享会话态缓存**（脉冲调度器的 `sessionStateOf`，含 `stopKind/stopCode/
+ * stopCause`；曲率只读，零第二份缓存、零第二订阅面 —— design D2）。策略表与欠费码表直接
+ * 复用脉冲调度器模块的常量导出（「曲率策略与脉冲同表」，design D6）。
  *
  * 事件面（宿主 agent 作用域）由调用方（index.mjs）转发：`onAgentStatus` /
  * `onInteractionExit`（`interactionEnter` 只进共享会话态缓存、曲率无需接收：`waiting`
  * 从共享读面取）。事件先于投递返回到达也安全：读取注入的共享会话态缓存回填。
  */
+
+import {
+  STOP_TRUNCATION_LIMIT,
+  STOP_KIND_FALLBACK,
+  STOP_KIND_POLICY,
+  STOP_QUOTA_CODES,
+  STOP_REASONS,
+  STOP_SIGNAL_GRACE_MS
+} from "./queue-scheduler.mjs";
+import { DEPENDENCY_DRIFT_REASON } from "./dep-gate.mjs";
 
 /** 每星座曲率并发上限（design D6：对齐引擎 fx 队列 P1 前例；实施期可调常量）。 */
 export const WARP_CONCURRENCY_LIMIT = 3;
@@ -57,8 +75,12 @@ export const WARP_COLD_READ_MAX_ATTEMPTS = 20;
  * @param {(entry: object) => boolean} [options.explorerBusy] proto 安静门（探索会话活动计数 > 0）
  * @param {(sessionId: string) => Promise<{ok: true, running: boolean, waiting: boolean|number} |
  *        {ok: false, gone: true} | {ok: false, error: string}>} options.readSession 重启冷读
- * @param {(sessionId: string) => ({running: boolean, sawRunning: boolean, waiting: number}|null)} options.readSessionState
+ * @param {(sessionId: string) => ({running: boolean, sawRunning: boolean, waiting: number,
+ *        stopKind?: string|null, stopCode?: string|null, stopCause?: string|null}|null)} options.readSessionState
  *        共享会话态缓存读面（脉冲调度器 `sessionStateOf`；**唯一数据面**，不建第二份缓存）
+ * @param {(input: {sessionId: string, entry?: object}) => Promise<{ok: true} |
+ *        {ok: false, reason: string, message?: string}>} [options.resume]
+ *        同会话续跑补投（截断自动续跑；缺省 = 无续跑通道 → 按续跑耗尽处置）
  * @param {(sessionId: string) => boolean} [options.isArchived] 归档判定（缺省恒 false）
  * @param {() => void} [options.onChange] 曲率变更后的通知（index.mjs 广播 warp-changed）
  * @param {(message: string, isError?: boolean) => void} [options.notify] toast 面
@@ -70,6 +92,8 @@ export const WARP_COLD_READ_MAX_ATTEMPTS = 20;
  * @param {number} [options.firstBusyWindowMs]
  * @param {number} [options.coldRetryMs]
  * @param {number} [options.coldReadMaxAttempts]
+ * @param {number} [options.truncationLimit]
+ * @param {number} [options.stopGraceMs]
  * @returns {object} 调度器句柄
  */
 export function createWarpScheduler(options = {}) {
@@ -77,6 +101,7 @@ export function createWarpScheduler(options = {}) {
   const gate = typeof options.gate === "function" ? options.gate : () => ({ ok: true });
   const deliver = options.deliver;
   const transfer = options.transfer;
+  const resume = typeof options.resume === "function" ? options.resume : null;
   const expand = typeof options.expand === "function" ? options.expand : async () => null;
   const explorerBusy = typeof options.explorerBusy === "function" ? options.explorerBusy : () => false;
   const readSession = options.readSession;
@@ -100,6 +125,12 @@ export function createWarpScheduler(options = {}) {
   const coldReadMaxAttempts = Number.isInteger(options.coldReadMaxAttempts) && options.coldReadMaxAttempts > 0
     ? options.coldReadMaxAttempts
     : WARP_COLD_READ_MAX_ATTEMPTS;
+  const truncationLimit = Number.isInteger(options.truncationLimit) && options.truncationLimit >= 0
+    ? options.truncationLimit
+    : STOP_TRUNCATION_LIMIT;
+  const stopGraceMs = Number.isFinite(options.stopGraceMs) && options.stopGraceMs >= 0
+    ? options.stopGraceMs
+    : STOP_SIGNAL_GRACE_MS;
 
   /** entryId → 运行态（投递后建立；出队/失败时销毁）。 */
   const runtimes = new Map();
@@ -153,6 +184,7 @@ export function createWarpScheduler(options = {}) {
     if (runtime === undefined) return;
     cancelTimer(runtime.busyTimer);
     cancelTimer(runtime.retryTimer);
+    cancelTimer(runtime.graceTimer);
     if (typeof runtime.sessionId === "string" && boundEntries.get(runtime.sessionId) === entryId) {
       boundEntries.delete(runtime.sessionId);
     }
@@ -164,6 +196,38 @@ export function createWarpScheduler(options = {}) {
     const result = store.patch({ wsId, entryId, patch, now: now() });
     onChange();
     return result;
+  };
+
+  /**
+   * 首忙 / 续跑等待窗：窗内会话从未进入运行态 → 投递异常 failed（残留）+ 复查。
+   * @param {string} wsId
+   * @param {object} entry
+   * @param {object} runtime
+   * @param {boolean} [continuation] 续跑窗（文案区分；design D5 实现要点要求显式重武装）
+   */
+  const armBusyWindow = (wsId, entry, runtime, continuation = false) => {
+    cancelTimer(runtime.busyTimer);
+    runtime.busyTimer = null;
+    const sessionId = runtime.sessionId;
+    const minutes = Math.round(firstBusyWindowMs / 60000);
+    runtime.busyTimer = armTimer(() => {
+      runtime.busyTimer = null;
+      if (disposed) return;
+      const latest = store.find(wsId, entry.id);
+      if (!latest || latest.state !== "executing") return;
+      const cached = sharedStateOf(sessionId);
+      if (cached !== null && cached.sawRunning === true) return;
+      finishEntry(wsId, entry.id, {
+        state: "failed",
+        reason: "busy-timeout",
+        message: continuation
+          ? `续跑补投后 ${minutes} 分钟内会话未重新进入运行态（续跑被吞）`
+          : `投递后 ${minutes} 分钟内会话未进入运行态（投递异常）`
+      });
+      notify(continuation ? "曲率：续跑补投未生效（会话未重新运行）" : "曲率：投递异常（会话未进入运行态）", true);
+      reviewTarget(wsId, latest.targetKey);
+      schedule(wsId);
+    }, firstBusyWindowMs);
   };
 
   /**
@@ -188,35 +252,22 @@ export function createWarpScheduler(options = {}) {
       waiting: waitingOf(shared),
       busyTimer: null,
       retryTimer: null,
-      coldAttempts: 0
+      graceTimer: null,
+      coldAttempts: 0,
+      truncations: 0,
+      coldSettle: false,
+      stopKind: "",
+      stopCode: "",
+      stopCause: ""
     };
     runtimes.set(entry.id, runtime);
     boundEntries.set(sessionId, entry.id);
-    if (runtime.sawRunning) {
-      maybeComplete(wsId, entry);
-      return;
-    }
-    runtime.busyTimer = armTimer(() => {
-      runtime.busyTimer = null;
-      if (disposed) return;
-      const latest = store.find(wsId, entry.id);
-      if (!latest || latest.state !== "executing") return;
-      const cached = sharedStateOf(sessionId);
-      if (cached !== null && cached.sawRunning === true) return;
-      finishEntry(wsId, entry.id, {
-        state: "failed",
-        reason: "busy-timeout",
-        message: `投递后 ${Math.round(firstBusyWindowMs / 60000)} 分钟内会话未进入运行态（投递异常）`
-      });
-      notify("曲率：投递异常（会话未进入运行态）", true);
-      reviewTarget(wsId, latest.targetKey);
-      schedule(wsId);
-    }, firstBusyWindowMs);
+    if (!runtime.sawRunning) armBusyWindow(wsId, entry, runtime, false);
   };
 
   /* ── 完成判定 ── */
 
-  const maybeComplete = (wsId, entry) => {
+  const maybeComplete = (wsId, entry, flags = {}) => {
     if (disposed) return;
     const runtime = runtimeOf(entry.id);
     if (runtime === null) return;
@@ -229,7 +280,198 @@ export function createWarpScheduler(options = {}) {
     runtime.waiting = waiting;
     if (running) return;
     if (waiting > 0) return;
-    completeEntry(wsId, entry.id);
+    const stop = stopReasonOf(state, runtime);
+    if (stop === null) {
+      /* 冷读恢复的终态条目不会再有 `turn/end`（回合在重启前已收尾）→ 直接兜底；
+         活体路径推迟等 `turn/end`（`agent/status` idle 可能先到）。 */
+      if (flags.cold === true || runtime.coldSettle === true) {
+        runtime.coldSettle = false;
+        applyStopPolicy(wsId, entry, null);
+        return;
+      }
+      armStopGrace(wsId, entry, runtime);
+      return;
+    }
+    cancelTimer(runtime.graceTimer);
+    runtime.graceTimer = null;
+    applyStopPolicy(wsId, entry, stop);
+  };
+
+  /**
+   * 停机原因读数：共享缓存优先（本调度器不写它）；冷读携带的原因回落 runtime。
+   * @param {object|null} state 共享缓存态
+   * @param {object} runtime 条目运行态
+   * @returns {{kind: string, code: string, cause: string}|null}
+   */
+  const stopReasonOf = (state, runtime) => {
+    if (state !== null && typeof state?.stopKind === "string" && state.stopKind) {
+      return {
+        kind: state.stopKind,
+        code: typeof state.stopCode === "string" ? state.stopCode : "",
+        cause: typeof state.stopCause === "string" ? state.stopCause : ""
+      };
+    }
+    if (typeof runtime?.stopKind === "string" && runtime.stopKind) {
+      return { kind: runtime.stopKind, code: runtime.stopCode || "", cause: runtime.stopCause || "" };
+    }
+    return null;
+  };
+
+  /** 清 runtime 携带的停机原因（处置已消费）。 */
+  const clearRuntimeStop = (runtime) => {
+    if (runtime === null || runtime === undefined) return;
+    runtime.stopKind = "";
+    runtime.stopCode = "";
+    runtime.stopCause = "";
+  };
+
+  /**
+   * 推迟窗（与脉冲同款）：`agent/status` idle 先到时不立即兜底判完成，等 `turn/end` 写入；
+   * 窗内仍缺席（老宿主/事件面不可用）→ 兜底完成（零回归）。
+   */
+  const armStopGrace = (wsId, entry, runtime) => {
+    if (runtime.graceTimer !== null && runtime.graceTimer !== undefined) return;
+    runtime.graceTimer = armTimer(() => {
+      runtime.graceTimer = null;
+      if (disposed) return;
+      const latest = store.find(wsId, entry.id);
+      if (!latest || latest.state !== "executing") return;
+      const state = sharedStateOf(runtime.sessionId);
+      if (stopReasonOf(state, runtime) !== null) {
+        maybeComplete(wsId, latest);
+        return;
+      }
+      applyStopPolicy(wsId, latest, null);
+    }, stopGraceMs);
+  };
+
+  /**
+   * 停机分类处置（策略表落地，与脉冲同表）：完成出队 / 截断续跑 / failed 残留（+ 欠费暂停点火）。
+   * @param {string} wsId
+   * @param {object} entry
+   * @param {{kind: string, code: string, cause: string}|null} stop 停机原因（null = 信号缺失）
+   */
+  const applyStopPolicy = (wsId, entry, stop) => {
+    if (disposed) return;
+    const policy = stop === null
+      ? STOP_KIND_FALLBACK
+      : (STOP_KIND_POLICY[stop.kind] ?? STOP_KIND_FALLBACK);
+    const runtime = runtimeOf(entry.id);
+    if (policy === "complete") {
+      clearRuntimeStop(runtime);
+      completeEntry(wsId, entry.id);
+      return;
+    }
+    if (policy === "continue") {
+      void continueEntry(wsId, entry, stop);
+      return;
+    }
+    const verdict = stopFailureOf(stop);
+    const targetKey = entry.targetKey;
+    clearRuntimeStop(runtime);
+    finishEntry(wsId, entry.id, { state: "failed", reason: verdict.reason, message: verdict.message });
+    notify(`曲率：${verdict.message}`, true);
+    if (verdict.pauseIgnition) {
+      /* 欠费族：暂停曲率点火推进（与手动暂停同语义，只挡点火；复查/点亮照常）。 */
+      store.setPaused({ wsId, paused: true, now: now() });
+      onChange();
+    }
+    /* 失败收尾同样触发目标复查（spec：failed/skipped 残留的任务结束触发复查）。 */
+    reviewTarget(wsId, targetKey);
+    schedule(wsId);
+  };
+
+  /**
+   * 停机原因 → failed 收尾口径（reason 码 + 说明 + 是否暂停曲率点火）。
+   * 与脉冲同源文案，曲率侧只多「暂停点火」维度。
+   */
+  const stopFailureOf = (stop) => {
+    if (stop === null) {
+      return { reason: STOP_REASONS.error, message: "会话以未知停机原因结束，已标失败残留", pauseIgnition: false };
+    }
+    const codeSuffix = stop.code ? `（错误码 ${stop.code}）` : "";
+    if (stop.kind === "max-tokens") {
+      return {
+        reason: STOP_REASONS.exhausted,
+        message: `连续 ${truncationLimit} 次输出截断（自动续跑已耗尽）`,
+        pauseIgnition: false
+      };
+    }
+    if (stop.kind === "error") {
+      if (typeof stop.code === "string" && STOP_QUOTA_CODES.includes(stop.code)) {
+        return {
+          reason: STOP_REASONS.quota,
+          message: `会话因欠费停机${codeSuffix}（曲率点火已暂停，欠费不盲目重试）`,
+          pauseIgnition: true
+        };
+      }
+      return { reason: STOP_REASONS.error, message: `会话回合以错误结束${codeSuffix}`, pauseIgnition: false };
+    }
+    if (stop.kind === "aborted") {
+      if (stop.cause === "disposed") {
+        return { reason: "session-gone", message: "会话已被宿主释放（disposed）", pauseIgnition: false };
+      }
+      return { reason: STOP_REASONS.aborted, message: "会话回合被用户中止（用户接管）", pauseIgnition: false };
+    }
+    if (stop.kind === "interrupted") {
+      return { reason: STOP_REASONS.interrupted, message: "会话回合中断（进程重启残留）", pauseIgnition: false };
+    }
+    if (stop.kind === "blocked") {
+      return { reason: STOP_REASONS.blocked, message: "会话回合被阻塞（未进入执行）", pauseIgnition: false };
+    }
+    return {
+      reason: STOP_REASONS.error,
+      message: `会话以未知停机原因结束（${stop.kind}）${codeSuffix}`,
+      pauseIgnition: false
+    };
+  };
+
+  /**
+   * 截断自动续跑（与脉冲同款，design D6）：同会话补投「继续」，有界；补投成功后**显式
+   * 重武装**续跑等待窗（`bindRuntime` 只在未见过 running 时武装首忙定时器）。
+   * @param {string} wsId
+   * @param {object} entry
+   * @param {{kind: string, code: string, cause: string}} stop
+   */
+  const continueEntry = async (wsId, entry, stop) => {
+    if (disposed) return;
+    const runtime = runtimeOf(entry.id);
+    if (runtime === null) return;
+    runtime.truncations = (Number.isInteger(runtime.truncations) ? runtime.truncations : 0) + 1;
+    clearRuntimeStop(runtime);
+    if (runtime.truncations >= truncationLimit || resume === null) {
+      const verdict = resume === null
+        ? { reason: STOP_REASONS.exhausted, message: "未注入续跑补投通道（resume），无法自动续跑" }
+        : stopFailureOf({ kind: "max-tokens", code: "", cause: "" });
+      finishEntry(wsId, entry.id, { state: "failed", reason: verdict.reason, message: verdict.message });
+      notify(`曲率：${verdict.message}`, true);
+      reviewTarget(wsId, entry.targetKey);
+      schedule(wsId);
+      return;
+    }
+    const sessionId = runtime.sessionId;
+    let result;
+    try {
+      result = await resume({ sessionId, entry, attempt: runtime.truncations });
+    } catch (error) {
+      result = { ok: false, reason: "delivery-failed", message: String(error?.message || error) };
+    }
+    if (disposed) return;
+    const latest = store.find(wsId, entry.id);
+    if (!latest || latest.state !== "executing") return;
+    if (result?.ok !== true) {
+      const reason = typeof result?.reason === "string" && result.reason ? result.reason : "delivery-failed";
+      const detail = typeof result?.message === "string" && result.message ? result.message : "会话服务不可用";
+      finishEntry(wsId, entry.id, { state: "failed", reason, message: `续跑补投失败（${detail}）` });
+      notify(`曲率：续跑补投失败（${detail}）`, true);
+      reviewTarget(wsId, latest.targetKey);
+      schedule(wsId);
+      return;
+    }
+    /* 补投落定：新回合尚未开始 → 重置归属记账并重武装续跑窗（防补投被吞后永久 executing）。 */
+    runtime.sawRunning = false;
+    runtime.waiting = 0;
+    armBusyWindow(wsId, latest, runtime, true);
   };
 
   const completeEntry = (wsId, entryId) => {
@@ -347,10 +589,16 @@ export function createWarpScheduler(options = {}) {
     const current = store.find(wsId, entry.id);
     if (!current || current.state !== "launching") return;
     if (verdict.ok !== true) {
+      const skipReason = typeof verdict.reason === "string" && verdict.reason ? verdict.reason : "prestate-drift";
+      /* 依赖未达标（防御性复验，second-add-cross-proposal-dependency-gating 1.5）：
+         与前置状态漂移同走 skipped 残留，但透出依赖原因（spec「点火复验依赖未达标
+         防御跳过」）。 */
       finishEntry(wsId, entry.id, {
         state: "skipped",
-        reason: typeof verdict.reason === "string" && verdict.reason ? verdict.reason : "prestate-drift",
-        message: "前置状态已变化，已跳过该条目"
+        reason: skipReason,
+        message: skipReason === DEPENDENCY_DRIFT_REASON
+          ? "依赖未达标（防御性复验），已跳过该条目"
+          : "前置状态已变化，已跳过该条目"
       });
       reviewTarget(wsId, current.targetKey);
       schedule(wsId);
@@ -394,10 +642,13 @@ export function createWarpScheduler(options = {}) {
     if (!current || current.state !== "ready") return;
     const verdict = verdictOf(current);
     if (verdict.ok !== true) {
+      const skipReason = typeof verdict.reason === "string" && verdict.reason ? verdict.reason : "prestate-drift";
       finishEntry(wsId, entry.id, {
         state: "skipped",
-        reason: typeof verdict.reason === "string" && verdict.reason ? verdict.reason : "prestate-drift",
-        message: "前置状态已变化，已跳过该条目（未转入脉冲队列）"
+        reason: skipReason,
+        message: skipReason === DEPENDENCY_DRIFT_REASON
+          ? "转投复验不过（依赖未达标，防御性），未转入脉冲队列"
+          : "前置状态已变化，已跳过该条目（未转入脉冲队列）"
       });
       reviewTarget(wsId, current.targetKey);
       schedule(wsId);
@@ -431,6 +682,7 @@ export function createWarpScheduler(options = {}) {
     if (
       reason === "gate"
       || reason === "prestate-drift"
+      || reason === DEPENDENCY_DRIFT_REASON
       || reason === "proposal/unknown"
       || reason === "workspace/unknown"
       || reason === "button/unknown"
@@ -438,7 +690,9 @@ export function createWarpScheduler(options = {}) {
       finishEntry(wsId, entry.id, {
         state: "skipped",
         reason,
-        message: "转投复验不过（提案已不在快照前置状态），未转入脉冲队列"
+        message: reason === DEPENDENCY_DRIFT_REASON
+          ? "转投复验不过（依赖未达标，防御性），未转入脉冲队列"
+          : "转投复验不过（提案已不在快照前置状态），未转入脉冲队列"
       });
       reviewTarget(wsId, latest.targetKey);
       schedule(wsId);
@@ -506,8 +760,11 @@ export function createWarpScheduler(options = {}) {
     const running = input?.status !== "idle";
     if (running) {
       runtime.sawRunning = true;
+      runtime.coldSettle = false;
       cancelTimer(runtime.busyTimer);
       runtime.busyTimer = null;
+      cancelTimer(runtime.graceTimer);
+      runtime.graceTimer = null;
       runtime.waiting = waitingOf(sharedStateOf(sessionId));
       return;
     }
@@ -523,6 +780,45 @@ export function createWarpScheduler(options = {}) {
     if (!runtime) return;
     const entry = store.find(runtime.wsId, entryId);
     if (entry) maybeComplete(runtime.wsId, entry);
+  };
+
+  /**
+   * 宿主 `agent/error` 转发（欠费族**错误码补齐修正**，spec「停机分类处置与截断自动续跑」）：
+   * `turn/end` 先到时曲率条目已按「回合错误」失败残留，后到的欠费码须改判并**暂停点火**
+   * （否则欠费会在后续接力里继续逐条点火）。收尾后 runtime/boundEntries 已销毁，只能经
+   * 存储按会话 id 找回该残留（每条条目绑定单一会话）。
+   * @param {string} sessionId
+   * @param {unknown} error 抛出的错误对象（`LlmError` 实例；`.code` / `.failure.code`）
+   */
+  const onAgentError = (sessionId, error) => {
+    const id = typeof sessionId === "string" ? sessionId : "";
+    if (!id) return;
+    const code = errorCodeOf(error);
+    if (!code || !STOP_QUOTA_CODES.includes(code)) return;
+    for (const wsId of Object.keys(store.doc?.warps ?? {})) {
+      for (const entry of store.warp(wsId).entries) {
+        if (entry?.sessionId !== id) continue;
+        if (entry.state !== "failed" || entry.reason !== STOP_REASONS.error) continue;
+        const message = `会话因欠费停机（错误码 ${code}）（曲率点火已暂停，欠费不盲目重试）`;
+        store.patch({ wsId, entryId: entry.id, patch: { reason: STOP_REASONS.quota, message }, now: now() });
+        onChange();
+        notify(`曲率：${message}`, true);
+        if (store.warp(wsId).paused !== true) {
+          store.setPaused({ wsId, paused: true, now: now() });
+          onChange();
+        }
+        return;
+      }
+    }
+  };
+
+  /** `LlmError` 错误码读取（实例 / 序列化失败事实两种形态都认）。 */
+  const errorCodeOf = (error) => {
+    if (error === null || typeof error !== "object") return "";
+    if (typeof error.code === "string" && error.code) return error.code;
+    const failure = error.failure;
+    if (failure !== null && typeof failure === "object" && typeof failure.code === "string") return failure.code;
+    return "";
   };
 
   /**
@@ -597,14 +893,23 @@ export function createWarpScheduler(options = {}) {
         waiting: waitingOf(read),
         busyTimer: null,
         retryTimer: null,
-        coldAttempts: 0
+        graceTimer: null,
+        coldAttempts: 0,
+        truncations: 0,
+        coldSettle: false,
+        /* 冷读携带的停机原因（曲率不写共享缓存：脉冲调度器是唯一写者）。 */
+        stopKind: typeof read.stopKind === "string" ? read.stopKind : "",
+        stopCode: typeof read.stopCode === "string" ? read.stopCode : "",
+        stopCause: typeof read.stopCause === "string" ? read.stopCause : ""
       };
       runtimes.set(entry.id, runtime);
       boundEntries.set(sessionId, entry.id);
-      /* 仍在 running → 续监视（等后续 agent/status 收尾）；已达终态 → 完成判定收敛。 */
+      /* 仍在 running → 续监视（等后续 agent/status 收尾）；已达终态 → 按策略表收敛。 */
       if (running) return;
+      /* 冷读判定「已达终态」：该回合的 `turn/end` 不会再来 → 允许一次即时兜底收敛。 */
+      runtime.coldSettle = true;
       const latest = store.find(wsId, entry.id);
-      if (latest) maybeComplete(wsId, latest);
+      if (latest) maybeComplete(wsId, latest, { cold: true });
       return;
     }
     if (read?.gone === true) {
@@ -623,7 +928,7 @@ export function createWarpScheduler(options = {}) {
     }
     warn(`重启对账冷读失败（条目保持执行中，稍后重试）: ${String(read?.error || "unknown")}`);
     const runtime = existing ?? {
-      wsId, entryId: entry.id, sessionId, sawRunning: false, waiting: 0, busyTimer: null, retryTimer: null, coldAttempts: 0
+      wsId, entryId: entry.id, sessionId, sawRunning: false, waiting: 0, busyTimer: null, retryTimer: null, graceTimer: null, coldAttempts: 0, truncations: 0, stopKind: "", stopCode: "", stopCause: ""
     };
     runtime.coldAttempts = attempts;
     runtimes.set(entry.id, runtime);
@@ -693,6 +998,7 @@ export function createWarpScheduler(options = {}) {
     /** 点火调度（暂停恢复 / 变更后主动推进）。 */
     kick: (wsId) => schedule(wsId),
     onAgentStatus,
+    onAgentError,
     onInteractionExit,
     onTaskSettled,
     onScanChanged,
@@ -710,7 +1016,8 @@ export function createWarpScheduler(options = {}) {
           sessionId: runtime.sessionId,
           sawRunning: runtime.sawRunning,
           waiting: runtime.waiting,
-          coldAttempts: runtime.coldAttempts
+          coldAttempts: runtime.coldAttempts,
+          truncations: runtime.truncations ?? 0
         };
     }
   };

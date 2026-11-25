@@ -50,6 +50,13 @@ export const WARP_PROTO_FAILURES = Object.freeze([
 /** 永不中止的 signal（官方 `prompt`/`list` 要求调用方提供 signal；网关路径自带）。 */
 const NEVER_ABORTED_SIGNAL = new AbortController().signal;
 
+/**
+ * 截断自动续跑的补投文本（宿主官方续跑语义：会话因输出 token 上限被截断时「发送"继续"
+ * 可让模型接着输出」）。续跑走**同会话**补投（`mode:"queue"`，不 create / 不 rename /
+ * 不重放关联绑定），由调度器的 `resume` 注入面调用本文件的 `createSessionPrompter`。
+ */
+export const CONTINUE_PROMPT_TEXT = "继续";
+
 /** 错误 → 可读文本（透出宿主自身说明，便于用户端诊断）。 */
 function errorMessageOf(error) {
   const message = error !== null && typeof error?.message === "string" ? error.message : "";
@@ -243,10 +250,56 @@ export function createWarpProtoDeliverer(options = {}) {
 }
 
 /**
+ * 建立「同会话补投」器（截断自动续跑的执行通道，one-add-cosmos-queue-stop-reason-policy 3.3）：
+ * 只发一条 `prompt`（`mode:"queue"`），**零 create / 零 selectModel / 零 rename / 零绑定重放**。
+ *
+ * 失败族与首投同源：服务缺席 → `session-controller-unavailable`；会话 id 缺失 →
+ * `session-gone`；宿主拒绝/不可用 → `prompt-failed`（调用方据此 failed + 暂停）。
+ *
+ * @param {object} [options]
+ * @param {object|null} [options.sessionController] 宿主会话控制面
+ * @param {string} [options.text] 补投文本（缺省 `CONTINUE_PROMPT_TEXT`）
+ * @returns {(input: {sessionId: string, text?: string, entry?: object}) =>
+ *   Promise<{ok: true, sessionId: string} | {ok: false, reason: string, message: string}>}
+ */
+export function createSessionPrompter(options = {}) {
+  const sessionController = options.sessionController ?? null;
+  const defaultText = typeof options.text === "string" && options.text ? options.text : CONTINUE_PROMPT_TEXT;
+  const missing = missingMembersOf(sessionController, ["prompt"]);
+  return async function promptSession(input) {
+    if (missing.length > 0) {
+      return {
+        ok: false,
+        reason: "session-controller-unavailable",
+        message: `会话服务不可用（sessionController 缺少命令方法：${missing.join("/")}）`
+      };
+    }
+    const sessionId = typeof input?.sessionId === "string" ? input.sessionId.trim() : "";
+    if (!sessionId) return { ok: false, reason: "session-gone", message: "会话 id 缺失，无法补投续跑消息" };
+    const text = typeof input?.text === "string" && input.text ? input.text : defaultText;
+    try {
+      await sessionController.prompt(
+        { requestId: randomUUID(), sessionId, mode: "queue", content: [{ type: "text", text }] },
+        NEVER_ABORTED_SIGNAL
+      );
+    } catch (error) {
+      return { ok: false, reason: "prompt-failed", message: errorMessageOf(error) };
+    }
+    return { ok: true, sessionId };
+  };
+}
+
+/**
  * 建立冷读器（`readSession(sessionId)` 形状见 queue-scheduler.mjs）。
  *
- * 三分支：活体 `agents.get(id).status` → `list({})` 摘要命中 → 未命中 `gone`；
+ * 三分支：活体 `agents.get(id)` → `list({})` 摘要命中 → 未命中 `gone`；
  * `list` 抛错/服务缺席 → `{ok:false, error}`（调度器保持 executing + 有界重试，耗尽显式失败）。
+ *
+ * 停机原因（one-add-cosmos-queue-stop-reason-policy 5.1）：**只有活体分支可读**——活体 Agent
+ * 暴露 `session`（`@deepseek-ai/dsh-agent` 的 `Agent.session`），其日志尾部 `turn/end` 的
+ * `reason` 即最近一次回合收尾；`list({})` 的 `SessionSummary`（`agentAvailable / running /
+ * blank / updatedAt / projections`）**不含**停机原因字段 → 该分支 `stopKind` 不可得，调度器
+ * 按「信号缺失」兜底完成（limitation 已在 README/spec 标注）。
  *
  * @param {object} options
  * @param {object|null} options.sessionController
@@ -270,7 +323,13 @@ export function createSessionReader(options = {}) {
        宿主侧不可见 pendingInteraction，`waiting` 恒 false——活体会话的等待态由实时瀑布
        观测覆盖（既有行为），重启时错过的那次瀑布无重放（spec 已知局限）。 */
     if (agent !== null && typeof agent?.status === "string") {
-      return { ok: true, running: agent.status !== "idle", waiting: false };
+      const stop = stopReasonOfLiveAgent(agent);
+      return {
+        ok: true,
+        running: agent.status !== "idle",
+        waiting: false,
+        ...stop === null ? {} : { stopKind: stop.kind, stopCode: stop.code, stopCause: stop.cause }
+      };
     }
 
     if (typeof sessionController?.list !== "function") {
@@ -287,4 +346,38 @@ export function createSessionReader(options = {}) {
     if (item === undefined) return { ok: false, gone: true };
     return { ok: true, running: item.running === true, waiting: false };
   };
+}
+
+/**
+ * 活体会话的最近一次回合收尾（停机原因）。
+ *
+ * 读面：`agent.session.snapshotEvents()`（宿主 Session 的公开事件读面；标记为 deprecated
+ * 的**同步事件读**，但对插件侧冷读是当前唯一可用面——`SessionSummary` 不含原因）。
+ * 语义：从日志尾部向前找 `turn/end`；若先遇到 `turn/start`（最后回合仍在跑）或找不到
+ * `turn/end` → 返回 null（= 停机原因不可得，按信号缺失兜底）。
+ *
+ * @param {object} agent 活体 Agent
+ * @returns {{kind: string, code: string, cause: string}|null}
+ */
+function stopReasonOfLiveAgent(agent) {
+  try {
+    const session = agent?.session;
+    if (session === null || typeof session !== "object") return null;
+    const events = typeof session.snapshotEvents === "function" ? session.snapshotEvents() : null;
+    if (!Array.isArray(events) || events.length === 0) return null;
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+      const event = events[index];
+      if (event?.type === "turn/start") return null;
+      if (event?.type !== "turn/end") continue;
+      const reason = event.data?.reason;
+      const kind = typeof reason?.kind === "string" && reason.kind ? reason.kind : "";
+      if (!kind) return null;
+      const code = kind === "error" && typeof reason?.error?.code === "string" ? reason.error.code : "";
+      const cause = kind === "aborted" && typeof reason?.reason?.kind === "string" ? reason.reason.kind : "";
+      return { kind, code, cause };
+    }
+    return null;
+  } catch {
+    return null;
+  }
 }

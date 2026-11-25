@@ -25,6 +25,7 @@ import {
   queueEnqueuedKeyOf,
   queueEntryLockedOf,
   queueEntryRemovableOf,
+  queueEntryRetryableOf,
   queueOrderFlagsOf,
   queuePendingKeysOf,
   queueScopeOf
@@ -92,11 +93,20 @@ import {
   assert.equal(executingWaiting.canMoveDown, false, "锁定条目不可排序（下移）");
   assert.equal(executingWaiting.removeTitle, "执行中条目不可移出", "锁定移出 title 说明");
   assert.equal(executingWaiting.orderTitle, "执行中条目不可调整", "锁定排序 title 说明");
+  assert.equal(executingWaiting.canRetry, false, "执行中条目不可重试");
+  assert.equal(executingWaiting.retryTitle, "仅失败条目可重试", "非失败行重试 title 兜底说明");
 
   /* 失败残留：不锁定、可移出、诊断摘要可见 */
   const failed = model.rows[3];
   assert.equal(failed.locked, false, "失败残留不锁定");
   assert.equal(failed.canRemove, true, "失败残留可移出");
+  /* 失败残留额外可重试（two-add-cosmos-queue-failed-entry-retry）：title 按暂停态双形态。 */
+  assert.equal(failed.canRetry, true, "失败残留可重试");
+  assert.equal(
+    failed.retryTitle,
+    "重试：转回队列队首（队列暂停中，需点继续恢复推进）",
+    "暂停态重试 title 明示「需点继续恢复推进」"
+  );
   assert.equal(failed.badgeLabel, "失败");
   assert.ok(String(failed.failedDetail).includes("queen 不可达"), "failedDetail 含 message");
   assert.ok(String(failed.failedDetail).includes("queen-unreachable"), "failedDetail 含 reason");
@@ -111,11 +121,25 @@ import {
   assert.equal(queuedRow.orderTitle, "相邻条目不可调整（仅等待中的条目可排序）", "邻居不可调整的 title 说明");
   assert.equal(queuedRow.canRemove, true, "等待条目可移出");
   assert.equal(queuedRow.removeTitle, "移出队列");
+  assert.equal(queuedRow.canRetry, false, "等待条目不可重试");
 
   /* 跳过残留：可移出、诊断可空但状态可见 */
   const skipped = model.rows[5];
   assert.equal(skipped.locked, false);
   assert.equal(skipped.canRemove, true);
+  assert.equal(skipped.canRetry, false, "skipped 不提供重试（复验跳过语义下经入队钮重新排队）");
+
+  /* 非暂停队列的 failed 行：重试 title 无「点继续」免责文案（design D4 双形态）。 */
+  const resumed = projectQueuePanel({
+    queue: {
+      paused: false,
+      entries: [{ id: "f1", wsId: "ws1", proposalId: "add-a", buttonName: "重试", state: "failed" }]
+    },
+    wsId: "ws1",
+    now: 1
+  });
+  assert.equal(resumed.rows[0].canRetry, true, "非暂停队列 failed 行同样可重试");
+  assert.equal(resumed.rows[0].retryTitle, "重试：转回队列队首", "非暂停态无需免责文案");
   assert.equal(skipped.failedDetail, null, "无 message/reason 的残留 → failedDetail null（MUST NOT 伪造）");
 }
 
@@ -199,6 +223,18 @@ import {
   assert.equal(queueEntryRemovableOf(null), false, "null → false");
   assert.equal(queueEntryRemovableOf({}), false, "无 state → false");
   assert.equal(queueEntryRemovableOf({ state: "executing", subState: "waiting" }), false, "等待决策不可移出");
+}
+
+/* ── 6b. 操作矩阵：可重试全枚举（**仅 failed**；与可移出矩阵的差异点） ── */
+{
+  const cases = { queued: false, failed: true, skipped: false, launching: false, executing: false, weird: false };
+  for (const [state, expected] of Object.entries(cases)) {
+    assert.equal(queueEntryRetryableOf({ state }), expected, state + " 可重试 = " + expected);
+  }
+  assert.equal(queueEntryRetryableOf(null), false, "null → false");
+  assert.equal(queueEntryRetryableOf({}), false, "无 state → false");
+  assert.equal(queueEntryRetryableOf({ state: "failed", subState: "waiting" }), true, "子态不参与可重试判定（failed 残留在 executing 之外）");
+  assert.equal(queueEntryRetryableOf({ state: "executing", subState: "waiting" }), false, "等待决策不可重试");
 }
 
 /* ── 7. 排序可用性：仅自身 queued 且相邻 queued ── */
@@ -369,6 +405,11 @@ const clientSource = readFileSync(new URL("../src/client.jsx", import.meta.url),
     "条目操作钮三件套（▲ / ▼ / ✕）"
   );
   assert.ok(clientSource.includes("disabled={!row.canMoveUp}") && clientSource.includes("disabled={!row.canRemove}"), "非 queued / 边界禁用（操作矩阵前端先行）");
+  assert.ok(
+    clientSource.includes('data-cosmos-queue-op="retry"') && clientSource.includes("{row.canRetry ? ("),
+    "failed 行重试钮钩子（↻，仅 canRetry 行呈现）"
+  );
+  assert.ok(clientSource.includes("onRetry={retryQueueEntry}"), "重试处理接线（QueuePanel props）");
   assert.ok(clientSource.includes("{row.failedDetail ? ("), "失败 / 跳过残留显示可见诊断行（message + reason）");
   assert.ok(clientSource.includes(".dsh-cosmos-queue-detail{"), "残留诊断行 CSS（单行省略）");
   assert.ok(
@@ -450,6 +491,20 @@ const clientSource = readFileSync(new URL("../src/client.jsx", import.meta.url),
   );
   assert.ok(enqueueBody.includes("if (!card || !actionButtonVisible(button, card)) return;"), "入队点击瞬间复验前置门控（与主按钮同谓词）");
 
+  /* 12e.5 重试处理 MUST NOT 顺带恢复队列（暂停 → 修复 → 重试 → 继续 的节奏由用户显式点继续） */
+  const retryStart = clientSource.indexOf("const retryQueueEntry = async (row) => {");
+  const retryEnd = clientSource.indexOf("/* ── 曲率操作", retryStart);
+  assert.ok(retryStart > 0 && retryEnd > retryStart, "retryQueueEntry 片段可定位");
+  const retryBody = clientSource.slice(retryStart, retryEnd);
+  assert.ok(retryBody.includes('queueAction("retry"'), "重试只经服务端 retry 动词");
+  assert.ok(!retryBody.includes('queueAction("resume"'), "重试 MUST NOT 顺带恢复暂停队列");
+  assert.ok(retryBody.includes('queueAction("retry", { wsId: row.wsId, entryId: row.id })'), "重试载荷符合冻结契约 {wsId, entryId}");
+  assert.ok(
+    retryBody.includes('tr("cosmos.queue.retriedPaused", "已转回队首，队列暂停中（点继续恢复推进）")'),
+    "暂停态 toast 明示点继续恢复推进"
+  );
+  assert.ok(retryBody.includes('tr("cosmos.queue.retried", "已转回队首")'), "非暂停态 toast 无需免责文案");
+
   /* 12f. 错误码映射与词典成对 */
   assert.ok(clientSource.includes('if (code === "duplicate") return tr("cosmos.queue.duplicate", "已在队列中");'), "duplicate → 已在队列中");
   assert.ok(clientSource.includes('if (code === "limit") return tr("cosmos.queue.limit", "队列已满（32）");'), "limit → 队列已满（32）");
@@ -468,6 +523,28 @@ const clientSource = readFileSync(new URL("../src/client.jsx", import.meta.url),
   assert.ok(clientSource.includes('"cosmos.queue.enqueued": "已加入脉冲队列"'), "词典 zh：入队成功 toast（已加入脉冲队列）");
   assert.ok(clientSource.includes('"cosmos.queue.enqueued": "Added to the impulse queue"'), "词典 en：入队成功 toast（Added to the impulse queue）");
 
+  /* 12f.5 重试文案与拒绝码（two-add-cosmos-queue-failed-entry-retry 3.1 / design D2–D4） */
+  assert.ok(
+    clientSource.includes('if (code === "not-failed") return tr("cosmos.queue.notFailed", "仅失败的条目可重试");'),
+    "not-failed → 仅失败的条目可重试"
+  );
+  assert.ok(clientSource.includes('"cosmos.queue.retry": "重试"'), "词典 zh：重试钮");
+  assert.ok(clientSource.includes('"cosmos.queue.retry": "Retry"'), "词典 en：重试钮");
+  assert.ok(clientSource.includes('"cosmos.queue.retried": "已转回队首"'), "词典 zh：非暂停态重试 toast");
+  assert.ok(clientSource.includes('"cosmos.queue.retried": "Moved back to the queue head"'), "词典 en：非暂停态重试 toast");
+  assert.ok(
+    clientSource.includes('"cosmos.queue.retriedPaused": "已转回队首，队列暂停中（点继续恢复推进）"'),
+    "词典 zh：暂停态重试 toast"
+  );
+  assert.ok(
+    clientSource.includes('"cosmos.queue.retriedPaused": "Moved back to the queue head; the queue is paused (press Continue to resume)"'),
+    "词典 en：暂停态重试 toast"
+  );
+  assert.ok(clientSource.includes('"cosmos.queue.retryFailed": "重试失败"'), "词典 zh：重试失败兜底");
+  assert.ok(clientSource.includes('"cosmos.queue.retryFailed": "Could not retry"'), "词典 en：重试失败兜底");
+  assert.ok(clientSource.includes('"cosmos.queue.notFailed": "仅失败的条目可重试"'), "词典 zh：非 failed 拒绝文案");
+  assert.ok(clientSource.includes('"cosmos.queue.notFailed": "Only failed entries can be retried"'), "词典 en：非 failed 拒绝文案");
+
   /* 12g. 导出面（bundle 级冒烟观测点） */
   assert.ok(clientSource.includes("ProposalPanel, SessionPanel, QueuePanel, ActionBar"), "QueuePanel 进入导出清单");
   assert.ok(clientSource.includes("cosmosQueueStore, refreshQueue"), "cosmosQueueStore / refreshQueue 进入导出清单");
@@ -475,6 +552,31 @@ const clientSource = readFileSync(new URL("../src/client.jsx", import.meta.url),
     clientSource.includes("fetchScene, subscribeCosmosEvents, bindSession, fetchQueue, queueAction"),
     "fetchQueue / queueAction 进入导出清单"
   );
+}
+
+/* ── 13. 多窗口投影一致性（two-add-cosmos-queue-failed-entry-retry 3.2）：同一权威快照 →
+   逐字段相同的行投影（两个窗口收到同一 `queue-changed` 后重拉同一快照，重试钮状态必然一致）；
+   条目转回 queued 的新快照 → 重试钮消失、行态刷新、暂停态不变。 ── */
+{
+  const snapshotOf = (state, paused) => ({
+    queues: {
+      ws1: {
+        paused,
+        pausedAt: paused ? 1000 : 0,
+        entries: [{ id: "e1", wsId: "ws1", proposalId: "add-a", buttonName: "重试", state, enqueuedAt: 1000 }]
+      }
+    }
+  });
+  const windowA = projectQueuePanel({ queue: snapshotOf("failed", true), wsId: "ws1", now: 2000 });
+  const windowB = projectQueuePanel({ queue: snapshotOf("failed", true), wsId: "ws1", now: 2000 });
+  assert.deepEqual(windowA.rows, windowB.rows, "同一快照 → 逐字段相同行投影（多窗口一致）");
+  assert.equal(windowA.rows[0].canRetry, true, "窗口 A：failed 行呈现重试钮");
+  assert.equal(windowB.rows[0].canRetry, true, "窗口 B：failed 行呈现重试钮");
+  const refreshed = projectQueuePanel({ queue: snapshotOf("queued", true), wsId: "ws1", now: 3000 });
+  assert.equal(refreshed.rows[0].canRetry, false, "重试转回后（新快照）重试钮消失");
+  assert.equal(refreshed.rows[0].badgeKey, "queued", "行徽标刷新为等待");
+  assert.equal(refreshed.paused, true, "暂停态投影不变（重试不改暂停标志）");
+  assert.equal(refreshed.rows[0].canRemove, true, "转回条目仍可移出（普通 queued 同语义）");
 }
 
 console.log("queue-ui-smoke: all assertions passed");
