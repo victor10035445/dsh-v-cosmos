@@ -59,7 +59,7 @@ const button = (name, extra = {}) => ({ name, prompt: "执行 " + name, ...extra
     targetKind: "proposal",
     targetLabel: "提案 A",
     proposalDir: "C:/ws/openspec/changes/add-a",
-    button: { name: "Review", prompt: "审查", preState: "created", prepend: true, model: { provider: "p", model: "m" } },
+    button: { name: "Review", prompt: "审查", preState: "created", prepend: true, team: true, model: { provider: "p", model: "m" } },
     rule: "queue",
     state: "ready",
     enqueuedAt: 10,
@@ -69,8 +69,15 @@ const button = (name, extra = {}) => ({ name, prompt: "执行 " + name, ...extra
   assert.equal(proposal.rule, "queue");
   assert.equal(proposal.button.preState, "created", "preState 随快照定格");
   assert.equal(proposal.button.prepend, true);
+  /* 团队启用键（add-cosmos-agent-team-toggle 3.5）：曲率 proto 直投按 `button.team` 启用团队。 */
+  assert.equal(proposal.button.team, true, "team 随快照保留（曲率直投消费）");
   assert.deepEqual(proposal.button.model, { provider: "p", model: "m" });
   assert.equal("explorerSessionId" in proposal, false);
+  assert.equal(
+    "team" in normalizeWarpEntry({ ...proposal, button: { name: "R", prompt: "p", team: false } }).button,
+    false,
+    "team:false → 不落键（存储最小形）"
+  );
 
   /* 缺必填 → null */
   assert.equal(normalizeWarpEntry({ ...proposal, targetKind: "unknown" }), null, "未知目标形态");

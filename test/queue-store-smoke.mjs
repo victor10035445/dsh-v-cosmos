@@ -48,7 +48,7 @@ const full = normalizeQueueEntry({
   wsId: "ws-1",
   proposalId: "add-a",
   proposalDir: "C:/ws/openspec/changes/add-a",
-  button: { name: "B1", prompt: "p", model: { provider: "deepseek", model: "deepseek-chat", reasoningEffort: "high" }, prepend: true, preState: "created" },
+  button: { name: "B1", prompt: "p", model: { provider: "deepseek", model: "deepseek-chat", reasoningEffort: "high" }, prepend: true, preState: "created", team: true },
   enqueuedAt: NOW,
   state: "queued",
   stateAt: NOW
@@ -57,6 +57,9 @@ assert.equal(full.button.model.provider, "deepseek", "model 随快照保留");
 assert.equal(full.button.model.reasoningEffort, "high", "reasoningEffort 保留");
 assert.equal(full.button.prepend, true, "prepend 保留");
 assert.equal(full.button.preState, "created", "preState 随快照定格");
+/* 团队启用键（add-cosmos-agent-team-toggle 3.5）：入队快照忠实保留 `team: true`
+   （曲率 proto 直投按此在 prompt 前启用团队），false/缺省不落键。 */
+assert.equal(full.button.team, true, "team 随快照保留（曲率直投消费）");
 assert.equal("autoSend" in full.button, false, "autoSend 不入快照（队列恒自动发送）");
 assert.equal("jumpNewSession" in full.button, false, "jumpNewSession 不入快照（对队列无意义）");
 
@@ -67,6 +70,12 @@ const minimal = normalizeQueueEntry({
 assert.equal("model" in minimal.button, false, "未绑定模型 → 不输出 model 键");
 assert.equal("prepend" in minimal.button, false, "未勾选 → 不输出 prepend 键");
 assert.equal("preState" in minimal.button, false, "未设前置状态 → 不输出 preState 键");
+assert.equal("team" in minimal.button, false, "未勾选团队 → 不输出 team 键");
+assert.equal(
+  "team" in normalizeQueueEntry({ ...input(), button: { name: "B", prompt: "p", team: false } }).button,
+  false,
+  "team:false → 不落键（存储最小形）"
+);
 
 assert.equal(normalizeQueueEntry(null), null, "非对象 → null");
 assert.equal(normalizeQueueEntry({ ...input(), id: "" }), null, "空 id → null");

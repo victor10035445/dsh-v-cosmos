@@ -60,7 +60,7 @@
  */
 import { Component, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
-import { fetchScene, subscribeCosmosEvents, bindSession, fetchQueue, queueAction, fetchWarp, warpAction, fetchWorks, pickWorks, updateWork, removeWork, openWork, revealWork } from "./api.mjs";
+import { fetchScene, subscribeCosmosEvents, bindSession, armTeamIntent, fetchQueue, queueAction, fetchWarp, warpAction, fetchWorks, pickWorks, updateWork, removeWork, openWork, revealWork } from "./api.mjs";
 /* 入口分流纯逻辑（add-cosmos-rightbar-dock）：设置枚举 / 入口计划 / 关页裁决全部收敛在
    dock.mjs（可冒烟直测）；本文件只做宿主席位与 DOM 编排。 */
 import {
@@ -797,11 +797,18 @@ function createCosmosController(ctx, notifyToast, channels) {
     /* ⑤ 显式关联绑定（fix-cosmos-association-scope 3.2）：新会话 → 目标提案的声明通道。
        执行器保证非阻断、失败静默；端点未升级/不可达只退回启发式（不 toast、不阻断落稿）。 */
     bindSession: (input) => bindSession(input),
+    /* 团队意图登记（add-cosmos-agent-team-toggle 4.1）：按钮 team=true 时在 createSession
+       成功后登记；autoSend 执行器等待落地（api 侧有界超时 1.2s），float 非等待；
+       服务缺席 toast 一次、失败零阻断。降级路径由执行器跳过。 */
+    armTeamIntent: (input) => armTeamIntent(input),
     /* 跳转尾巴（add-cosmos-rightbar-dock D4）：embedded 关整页；dock 为 no-op（tab 保持）。 */
     closePage: () => closePageAfterJump(),
     keepPage: () => notifyToast?.(tr("cosmos.actions.keepOpenNotice", "已在新会话填入消息，Cosmos 保持打开")),
     notify: (text) => notifyToast?.(text),
-    labels: { degraded: tr("cosmos.actions.degraded", "新建会话通道不可用，已降级为复用空白会话") }
+    labels: {
+      degraded: tr("cosmos.actions.degraded", "新建会话通道不可用，已降级为复用空白会话"),
+      teamUnavailable: tr("cosmos.actions.teamUnavailable", "智能团队不可用（宿主未挂载团队服务）")
+    }
   });
 
   /**
@@ -841,6 +848,9 @@ function createCosmosController(ctx, notifyToast, channels) {
     gate: actionGate,
     resolveTarget: (card) => explorationStateOf(card),
     openSession: (sessionId) => openSessionVia(sessionId),
+    /* 团队意图登记（add-cosmos-agent-team-toggle 4.3）：目标 = 探索会话 id；
+       arm 即时消费覆盖已运行会话，`agent/created` 兜底未运行场景。 */
+    armTeamIntent: (input) => armTeamIntent(input),
     /* 星胚链路的跳转尾巴（add-cosmos-rightbar-dock D4）：与提案动作同一条 closePage 分流。 */
     closePage: () => closePageAfterJump(),
     keepPage: () => notifyToast?.(tr("cosmos.actions.embryoKeepOpen", "已在探索会话填入消息，Cosmos 保持打开")),
@@ -848,7 +858,8 @@ function createCosmosController(ctx, notifyToast, channels) {
     labels: {
       unavailable: tr("cosmos.actions.embryoUnavailable", "探索会话不可用"),
       running: tr("cosmos.actions.embryoRunning", "探索会话正在执行，未打断"),
-      failed: tr("cosmos.actions.embryoSendFailed", "发送到探索会话失败：")
+      failed: tr("cosmos.actions.embryoSendFailed", "发送到探索会话失败："),
+      teamUnavailable: tr("cosmos.actions.teamUnavailable", "智能团队不可用（宿主未挂载团队服务）")
     }
   });
 
@@ -894,8 +905,14 @@ function createCosmosController(ctx, notifyToast, channels) {
     createSession: (workspaceId, group) => createSessionVia(workspaceId, group),
     openSession: (sessionId) => openSessionVia(sessionId),
     startSession: (workspaceId, message, group) => startSessionVia(workspaceId, message, group, { whenDraftExists: "replace" }),
+    /* 团队意图登记（add-cosmos-agent-team-toggle 4.2）：三分支统一在 createSession 成功后
+       登记；autoSend 等待落地，float / native 非等待。 */
+    armTeamIntent: (input) => armTeamIntent(input),
     notify: (text) => notifyToast?.(text),
-    labels: { degraded: tr("cosmos.actions.degraded", "新建会话通道不可用，已降级为复用空白会话") }
+    labels: {
+      degraded: tr("cosmos.actions.degraded", "新建会话通道不可用，已降级为复用空白会话"),
+      teamUnavailable: tr("cosmos.actions.teamUnavailable", "智能团队不可用（宿主未挂载团队服务）")
+    }
   });
 
   /** 清 pendingDive（成功消费 / 超时 / 实例销毁共用）。 */
@@ -9247,6 +9264,12 @@ const DICT = {
     "cosmos.actions.embryoDraftNotEmpty": "探索会话已有未发送输入，未改写",
     "cosmos.actions.embryoKeepOpen": "已在探索会话填入消息，Cosmos 保持打开",
     "cosmos.actions.embryoSendFailed": "发送到探索会话失败：",
+    /* 智能体团队开关（add-cosmos-agent-team-toggle 4.x / 5.x）：动作链路提示 + 设置页字段。 */
+    "cosmos.actions.teamUnavailable": "智能团队不可用（宿主未挂载团队服务）",
+    "cosmos.settings.teamLabel": "启用智能体团队",
+    "cosmos.settings.teamTitle": "勾选：点击该按钮创建/触发会话时，先为该会话开启「智能体团队协作」（默认关；覆盖自动发送 / 浮窗补写 / 跳转会话页与星胚链路）。目标会话已开启时同值幂等；宿主未挂载团队服务时不阻断点击链路，仅在执行时提示一次。",
+    "cosmos.settings.teamDriftTitle": "本行团队开关不是布尔值（手工编辑漂移）：本行配置不可用，保存会被拒绝；勾选/取消即可修复为本变更的形状。",
+    "cosmos.settings.buttonTeamInvalid": "智能团队开关必须为布尔值",
     /* 自动执行队列（add-cosmos-action-queue 5.2–5.4）：面板 / 配套入队钮 / 操作与错误码文案。 */
     "cosmos.queue.title": "脉冲队列",
     "cosmos.queue.aria": "脉冲队列",
@@ -9698,6 +9721,12 @@ const DICT = {
     "cosmos.actions.embryoDraftNotEmpty": "Exploration session already has unsent input; left untouched",
     "cosmos.actions.embryoKeepOpen": "Message pre-filled in the exploration session; Cosmos stays open",
     "cosmos.actions.embryoSendFailed": "Failed to send to the exploration session: ",
+    /* Agent-team toggle (add-cosmos-agent-team-toggle 4.x / 5.x): action-chain toast + settings field. */
+    "cosmos.actions.teamUnavailable": "Agent team unavailable (host has no team service mounted)",
+    "cosmos.settings.teamLabel": "Enable agent team",
+    "cosmos.settings.teamTitle": "Checked: before creating/continuing the target session for this button, enable \"Agent Team\" for it (off by default; covers auto-send / float prefill / native jump and embryo actions). Enabling an already-enabled session is idempotent; when the host has no team service the click chain is not blocked, with a single notice at execution time.",
+    "cosmos.settings.teamDriftTitle": "This row's team toggle is not a boolean (manual-edit drift): the row is invalid and saving will be rejected; toggle it to repair the shape.",
+    "cosmos.settings.buttonTeamInvalid": "The agent-team toggle must be a boolean",
     /* Impulse queue (add-cosmos-action-queue 5.2–5.4): panel / enqueue button / operation and error-code copy. */
     "cosmos.queue.title": "Impulse queue",
     "cosmos.queue.aria": "Impulse queue",

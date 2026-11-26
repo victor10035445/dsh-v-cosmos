@@ -5,11 +5,11 @@
  *  - 文档形状 `{ version: 1, queues: { <wsId>: { paused, pausedAt, entries: [...] } } }`
  *    ——**每星座恰好一个队列**，全部工作区聚合在单一 JSON（spec「每星座单队列模型」）。
  *  - 条目 = **入队快照**（`button` 为入队时刻按钮配置副本）：
- *      `{ id, wsId, proposalId, proposalDir, button: {name, prompt, model?, prepend?, preState?},
+ *      `{ id, wsId, proposalId, proposalDir, button: {name, prompt, model?, prepend?, preState?, team?},
  *         enqueuedAt, state, stateAt, sessionId?, startedAt?, reason?, message? }`
  *    `button.model` 仅在绑定了模型时输出、`button.prepend` 仅在勾选时输出（存储最小形，
- *    与 `buttons.mjs` 同口径）；`preState` 随快照定格——执行时刻复验用**入队时**的门控
- *    前置状态，不随配置漂移。`sessionId/startedAt/reason/message` 是状态机记账字段
+ *    与 `buttons.mjs` 同口径）；`preState` / `team` 随快照定格——执行时刻复验用**入队时**的
+ *    门控前置状态，不随配置漂移。`sessionId/startedAt/reason/message` 是状态机记账字段
  *    （spec 的条目形状之外的必需增量：没有它就无处放「投递到哪个会话 / 为什么失败」）。
  *  - 状态枚举 `queued | launching | executing | failed | skipped`；`running` / `等待决策`
  *    是 executing 的**呈现**子态（由会话交互态推导，不落枚举——spec 同款）。
@@ -117,6 +117,9 @@ export function normalizeQueueEntry(raw) {
   if (typeof source?.preState === "string" && isPreState(source.preState.trim())) {
     button.preState = source.preState.trim();
   }
+  /* 团队启用键（add-cosmos-agent-team-toggle）：仅 true 随快照保留（入队即定格按钮配置；
+     启用语义由各投递链自行消费——队列投递不启用，曲率 proto 直投按此启用）。 */
+  if (source?.team === true) button.team = true;
   const enqueuedAt = Number.isFinite(Number(raw.enqueuedAt)) ? Number(raw.enqueuedAt) : 0;
   const stateAt = Number.isFinite(Number(raw.stateAt)) ? Number(raw.stateAt) : enqueuedAt;
   const entry = { id, wsId, proposalId, proposalDir, button, enqueuedAt, state, stateAt };

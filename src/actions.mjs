@@ -350,6 +350,55 @@ export async function consumePendingAction(input) {
 }
 
 /**
+ * 团队意图登记（add-cosmos-agent-team-toggle 4.1 / spec cosmos-actions「执行链路团队意图
+ * 登记」）：按钮 `team === true` 时，于目标 sessionId 确定后、标记登记与页面流转之前登记。
+ *
+ * 纯逻辑适配器（会话创建由执行器负责，本工厂只做「调用 + 一次性缺席 toast + 等待策略」）：
+ *  - `wait: true`（autoSend 相关分支）→ 返回 Promise，调用方 `await` 后再继续——注入实现
+ *    （`api.mjs armTeamIntent`）自带**有界超时**，超时/失败照常放行；
+ *  - `wait: false`（float / native：用户延后发送）→ 非等待（fire-and-forget），零阻塞；
+ *  - `serviceAvailable === false`（宿主未挂团队服务）→ 以 `notify(text, true)` toast 一次；
+ *    网络/超时/旧宿主无端点一律静默（`serviceAvailable` 未知按 true）。
+ *  - 注入缺席 / 空 sessionId / 同步抛错 → null（零行为，与变更前逐字一致）。
+ *
+ * @param {{armTeamIntent?: Function, notify?: Function, labels?: {teamUnavailable?: string}}} [options]
+ * @returns {(input: {sessionId?: string, wait?: boolean}) => (Promise<object|null>|null)}
+ *          等待分支返回 outcome（服务缺席时用于读数）；非等待分支恒 null
+ */
+export function createTeamIntentArmer(options = {}) {
+  const armTeamIntent = typeof options.armTeamIntent === "function" ? options.armTeamIntent : null;
+  const notify = typeof options.notify === "function" ? options.notify : () => {};
+  const unavailableLabel = typeof options.labels?.teamUnavailable === "string" && options.labels.teamUnavailable
+    ? options.labels.teamUnavailable
+    : "智能团队不可用（宿主未挂载团队服务）";
+  return function arm(input = {}) {
+    const sessionId = typeof input?.sessionId === "string" ? input.sessionId : "";
+    if (armTeamIntent === null || !sessionId) return null;
+    let pending;
+    try {
+      pending = armTeamIntent({ sessionId });
+    } catch {
+      return null;
+    }
+    if (!pending || typeof pending.then !== "function") return null;
+    const handled = pending.then(
+      (outcome) => {
+        /* 缺席 toast 只出现一次：本按钮本次执行最多一条（后续同名结果不重复弹）。 */
+        if (outcome?.serviceAvailable === false) notify(unavailableLabel, true);
+        return outcome ?? null;
+      },
+      () => null
+    );
+    if (input?.wait !== true) {
+      /* float / native：不等待（用户延后发送，无「提交先于意图」竞态）。 */
+      void handled.catch(() => {});
+      return null;
+    }
+    return handled;
+  };
+}
+
+/**
  * 点击执行链路（fix-cosmos-action-draft-block D1/D3/D4/D5；spec「点击执行链路」+「防重入」）：
  * 组装 → **恒新建会话**（`createSession`）→ 登记标记（绑定目标 SessionId + 落稿意图，
  * 无论 `autoSend`/模型是否配置均登记）→ `openSession(新会话 id)` → 页面流转：
@@ -376,6 +425,11 @@ export async function consumePendingAction(input) {
  * @param {(input: {sessionId: string, proposals: string[]}) => Promise<unknown>} [options.bindSession]
  *        **⑤ 显式关联绑定**：新会话 SessionId 取得后非阻断调用（不 await、失败静默；
  *        缺省不绑定——老宿主/测试面行为不变）。降级路径（无新会话 id）MUST 跳过。
+ * @param {(input: {sessionId: string}) => Promise<unknown>} [options.armTeamIntent]
+ *        **团队意图登记**（add-cosmos-agent-team-toggle 4.1）：按钮 `team === true` 时在
+ *        `createSession` 成功后、标记登记前调用；autoSend（`submit`）分支等待落地（注入实现
+ *        自带的有界超时），float 分支非等待。缺省不登记（老宿主/测试面行为不变）；
+ *        降级路径（无新会话 id）MUST 跳过。
  * @param {(context?: {autoSend?: boolean}) => void} [options.closePage] 按钮
  *        `jumpNewSession !== false` 时调用（关页跳转）；`context.autoSend` 供注入方在
  *        独立窗口「跳转被抑制」时附加如实反馈（MUST NOT 据此承诺自动发送）
@@ -398,6 +452,12 @@ export function createActionExecutor(options = {}) {
   const keepPage = typeof options.keepPage === "function" ? options.keepPage : () => {};
   const notify = typeof options.notify === "function" ? options.notify : () => {};
   const bindSession = typeof options.bindSession === "function" ? options.bindSession : null;
+  /* 团队意图登记（add-cosmos-agent-team-toggle 4.1）：等待策略与缺席 toast 由适配器统一。 */
+  const armTeam = createTeamIntentArmer({
+    armTeamIntent: options.armTeamIntent,
+    notify,
+    labels: options.labels
+  });
   const degradedLabel = typeof options.labels?.degraded === "string" && options.labels.degraded
     ? options.labels.degraded
     : "新建会话通道不可用，已降级为复用空白会话";
@@ -476,6 +536,14 @@ export function createActionExecutor(options = {}) {
           /* 恒新建不可用（宿主拒绝/通道异常）：回落现行链路，toast 注明降级。 */
           return await fallback(button, card, message, model, submit, jump, String(error?.message || error));
         }
+        /* 团队意图（add-cosmos-agent-team-toggle 4.1 / spec「执行链路团队意图登记」）：
+           按钮 team=true 时**先于标记登记与页面流转**登记；autoSend 等待落地（注入实现自带
+           有界超时），float 非等待。失败/超时零阻断；服务缺席 toast 一次。降级路径无新会话
+           id，天然不经过这里（确定性跳过登记）。 */
+        if (button.team === true) {
+          const teamPending = armTeam({ sessionId, wait: submit });
+          if (teamPending !== null) await teamPending;
+        }
         /* ⑤ 显式关联绑定（spec ⑤）：取得 SessionId 后**非阻断**声明目标提案工作面；
            失败静默跳过（该会话退回启发式）。降级路径无新会话 id，天然不经过这里。 */
         bindExplicitAssociation(sessionId, card);
@@ -522,6 +590,10 @@ export function createActionExecutor(options = {}) {
  * @param {() => void} [options.closePage] 跳转分支（关整页）
  * @param {() => void} [options.keepPage] 不跳转分支（保持整页，注入方呈现 toast）
  * @param {(text: string, isError?: boolean) => void} [options.notify]
+ * @param {(input: {sessionId: string}) => Promise<unknown>} [options.armTeamIntent]
+ *        **团队意图登记**（add-cosmos-agent-team-toggle 4.3）：按钮 `team === true` 时按探索
+ *        会话 id 登记（arm 即时消费覆盖已运行会话，`agent/created` 兜底未运行场景）；autoSend
+ *        等待落地，其余非等待。缺省不登记。
  * @param {{unavailable?: string, running?: string, failed?: string}} [options.labels]
  * @param {object} [options.gate] 与提案动作共享的防重入门
  * @returns {{run: (input: {button: object, card: object}) => Promise<object>}}
@@ -532,6 +604,12 @@ export function createEmbryoActionExecutor(options = {}) {
   const closePage = typeof options.closePage === "function" ? options.closePage : () => {};
   const keepPage = typeof options.keepPage === "function" ? options.keepPage : () => {};
   const notify = typeof options.notify === "function" ? options.notify : () => {};
+  /* 团队意图登记（add-cosmos-agent-team-toggle 4.3）：目标 = 探索会话 id。 */
+  const armTeam = createTeamIntentArmer({
+    armTeamIntent: options.armTeamIntent,
+    notify,
+    labels: options.labels
+  });
   const resolveTarget = typeof options.resolveTarget === "function"
     ? options.resolveTarget
     : (card) => explorationTargetOf({ sessionId: card?.sessionId });
@@ -575,6 +653,12 @@ export function createEmbryoActionExecutor(options = {}) {
       if (!gate.enter()) return { ok: false, reason: "busy" };
       let armed = null;
       try {
+        /* 团队意图（add-cosmos-agent-team-toggle 4.3 / spec「星胚路径两相消费」）：
+           先于标记登记；autoSend 等待落地（有界超时在注入实现内），其余非等待。 */
+        if (button.team === true) {
+          const teamPending = armTeam({ sessionId: target.sessionId, wait: submit });
+          if (teamPending !== null) await teamPending;
+        }
         /* 标记必须先于 openSession：探索会话已为当前会话时 dock 经订阅原地消费。 */
         armed = pending.arm({ message, model, submit, targetSessionId: target.sessionId, setDraft: true });
         openSession(target.sessionId);

@@ -232,6 +232,142 @@ const button = { name: "探索新需求", prompt: "请使用 /cosmos-explore 探
     assert.equal(hero.peek()?.submit, true, "既有提交意图登记不变");
   }
 
+/* ── 3b. 团队意图登记（add-cosmos-agent-team-toggle 4.2/4.4 / spec
+   cosmos-constellation-actions「星座执行链路团队意图登记」）：登记先于标记与 openSession、
+   autoSend 等待 / float·native 非等待、三分支同一登记时点、缺席 toast 一次、未勾选与降级零行为 ── */
+{
+  const makeExecutor = (options = {}) => createConstellationExecutor({
+    pending: createPendingActionStore(),
+    floats: createFloatMarkerStore(),
+    createSession: async () => "team-sess",
+    openSession: () => {},
+    closePage: () => {},
+    now: () => 900_000,
+    ...options
+  });
+
+  /* autoSend 等待落地 + 登记先于标记（arm 时标记仍为空）。 */
+  {
+    const order = [];
+    const hero = createPendingActionStore();
+    let releaseTeam;
+    const executor = createConstellationExecutor({
+      pending: hero,
+      floats: createFloatMarkerStore(),
+      createSession: async () => {
+        order.push("create");
+        return "team-auto";
+      },
+      armTeamIntent: ({ sessionId }) => {
+        order.push("team:" + sessionId);
+        assert.equal(hero.peek(), null, "团队登记先于标记登记");
+        return new Promise((resolve) => {
+          releaseTeam = () => resolve({ ok: true, serviceAvailable: true });
+        });
+      },
+      openSession: (sessionId) => order.push("open:" + sessionId),
+      now: () => 910_000
+    });
+    const running = executor.run({ button: { ...button, autoSend: true, team: true }, group });
+    await new Promise((done) => setTimeout(done, 10));
+    assert.deepEqual(order, ["create", "team:team-auto"], "autoSend 分支等待登记落地（openSession 未提前）");
+    releaseTeam();
+    const run = await running;
+    assert.equal(run.ok, true);
+    assert.equal(run.channel, "hero");
+    assert.deepEqual(order, ["create", "team:team-auto", "open:team-auto"], "登记落地后链路照常");
+    assert.equal(hero.peek()?.targetSessionId, "team-auto", "标记在团队登记之后登记");
+  }
+
+  /* float 分支非等待（登记永不落地也不阻塞）：同一登记时点。 */
+  {
+    const order = [];
+    const executor = makeExecutor({
+      armTeamIntent: () => {
+        order.push("team");
+        return new Promise(() => {}); // 永悬决
+      },
+      openSession: () => order.push("open"),
+      now: () => 920_000
+    });
+    const run = await executor.run({ button: { ...button, team: true, autoSend: false }, group });
+    assert.equal(run.ok, true);
+    assert.equal(run.channel, "float");
+    assert.deepEqual(order, ["team", "open"], "float 非等待，链路照常");
+  }
+
+  /* native 分支同样登记（三分支同一时点）。 */
+  {
+    const order = [];
+    const executor = makeExecutor({
+      preflight: () => "native",
+      armTeamIntent: ({ sessionId }) => {
+        order.push("team:" + sessionId);
+        return Promise.resolve({ ok: true, serviceAvailable: true });
+      },
+      openSession: () => order.push("open"),
+      closePage: () => order.push("close"),
+      now: () => 930_000
+    });
+    const run = await executor.run({ button: { ...button, team: true, autoSend: false }, group });
+    assert.equal(run.ok, true);
+    assert.equal(run.channel, "preflight");
+    assert.deepEqual(order, ["team:team-sess", "open", "close"], "native 分支登记 + 关页");
+  }
+
+  /* 服务缺席 toast 一次 + 链路照常。 */
+  {
+    const notices = [];
+    const executor = makeExecutor({
+      armTeamIntent: async () => ({ ok: false, serviceAvailable: false }),
+      notify: (text, isError) => notices.push({ text, isError }),
+      labels: { teamUnavailable: "团队不可用（测试）" },
+      now: () => 940_000
+    });
+    const run = await executor.run({ button: { ...button, team: true, autoSend: true }, group });
+    assert.equal(run.ok, true);
+    assert.equal(notices.length, 1, "缺席 toast 恰一次");
+    assert.deepEqual(notices[0], { text: "团队不可用（测试）", isError: true });
+  }
+
+  /* 未勾选零行为 + 降级跳过（仅既有降级 toast）。 */
+  {
+    let arms = 0;
+    const plain = makeExecutor({
+      armTeamIntent: () => {
+        arms += 1;
+        return Promise.resolve({ ok: true, serviceAvailable: true });
+      },
+      now: () => 950_000
+    });
+    const plainRun = await plain.run({ button, group });
+    assert.equal(plainRun.ok, true);
+    assert.equal(arms, 0, "未勾选 → 零登记请求");
+
+    const notices = [];
+    const degrading = createConstellationExecutor({
+      pending: createPendingActionStore(),
+      floats: createFloatMarkerStore(),
+      createSession: async () => {
+        throw new Error("create failed");
+      },
+      armTeamIntent: () => {
+        arms += 1;
+        return Promise.resolve({ ok: true, serviceAvailable: true });
+      },
+      startSession: async () => {},
+      notify: (text) => notices.push(text),
+      now: () => 960_000
+    });
+    const degraded = await degrading.run({ button: { ...button, team: true, autoSend: true }, group });
+    assert.equal(degraded.ok, true);
+    assert.equal(degraded.degraded, true);
+    assert.equal(arms, 0, "降级路径跳过登记");
+    assert.equal(notices.length, 1, "仅既有降级 toast（不追加团队 toast）");
+    assert.ok(notices[0].includes("新建会话通道不可用"), "既有降级文案");
+  }
+}
+
 /* ── 4. 双通道标记隔离（spec 场景「标记互不误食」） ── */
 {
   const hero = createPendingActionStore();

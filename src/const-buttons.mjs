@@ -5,7 +5,7 @@
  * 独立纯逻辑模块——宿主半区（configstore 节归一化）与浏览器半区（设置页草稿校验 /
  * 星座动作条投影）共用，test/const-buttons-schema-smoke.mjs 直测。
  *
- * 模型：`{ name, prompt, autoSend, newSession, model?, shortcut? }`
+ * 模型：`{ name, prompt, autoSend, newSession, model?, shortcut?, team? }`
  *  - `name`   显示名（非空，trim 后去重；允许中文）；
  *  - `prompt` 提示词（非空）——**消息即纯提示词**，星座动作无 @提案引用；
  *  - `autoSend` **必填布尔，归一化恒输出**：缺省/null 视为 false，其余非布尔值拒绝；
@@ -16,6 +16,11 @@
  *  - `shortcut` 可选键盘快捷键（add-cosmos-shortcuts 3.2）：按钮键域枚举
  *    （`Digit0`–`Digit9` + `F2/F4/F8/F9`）；仅设置时输出（缺省/null/`""` 按未提供），
  *    池外值保存拒绝；跨列表与全局键的并集查重由保存面统一执行（`shortcutsIssue`）。
+ *  - `team` 可选布尔（add-cosmos-agent-team-toggle 2.2 / spec cosmos-constellation-actions
+ *    「星座按钮团队启用键」）：**智能体团队启用**——**仅布尔 `true` 时输出该键**
+ *    （键序最末，`shortcut` 之后）；`false`/`null`/缺省按未提供处理（存储最小形，语义 =
+ *    默认关）；其余非布尔值保存拒绝。读面容错模式（`tolerateUnknownTeam`）保留漂移原值
+ *    不回写（设置页回显「不可用」并拒绝保存）。
  *
  * **MUST NOT 含 `prepend` 键**（design D1）：星座动作没有「提示词与 @引用」的先后语义，
  * 该键出现在条目里即拒绝保存（不静默丢弃——静默丢弃会让设置页回显与配置文件漂移）。
@@ -23,7 +28,7 @@
  * 与提案动作 `buttons` 节的关系：同文件、**互不读写**（各自只认自己的节名与前缀），
  * 归一化口径同源但独立实现（design D1：两个生命周期独立、作用面不同的列表）。
  *
- * 键序固定 name → prompt → autoSend → newSession → model → shortcut（客户端
+ * 键序固定 name → prompt → autoSend → newSession → model → shortcut → team（客户端
  * `JSON.stringify` 比较依赖键序稳定；新键追加尾部，无键条目序列化逐字节不变）。
  */
 import { MAX_PROMPT_CHARS, normalizeButtonModel } from "./buttons.mjs";
@@ -42,15 +47,17 @@ export const MAX_CONST_BUTTONS = 32;
  * 去重口径：trim 后 name 相同 → 抛错（保存被拒绝并提示「名称重复」），不做静默先到先得。
  *
  * @param {unknown} raw
- * @param {{tolerateUnknownShortcut?: boolean}} [options] 读面容错（默认严格）：true → 池外
- *        `shortcut` 字符串原样保留（设置页回显「不可用」）；保存路径 MUST NOT 使用该模式。
+ * @param {{tolerateUnknownShortcut?: boolean, tolerateUnknownTeam?: boolean}} [options]
+ *        读面容错（默认严格）：true → 池外 `shortcut` / 非布尔 `team` 字符串原样保留
+ *        （设置页回显「不可用」）；保存路径 MUST NOT 使用该模式。
  * @returns {Array<{name: string, prompt: string, autoSend: boolean, newSession: true,
  *          model?: {provider: string, model: string, reasoningEffort?: string},
- *          shortcut?: string}>}
+ *          shortcut?: string, team?: true}>}
  * @throws {TypeError} 形状非法 / 含 prepend / 名称重复 / 超上限
  */
 export function normalizeConstButtons(raw, options = {}) {
   const tolerateUnknownShortcut = options?.tolerateUnknownShortcut === true;
+  const tolerateUnknownTeam = options?.tolerateUnknownTeam === true;
   let list = [];
   if (Array.isArray(raw)) list = raw;
   else if (raw && typeof raw === "object" && Array.isArray(raw.constellationButtons)) list = raw.constellationButtons;
@@ -98,11 +105,29 @@ export function normalizeConstButtons(raw, options = {}) {
         }
       }
     }
+    /* 团队启用键（add-cosmos-agent-team-toggle 2.2）：仅布尔 true 落键（键序最末）；
+       false/null/缺省按未提供处理（存储最小形，语义 = 默认关）；其余非布尔值保存拒绝。
+       读面容错模式（`tolerateUnknownTeam`）保留漂移原值不回写。 */
+    let team;
+    const rawTeam = item.team;
+    if (rawTeam !== undefined && rawTeam !== null) {
+      if (typeof rawTeam === "boolean") {
+        if (rawTeam === true) team = true;
+      } else if (tolerateUnknownTeam) {
+        team = rawTeam;
+      } else {
+        throw new TypeError(
+          `constellation button "${name}" team 智能团队开关必须为布尔值 (team must be a boolean)`
+        );
+      }
+    }
     if (seen.has(name)) throw new TypeError(`constellation button name "${name}" is duplicated`);
     seen.add(name);
     const entry = { name, prompt, autoSend: item.autoSend === true, newSession: true };
     if (model !== undefined) entry.model = model;
     if (shortcut !== undefined) entry.shortcut = shortcut;
+    /* 团队启用键序最末（shortcut 之后）：无该键条目序列化逐字节不变。 */
+    if (team !== undefined) entry.team = team;
     out.push(entry);
     if (out.length > MAX_CONST_BUTTONS) throw new TypeError(`constellationButtons exceeds ${MAX_CONST_BUTTONS} entries`);
   }
@@ -112,7 +137,7 @@ export function normalizeConstButtons(raw, options = {}) {
 /**
  * 浏览器半区的**容错投影**（读面，不抛错）：非法/残缺条目直接跳过，条目重建走
  * `normalizeConstButtons` 的同款键序与条件键口径（单条失败即丢弃该条，SHALL NOT 波及其余）。
- * 读面容错模式保留池外 `shortcut` 原值（设置页回显「不可用」；分发器不可触发）。
+ * 读面容错模式保留池外 `shortcut` 与非布尔 `team` 原值（设置页回显「不可用」；分发器不可触发）。
  *
  * 只读 `section.constellationButtons`——与提案动作的 `section.buttons` **零交集**
  * （spec 场景「与提案动作配置隔离」）。
@@ -127,7 +152,10 @@ export function constButtonsSectionOf(section) {
     if (typeof item.name !== "string" || typeof item.prompt !== "string") continue;
     if (!item.name.trim() || !item.prompt.trim()) continue;
     try {
-      const [entry] = normalizeConstButtons([item], { tolerateUnknownShortcut: true });
+      const [entry] = normalizeConstButtons([item], {
+        tolerateUnknownShortcut: true,
+        tolerateUnknownTeam: true
+      });
       if (entry) out.push(entry);
     } catch {
       /* 单条非法：跳过（读面容错） */

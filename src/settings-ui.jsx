@@ -87,6 +87,9 @@ const ACTION_COPY = {
   /* 每按钮「直达移除（免提示词）」（add-cosmos-embryo-dismiss-button 5.1）：仅快捷动作行
      提供（星胚直执行需要提案选中上下文与 proto 前置状态，星座按钮两者皆无）。 */
   showEmbryoDismiss: true,
+  /* 每按钮「启用智能体团队」（add-cosmos-agent-team-toggle 5.1）：两族动作都提供
+     （提案/星座链路都按按钮 team 登记团队意图）；直达移除行不呈现。 */
+  showTeam: true,
   /* 「发送前编辑」轻量偏好：仅星座动作页签提供（add-cosmos-native-composer 4.1）。 */
   showPreflight: false,
   newSessionTitle: ["newSessionTitle", "固定为「新增会话」：在提案所属工作区创建新会话（不可修改）"],
@@ -104,6 +107,8 @@ const CONSTELLATION_COPY = {
   showJump: false,
   showPreState: false,
   showEmbryoDismiss: false,
+  /* 每按钮「启用智能体团队」（add-cosmos-agent-team-toggle 5.1）：星座动作同样提供。 */
+  showTeam: true,
   showPreflight: true,
   newSessionTitle: ["constNewSessionTitle", "固定为「新增会话」：在当前星座对应工作区创建新会话（不可修改）"],
   newSessionTitleProto: null,
@@ -1077,6 +1082,8 @@ export function CosmosActionsPanel(props) {
         const directChecked = button.embryoDismiss === true;
         const directDrift = directChecked && !isProto;
         const isDirect = directChecked && isProto;
+        /* 团队开关漂移（add-cosmos-agent-team-toggle 5.1）：非布尔原值回显「不可用」。 */
+        const teamDrift = button.team !== undefined && typeof button.team !== "boolean";
         const directTitle = isDirect
           ? errorText("embryoDismissActiveTitle", "直达移除点击即执行移除：不组装消息、不导航、不涉及会话与模型")
           : undefined;
@@ -1160,6 +1167,28 @@ export function CosmosActionsPanel(props) {
                 />
                 {errorText("autoSendLabel", "自动发送")}
               </label>
+              {/* 「启用智能体团队」（add-cosmos-agent-team-toggle 5.1 / spec「按钮团队启用设置
+                  字段」）：两标签页并排于「自动发送」之后；直达移除行（零会话依赖）不呈现。
+                  服务缺席不禁用/不隐藏（配置与运行时能力解耦）；固定说明文案标注能力含义与
+                  默认关语义；非布尔漂移值原样回显并标「不可用」（保存由草稿校验拒绝）。 */}
+              {copy.showTeam === true && !isDirect ? (
+                <label
+                  className="cs-auto"
+                  data-team={teamDrift ? "drift" : button.team === true ? "true" : undefined}
+                  title={teamDrift
+                    ? errorText("teamDriftTitle", "本行团队开关不是布尔值（手工编辑漂移）：本行配置不可用，保存会被拒绝；勾选/取消即可修复为本变更的形状。")
+                    : errorText("teamTitle", "勾选：点击该按钮创建/触发会话时，先为该会话开启「智能体团队协作」（默认关；覆盖自动发送 / 浮窗补写 / 跳转会话页与星胚链路）。目标会话已开启时同值幂等；宿主未挂载团队服务时不阻断点击链路，仅在执行时提示一次。")}
+                >
+                  <input
+                    type="checkbox"
+                    checked={button.team === true}
+                    disabled={disabled}
+                    aria-label={errorText("teamLabel", "启用智能体团队")}
+                    onChange={(event) => face.editButton(index, "team", event.target.checked)}
+                  />
+                  {errorText("teamLabel", "启用智能体团队")}
+                </label>
+              ) : null}
               {/* 「直达移除（免提示词）」（add-cosmos-embryo-dismiss-button 5.1）：仅快捷动作
                   行呈现；仅当前置状态草稿为「待创建（星胚）」时可勾选（其余行禁用 + 说明）。
                   勾选即清空草稿提示词并禁用消息面控件（下方）；切走前置状态由控制器自动清勾。 */}

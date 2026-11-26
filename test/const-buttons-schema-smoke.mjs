@@ -260,4 +260,58 @@ const throwsWith = (fn, pattern, label) => {
   );
 }
 
+/* ── 11. 团队启用键（add-cosmos-agent-team-toggle 2.2/2.3 / spec
+   cosmos-constellation-actions「星座按钮团队启用键」）：最小形 / 非布尔拒绝 / 键序
+   shortcut 之后 / 序列化逐字节不变 / 漂移读面容错 ── */
+{
+  const [plain] = normalizeConstButtons([{ name: "a", prompt: "p" }]);
+  assert.ok(!("team" in plain), "缺省 team → 不输出键（默认关）");
+
+  const [enabled] = normalizeConstButtons([{ name: "a", prompt: "p", team: true }]);
+  assert.deepEqual(
+    enabled,
+    { name: "a", prompt: "p", autoSend: false, newSession: true, team: true },
+    "team: true 落键"
+  );
+  assert.deepEqual(
+    Object.keys(enabled),
+    ["name", "prompt", "autoSend", "newSession", "team"],
+    "键序最末（newSession 之后）"
+  );
+
+  const [withShortcut] = normalizeConstButtons([{
+    name: "a", prompt: "p", model: { provider: "x", model: "y" }, shortcut: "F4", team: true
+  }]);
+  assert.deepEqual(
+    Object.keys(withShortcut),
+    ["name", "prompt", "autoSend", "newSession", "model", "shortcut", "team"],
+    "team 位于 shortcut 之后（最末）"
+  );
+
+  for (const absent of [false, null, undefined]) {
+    const [entry] = normalizeConstButtons([{ name: "a", prompt: "p", team: absent }]);
+    assert.ok(!("team" in entry), "team=" + String(absent) + " → 不落键（存储最小形，不拒绝）");
+  }
+  for (const bad of [1, 0, "true", "yes", {}]) {
+    assert.throws(
+      () => normalizeConstButtons([{ name: "a", prompt: "p", team: bad }]),
+      /team must be a boolean/,
+      "非布尔 team 拒绝：" + JSON.stringify(bad)
+    );
+  }
+
+  /* 序列化逐字节不变（spec 场景「星座团队键序列化逐字节不变」）。 */
+  const legacy = { name: "旧", prompt: "p", autoSend: true, newSession: true, model: { provider: "x", model: "y" }, shortcut: "F8" };
+  assert.equal(JSON.stringify(normalizeConstButtons([legacy])[0]), JSON.stringify(legacy), "既有条目（无 team）序列化逐字节不变");
+
+  /* 漂移读面容错：非布尔原值保留（设置页标「不可用」并拒绝保存）。 */
+  const driftItem = { name: "旧行", prompt: "p", team: 1 };
+  assert.throws(() => normalizeConstButtons([driftItem]), /team must be a boolean/, "默认严格读面同样拒绝");
+  const [drift] = normalizeConstButtons([driftItem], { tolerateUnknownTeam: true });
+  assert.equal(drift.team, 1, "容错读保留漂移原值");
+  const projected = constButtonsSectionOf({ constellationButtons: [driftItem] });
+  assert.equal(projected.length, 1, "读面容错投影不丢漂移条目");
+  assert.equal(projected[0].team, 1, "漂移值随投影原样保留");
+}
+
 console.log("const-buttons-schema-smoke: all assertions passed");

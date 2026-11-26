@@ -54,6 +54,54 @@ export async function bindSession(input) {
 }
 
 /**
+ * 团队意图登记的有界等待窗（add-cosmos-agent-team-toggle 4.1）：autoSend 分支最多等在
+ * 这么多毫秒，超时照常放行（`armTeamIntent` 的 AbortController 截止窗）。
+ */
+export const TEAM_INTENT_ARM_TIMEOUT_MS = 1200;
+
+/**
+ * 团队意图登记桥（add-cosmos-agent-team-toggle 4.1 / spec cosmos-actions「执行链路团队意图
+ * 登记」）：`POST /team-intent { sessionId }` → `{ ok, serviceAvailable }`。
+ * **有界超时**（`TEAM_INTENT_ARM_TIMEOUT_MS`）：autoSend 分支等待登记落地，超时照常放行。
+ * 容错形与 `bindSession` 同款（网络/非 2xx/坏体 → `{ok:false, error}`），但
+ * `serviceAvailable` 只在服务端**显式**返回 false 时为 false（缺席 toast 的唯一判据；
+ * 超时/网络/旧宿主端点缺席一律按未知 → true，保持静默不阻断）。
+ * @param {{sessionId?: string}} [input]
+ * @returns {Promise<{ok: true, serviceAvailable: boolean, immediate?: boolean, armed?: boolean} |
+ *          {ok: false, serviceAvailable: boolean, error: string}>}
+ */
+export async function armTeamIntent(input) {
+  const sessionId = typeof input?.sessionId === "string" ? input.sessionId.trim() : "";
+  if (!sessionId) return { ok: false, serviceAvailable: true, error: "invalid sessionId" };
+  const controller = typeof AbortController === "function" ? new AbortController() : null;
+  const timer = controller !== null ? setTimeout(() => controller.abort(), TEAM_INTENT_ARM_TIMEOUT_MS) : null;
+  try {
+    const res = await fetch(API + "/team-intent", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ sessionId }),
+      ...(controller === null ? {} : { signal: controller.signal })
+    });
+    const body = await res.json().catch(() => ({}));
+    const serviceAvailable = body?.serviceAvailable !== false;
+    if (!res.ok || body?.ok !== true) {
+      return { ok: false, serviceAvailable, error: body?.error || res.status + " " + res.statusText };
+    }
+    return {
+      ok: true,
+      serviceAvailable,
+      immediate: body?.immediate === true,
+      armed: body?.armed === true
+    };
+  } catch (error) {
+    /* 超时/网络失败：serviceAvailable 未知（按 true）→ 零 toast、零阻断。 */
+    return { ok: false, serviceAvailable: true, error: String(error?.message || error) };
+  } finally {
+    if (timer !== null) clearTimeout(timer);
+  }
+}
+
+/**
  * 动作执行队列桥（add-cosmos-action-queue 5.1）：与 `fetchScene` / `bindSession` 同款
  * 容错形（网络/非 2xx/坏体 → `{ok:false, error}`）。
  */

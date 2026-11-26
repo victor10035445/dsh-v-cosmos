@@ -1467,7 +1467,10 @@ function constFloatBody(source) {
     clientSource.includes('startSession: (workspaceId, message, group) => startSessionVia(workspaceId, message, group, { whenDraftExists: "replace" }),'),
     "星座执行器降级保留 replace（覆盖语义只活在降级）"
   );
-  assert.ok(clientSource.includes('labels: { degraded: tr("cosmos.actions.degraded"'), "降级 toast 走词典");
+  assert.ok(
+    clientSource.includes('degraded: tr("cosmos.actions.degraded", "新建会话通道不可用，已降级为复用空白会话")'),
+    "降级 toast 走词典"
+  );
   assert.ok(clientSource.includes('"cosmos.actions.degraded": "新建会话通道不可用，已降级为复用空白会话"'), "词典 zh：降级文案");
   assert.ok(clientSource.includes('"cosmos.actions.degraded": "New-session channel unavailable; fell back to reusing the workspace blank"'), "词典 en：降级文案");
 }

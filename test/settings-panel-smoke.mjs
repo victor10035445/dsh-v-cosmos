@@ -1862,4 +1862,134 @@ const BUTTON = { name: "审查", prompt: "请使用 /cosmos-review 审查本提�
   }
 }
 
+/* ── 团队启用复选框（add-cosmos-agent-team-toggle 5.1/5.2 / spec cosmos-button-settings
+   「按钮团队启用设置字段」）：勾选落键 / 取消落键消失 / 键序最末 / 非布尔拒绝 / 漂移回显 /
+   直达移除行不产生键 / 服务缺席不禁用（字段不依赖任何运行时服务） ── */
+{
+  /* 草稿形状：仅 true 落键（键序最末）；false/缺省不落键；非布尔漂移原样回显。 */
+  assert.deepEqual(
+    Object.keys(buttonDraftOf({ name: "a", prompt: "p", team: true })),
+    ["name", "prompt", "autoSend", "newSession", "team"],
+    "快捷动作草稿：team 位于最末"
+  );
+  assert.equal("team" in buttonDraftOf({ name: "a", prompt: "p", team: false }), false, "false 不落键");
+  assert.equal("team" in buttonDraftOf({ name: "a", prompt: "p" }), false, "缺省不落键");
+  assert.equal(
+    buttonDraftOf({ name: "a", prompt: "p", team: "yes" }).team,
+    "yes",
+    "非布尔漂移原样回显（保存由草稿校验拒绝）"
+  );
+  assert.deepEqual(
+    Object.keys(constButtonDraftOf({ name: "a", prompt: "p", team: true })),
+    ["name", "prompt", "autoSend", "newSession", "team"],
+    "星座草稿：team 位于最末"
+  );
+  assert.equal("team" in constButtonDraftOf({ name: "a", prompt: "p" }), false, "星座缺省不落键");
+
+  /* 校验：非布尔拒绝（两列表同口径）；布尔/缺省合法。 */
+  for (const bad of [1, 0, "true", {}]) {
+    assert.equal(
+      buttonIssue([{ name: "a", prompt: "p", team: bad }]),
+      "buttonTeamInvalid",
+      "快捷动作非布尔 team 拒绝：" + JSON.stringify(bad)
+    );
+    assert.equal(
+      constButtonIssue([{ name: "a", prompt: "p", team: bad }]),
+      "buttonTeamInvalid",
+      "星座非布尔 team 拒绝：" + JSON.stringify(bad)
+    );
+  }
+  assert.equal(buttonIssue([{ name: "a", prompt: "p", team: true }]), "", "布尔 team 合法");
+  assert.equal(buttonIssue([{ name: "a", prompt: "p" }]), "", "缺省 team 合法");
+  assert.equal(constButtonIssue([{ name: "a", prompt: "p", team: false }]), "", "false 合法（按未提供）");
+
+  /* 保存：勾选落 team:true（键序最末）、取消后键消失；重新回显勾选态。 */
+  {
+    const scope = fakeScope({ buttons: [{ ...BUTTON }] });
+    const face = createButtonSettingsController(scope);
+    face.editButton(0, "team", true);
+    const savedState = face.getSnapshot();
+    assert.equal(savedState.dirty, true, "勾选团队 → 草稿 dirty");
+    const ok = await face.save();
+    assert.equal(ok, true, "保存成功");
+    const written = scope.calls.at(-1);
+    assert.equal(written.op, "set");
+    assert.deepEqual(
+      Object.keys(written.value[0]),
+      ["name", "prompt", "autoSend", "newSession", "team"],
+      "落盘条目 team 位于键序最末"
+    );
+    assert.equal(written.value[0].team, true, "勾选保存落 team:true");
+    assert.deepEqual(face.getSnapshot().buttonsDraft[0].team, true, "重新打开设置页回显勾选态");
+    assert.equal(face.getSnapshot().dirty, false, "保存后草稿回清");
+
+    /* 取消勾选 → 保存后条目不含 team 键（存储最小形）。 */
+    face.editButton(0, "team", false);
+    assert.equal(face.getSnapshot().dirty, true, "取消勾选 → dirty");
+    assert.equal(await face.save(), true);
+    const cleared = scope.calls.at(-1);
+    assert.equal("team" in cleared.value[0], false, "取消勾选保存后条目不含 team 键");
+    assert.deepEqual(Object.keys(cleared.value[0]), ["name", "prompt", "autoSend", "newSession"], "其余键与键序不变");
+  }
+
+  /* 星座标签页同款字段（保存口径一致，键序在 shortcut 之后）。 */
+  {
+    const scope = fakeScope({ constellationButtons: [{ name: "探索", prompt: "继续", autoSend: false, newSession: true, shortcut: "F4" }] });
+    const face = createButtonSettingsController(scope, CONSTELLATION_PROFILE);
+    face.editButton(0, "team", true);
+    assert.equal(await face.save(), true);
+    const written = scope.calls.at(-1);
+    assert.deepEqual(
+      Object.keys(written.value[0]),
+      ["name", "prompt", "autoSend", "newSession", "shortcut", "team"],
+      "星座落盘：team 在 shortcut 之后（最末）"
+    );
+    assert.equal(written.value[0].team, true);
+  }
+
+  /* 直达移除行（proto ∧ embryoDismiss）：MUST NOT 产生 team 键（即使生效值携带）。 */
+  {
+    const second = fakeScope({
+      buttons: [
+        { name: "移除", prompt: "", preState: "proto", embryoDismiss: true, team: true },
+        { name: "普通", prompt: "p" }
+      ]
+    });
+    const secondFace = createButtonSettingsController(second);
+    secondFace.editButton(1, "prompt", "p2");
+    assert.equal(await secondFace.save(), true, "直执行行可随列表保存");
+    const written = second.calls.at(-1);
+    assert.equal("team" in written.value[0], false, "直达移除行保存 MUST NOT 产生 team 键");
+    assert.deepEqual(
+      Object.keys(written.value[0]),
+      ["name", "prompt", "autoSend", "newSession", "preState", "embryoDismiss"],
+      "直执行行其余键不变"
+    );
+    assert.equal(written.value[1].prompt, "p2", "同列表普通行照常保存");
+  }
+
+  /* 非布尔漂移：草稿回显且拒绝保存（不静默丢弃——修正路径 = 勾选/取消）。 */
+  {
+    const scope = fakeScope({ buttons: [{ ...BUTTON, team: "yes" }] });
+    const face = createButtonSettingsController(scope);
+    const snapshot = face.getSnapshot();
+    assert.equal(snapshot.buttonsInvalid, true, "漂移 team → 面板 invalid");
+    assert.equal(snapshot.buttonsInvalidReason, "buttonTeamInvalid", "错误键 = 智能团队开关必须为布尔值");
+    assert.equal(snapshot.buttonsDraft[0].team, "yes", "漂移值原样回显");
+    assert.equal(await face.save(), false, "漂移值保存被拒绝");
+    assert.equal(scope.calls.length, 0, "拒绝保存零写入");
+    face.editButton(0, "team", true);
+    assert.equal(await face.save(), true, "勾选修复后保存成功");
+    assert.equal(scope.calls.at(-1).value[0].team, true);
+  }
+
+  /* 服务缺席不禁用：字段纯配置面（控制器不依赖 agentTeams/任何运行时服务）。 */
+  {
+    const scope = fakeScope({ buttons: [{ ...BUTTON }] });
+    const face = createButtonSettingsController(scope);
+    face.editButton(0, "team", true);
+    assert.equal(await face.save(), true, "无团队服务时照常可勾选保存");
+  }
+}
+
 console.log("settings-panel-smoke: all assertions passed");

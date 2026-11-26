@@ -33,7 +33,7 @@
  *  - **废除** `whenDraftExists: 'replace'` 主路径覆盖语义（BREAKING）；该语义只保留在
  *    `sessions.create` 失败后的降级回落链路。
  */
-import { buttonModelOf, createActionGate, createPendingActionStore, draftMatches, isBlankDraft } from "./actions.mjs";
+import { buttonModelOf, createActionGate, createPendingActionStore, createTeamIntentArmer, draftMatches, isBlankDraft } from "./actions.mjs";
 
 /** 浮窗标记的呈现窗口（design D5：约 10s；**仅约束「点击 → 浮窗呈现」**）。 */
 export const FLOAT_MARKER_TTL_MS = 10_000;
@@ -522,6 +522,11 @@ export function promptFailureTextOf(failure) {
  * @param {(wsId: string, message: string, group: object) => unknown} [options.startSession]
  *        **降级路径**：官方 `startSession(工作区, { prompt, whenDraftExists: 'replace' })`
  *        的薄包装（第三参为钻取分组，供实现侧按 `wsPath` 解析权威 id）
+ * @param {(input: {sessionId: string}) => Promise<unknown>} [options.armTeamIntent]
+ *        **团队意图登记**（add-cosmos-agent-team-toggle 4.2 / spec「星座执行链路团队意图
+ *        登记」）：按钮 `team === true` 时于 `createSession` 成功后、标记登记与 `openSession`
+ *        之前登记；autoSend 等待落地（注入实现自带的有界超时），float / native 非等待。
+ *        降级路径（无目标会话 id）确定性跳过；缺省不登记（老宿主/测试面行为不变）。
  * @param {(text: string, isError?: boolean) => void} [options.notify]
  * @param {object} [options.labels] 文案（degraded——降级注释；缺省内置中文）
  * @param {() => number} [options.now] 私有门时钟（未注入 gate 时生效）
@@ -539,6 +544,13 @@ export function createConstellationExecutor(options = {}) {
   const openSession = typeof options.openSession === "function" ? options.openSession : null;
   const startSession = options.startSession;
   const notify = typeof options.notify === "function" ? options.notify : () => {};
+  /* 团队意图登记（add-cosmos-agent-team-toggle 4.2）：三分支统一在 createSession 成功后
+     登记；等待策略（autoSend 等待 / float·native 非等待）与缺席 toast 由共享适配器决定。 */
+  const armTeam = createTeamIntentArmer({
+    armTeamIntent: options.armTeamIntent,
+    notify,
+    labels: options.labels
+  });
   const degradedLabel = typeof options.labels?.degraded === "string" && options.labels.degraded
     ? options.labels.degraded
     : "新建会话通道不可用，已降级为复用空白会话";
@@ -602,6 +614,14 @@ export function createConstellationExecutor(options = {}) {
           await startSession(group.wsId, message, group);
           settlePage();
           return { ok: true, message, marker, channel, degraded: true };
+        }
+        /* 团队意图（add-cosmos-agent-team-toggle 4.2 / spec「星座执行链路团队意图登记」）：
+           三分支统一在 createSession 成功后登记，先于标记登记与 openSession；autoSend 分支
+           等待落地（有界超时在注入实现内），float / native 非等待。失败/超时零阻断；
+           服务缺席 toast 一次。降级路径无新会话 id，天然不经过这里（确定性跳过登记）。 */
+        if (button?.team === true) {
+          const teamPending = armTeam({ sessionId, wait: submit });
+          if (teamPending !== null) await teamPending;
         }
         /* 标记必须先于 openSession：新会话首屏相位（hero / 浮窗挂载）可能在导航
            完成瞬间出现。恒新建路径恒登记（未勾选也需落稿），判据 = 目标 SessionId。 */

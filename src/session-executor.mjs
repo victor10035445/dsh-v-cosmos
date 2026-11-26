@@ -211,14 +211,22 @@ export function createQueueDeliverer(options = {}) {
  * `isArchived`）在点火前先行完成——归档会话的 `prompt` 可能被宿主接受但 step 被
  * ArchivedSessionGate 拒绝（永不 running），必须在投递前拦截。
  *
+ * 团队启用（add-cosmos-agent-team-toggle 3.5 / spec「星胚路径两相消费」）：`entry.button.team`
+ * 为 true 时，**prompt 之前**调用注入的 `enableTeam(sessionId)`（宿主侧即时消费 + 现场登记
+ * 意图的单一服务函数）；live root agent 在册即直接 `setEnabled`，不可得则由 `agent/created`
+ * 兜底。失败只 warn，MUST NOT 改变投递成败（直投链路本身不受影响）。
+ *
  * @param {object} [options]
  * @param {object|null} [options.sessionController] 宿主会话控制面
  * @param {object|null} [options.logger]
+ * @param {(sessionId: string) => (void | Promise<void>)} [options.enableTeam] 团队启用通道
+ *        （`entry.button.team === true` 时于 prompt 前 await 调用；缺省不启用）
  * @returns {(entry: object) => Promise<{ok: true, sessionId: string} | {ok: false, reason: string, message: string}>}
  */
 export function createWarpProtoDeliverer(options = {}) {
   const sessionController = options.sessionController ?? null;
   const logger = options.logger ?? null;
+  const enableTeam = typeof options.enableTeam === "function" ? options.enableTeam : null;
   const missing = missingMembersOf(sessionController, ["prompt"]);
   return async function deliver(entry) {
     if (missing.length > 0) {
@@ -235,6 +243,14 @@ export function createWarpProtoDeliverer(options = {}) {
     const text = assembleEmbryoMessage(entry?.button, { slugs: entry?.anchorSlugs });
     if (!text) {
       return { ok: false, reason: "delivery-failed", message: "星胚动作提示词为空" };
+    }
+    /* 团队启用先于 prompt（同一条投递链的旁路）：不可得时现场登记意图，失败不阻断投递。 */
+    if (enableTeam !== null && entry?.button?.team === true) {
+      try {
+        await enableTeam(sessionId);
+      } catch (error) {
+        warn(logger, `星胚投递前团队启用失败（不阻断投递）: ${errorMessageOf(error)}`);
+      }
     }
     try {
       await sessionController.prompt(

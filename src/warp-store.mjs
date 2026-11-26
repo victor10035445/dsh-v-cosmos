@@ -16,7 +16,7 @@
  *      deps?,                              // 附着时刻依赖快照 `[{slug, state}]`
  *                                          // （second-add-cross-proposal-dependency-gating 1.1；
  *                                          //  形状与 dep-resolve.normalizeRequires 同形，缺失 = 无守卫）
- *      button: { name, prompt, model?, prepend?, preState? },
+ *      button: { name, prompt, model?, prepend?, preState?, team? },
  *      rule: "direct" | "queue",
  *      state: "grayed"|"ready"|"launching"|"executing"|"failed"|"skipped",
  *      stateAt, enqueuedAt, sessionId?, startedAt?, reason?, message? }
@@ -114,6 +114,9 @@ export function normalizeWarpEntry(raw) {
     preState = source.preState.trim();
     button.preState = preState;
   }
+  /* 团队启用键（add-cosmos-agent-team-toggle 3.5）：仅 true 随快照保留——曲率 proto 直投
+     在 prompt 前按 `entry.button.team` 启用团队（live agent 在册即直启，不可得现场登记意图）。 */
+  if (source?.team === true) button.team = true;
   const entry = {
     id,
     wsId,

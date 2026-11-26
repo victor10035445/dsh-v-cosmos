@@ -372,8 +372,8 @@ const clientSource = readFileSync(new URL("../src/client.jsx", import.meta.url),
 {
   /* 12a. api 桥与投影 store */
   assert.ok(
-    clientSource.includes('import { fetchScene, subscribeCosmosEvents, bindSession, fetchQueue, queueAction, fetchWarp, warpAction, fetchWorks, pickWorks, updateWork, removeWork, openWork, revealWork } from "./api.mjs";'),
-    "api 桥导入 fetchQueue / queueAction（并含曲率 fetchWarp / warpAction）"
+    clientSource.includes('import { fetchScene, subscribeCosmosEvents, bindSession, armTeamIntent, fetchQueue, queueAction, fetchWarp, warpAction, fetchWorks, pickWorks, updateWork, removeWork, openWork, revealWork } from "./api.mjs";'),
+    "api 桥导入 fetchQueue / queueAction（并含曲率 fetchWarp / warpAction / 团队 armTeamIntent）"
   );
   assert.ok(
     clientSource.includes("projectQueuePanel") && clientSource.includes("queuePendingKeysOf") && clientSource.includes("queueScopeOf"),

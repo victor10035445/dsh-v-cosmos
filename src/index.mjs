@@ -228,6 +228,8 @@ import {
   createWarpProtoDeliverer
 } from "./session-executor.mjs";
 import { normalizeView, createConfigStore, resolveConfigStorePath } from "./configstore.mjs";
+/* 团队意图集合（add-cosmos-agent-team-toggle 3.1）：内存 Map + 一次性消费 + TTL。 */
+import { createTeamIntentStore } from "./team-intent.mjs";
 import {
   normalizeArchiveRequest,
   normalizeRenameRequest,
@@ -982,6 +984,106 @@ export function apply(ctx, config, options = {}) {
     }
   };
 
+  /* ── 智能体团队意图（add-cosmos-agent-team-toggle 3.x / spec cosmos-agent-team-toggle） ──
+     启用机制 = 「登记时即时消费 + `agent/created` 兜底」：客户端在 `createSession` 成功后
+     把目标 sessionId 交给 `/team-intent`；宿主先按 sessionId 解析 live root agent 直接
+     `setEnabled(agent, true)`（新 blank 会话在 createSession 返回前已发布 live agent，
+     即时消费先于后续 openSession/落稿/发送），不可得（未启动的探索会话）或失败时保留
+     一次性意图，由 `agent/created`（root、origin ≠ subagent）消费。服务缺席 = 探测式 face
+     恒 `serviceAvailable:false`（端点零状态变化、订阅不注册）。 */
+  /** 团队意图集合（内存态，TTL 30min；宿主重启即清空，不持久化）。 */
+  const teamIntents = createTeamIntentStore();
+  /**
+   * 探测式团队服务 face（D6）：`ctx.agentTeams` 对象 ∧ `setEnabled` 函数；缺席/抛错 → null。
+   * 不走 inject 声明——服务是可选依赖（缺席时本能力静默降级，其余 Cosmos 能力不受影响）。
+   */
+  const agentTeamFace = () => {
+    try {
+      const service = typeof ctx.get === "function" ? ctx.get("agentTeams") : null;
+      if (!service || typeof service !== "object") return null;
+      return typeof service.setEnabled === "function" ? service : null;
+    } catch {
+      return null;
+    }
+  };
+  /** root agent 判定（spec「宿主 agent-created 消费挂点」：origin 非 subagent）。 */
+  const isRootAgent = (agent) => agent?.session?.header?.origin !== "subagent";
+  /**
+   * 即时启用单次尝试：可解析 live root agent → `setEnabled(agent, true)`。
+   * @param {unknown} sessionId 目标会话 id
+   * @returns {Promise<{ok: boolean, serviceAvailable: boolean, immediate: boolean, error?: string}>}
+   *          `serviceAvailable:false` = 宿主未挂服务；`ok:false ∧ serviceAvailable:true` =
+   *          会话暂无 live agent（或启用抛错）→ 调用方保留意图走兜底。
+   */
+  const setTeamEnabledForSession = async (sessionId) => {
+    const service = agentTeamFace();
+    if (service === null) return { ok: false, serviceAvailable: false, immediate: false };
+    const id = typeof sessionId === "string" ? sessionId.trim() : "";
+    if (!id) return { ok: false, serviceAvailable: true, immediate: false };
+    const agent = agentOf(id);
+    if (!agent || !isRootAgent(agent)) return { ok: false, serviceAvailable: true, immediate: false };
+    try {
+      await service.setEnabled(agent, true);
+      return { ok: true, serviceAvailable: true, immediate: true };
+    } catch (error) {
+      /* 消费是异步旁路：抛错只记日志（含 TEAM_LEAD_REQUIRED），不回传、不阻断主链路。 */
+      ctx.logger?.warn?.(
+        "[dsh-v-cosmos] 团队模式即时启用失败（保留意图走 agent/created 兜底）: %s",
+        String(error?.message || error)
+      );
+      return { ok: false, serviceAvailable: true, immediate: false, error: String(error?.message || error) };
+    }
+  };
+  /**
+   * 团队启用的**单一服务函数**（意图端点与曲率 proto 直投共用）：即时消费 → 不可得/失败
+   * → 登记新意图（`agent/created` 兜底）。永不抛错（团队启用失败不影响调用方链路）。
+   * @param {string} sessionId 目标会话 id
+   * @returns {Promise<{ok: boolean, serviceAvailable: boolean, immediate: boolean, armed: boolean}>}
+   */
+  const enableTeamForSession = async (sessionId) => {
+    const id = typeof sessionId === "string" ? sessionId.trim() : "";
+    if (!id) {
+      return { ok: false, serviceAvailable: agentTeamFace() !== null, immediate: false, armed: false };
+    }
+    const immediate = await setTeamEnabledForSession(id);
+    if (immediate.ok === true) return { ok: true, serviceAvailable: true, immediate: true, armed: false };
+    const armed = teamIntents.arm(id) !== null;
+    return {
+      ok: armed,
+      serviceAvailable: immediate.serviceAvailable,
+      immediate: false,
+      armed
+    };
+  };
+  /**
+   * `agent/created` 消费挂点（spec「宿主 agent-created 消费挂点」）：root agent ∧ 意图命中
+   * → **先一次性清除意图**（含 setEnabled 抛错路径）再尝试启用。服务缺席时**不注册**。
+   * listener 必须自吞全部异常：serial 事件的监听器抛错会让 `announce()` 拒绝并回滚 Agent 创建。
+   */
+  const disposeTeamIntentListener = agentTeamFace() === null || typeof ctx.on !== "function"
+    ? null
+    : ctx.on("agent/created", async (payload) => {
+      try {
+        const agent = payload?.agent ?? null;
+        if (!agent || typeof agent !== "object") return;
+        const sessionId = typeof agent.id === "string" ? agent.id : "";
+        if (!sessionId || !isRootAgent(agent)) return;
+        if (teamIntents.consume(sessionId) === null) return;
+        const service = agentTeamFace();
+        if (service === null) return;
+        try {
+          await service.setEnabled(agent, true);
+        } catch (error) {
+          ctx.logger?.warn?.(
+            "[dsh-v-cosmos] 团队意图消费失败（不阻断会话主链路）: %s",
+            String(error?.message || error)
+          );
+        }
+      } catch (error) {
+        ctx.logger?.warn?.("[dsh-v-cosmos] agent/created 团队消费异常（已忽略）: %s", String(error?.message || error));
+      }
+    });
+
   /** 投递器（失败显式返回原因；MUST NOT 回落前台 hero 通道）。 */
   const deliverQueuedEntry = createQueueDeliverer({
     sessionController: ctx.sessionController,
@@ -1108,10 +1210,15 @@ export function apply(ctx, config, options = {}) {
     titlePrefix: "曲率"
   });
 
-  /** proto 直投器（星胚目标：既有探索会话，零 create/rename/草稿；spike-findings §1.4）。 */
+  /** proto 直投器（星胚目标：既有探索会话，零 create/rename/草稿；spike-findings §1.4）。
+      团队启用（add-cosmos-agent-team-toggle 3.5 / spec「星胚路径两相消费」）：投递前对
+      `entry.button.team === true` 条目调用同一即时消费服务——live root agent 在册即直接启用
+      （曲率点火与点击可能相距很远，不依赖点击时刻的旧意图）；不可得 → 现场登记新意图交
+      `agent/created` 兜底。失败只记日志，直投链路本身不受影响。 */
   const deliverWarpProto = createWarpProtoDeliverer({
     sessionController: ctx.sessionController,
-    logger: ctx.logger ?? null
+    logger: ctx.logger ?? null,
+    enableTeam: (sessionId) => enableTeamForSession(sessionId)
   });
 
   /** 曲率投递入口：按目标形态分派。 */
@@ -2711,6 +2818,33 @@ export function apply(ctx, config, options = {}) {
             return;
           }
 
+          /* ── 智能体团队意图登记（add-cosmos-agent-team-toggle 3.2 / spec
+             「团队意图登记端点」）：`{ sessionId }` → 即时消费（live root agent →
+             `setEnabled(agent, true)`）成功即不保留意图；不可得/失败 → 保留一次性意图由
+             `agent/created` 兜底。响应恒带 `serviceAvailable` 探测值；服务缺席恒
+             `{ ok:false, serviceAvailable:false }` 且零状态变化；非法请求 400
+             `{ ok:false }`（意图集合无变化、零 setEnabled）。 */
+          if (route === "/team-intent" && req.method === "POST") {
+            const body = await readJsonBody(req);
+            const sessionId = typeof body?.sessionId === "string" ? body.sessionId.trim() : "";
+            if (agentTeamFace() === null) {
+              json(res, 200, { ok: false, serviceAvailable: false });
+              return;
+            }
+            if (!sessionId) {
+              json(res, 400, { ok: false, serviceAvailable: true, error: "invalid" });
+              return;
+            }
+            const outcome = await enableTeamForSession(sessionId);
+            json(res, 200, {
+              ok: outcome.ok,
+              serviceAvailable: outcome.serviceAvailable,
+              immediate: outcome.immediate,
+              armed: outcome.armed
+            });
+            return;
+          }
+
           /* ── 渲染服务端点（step5-cosmos-path-render-convergence 2.1 / spec「渲染服务端点」） ──
              外部技能加载机制（dsh-v-skill-links 等）注入前把待注入正文**整段**提交 →
              端点按契约「路径令牌契约」语义渲染后整段返回（`content` + 四枚状态键）。
@@ -3411,6 +3545,8 @@ export function apply(ctx, config, options = {}) {
     return () => {
       dispose();
       disposeQueueListeners(); // 摘除 agent 事件面监听
+      disposeTeamIntentListener?.(); // 摘除 agent/created 团队消费挂点
+      teamIntents.clear(); // 意图是易失态：卸载即清（不触碰会话/配置）
       scheduler.dispose(); // 清队列定时器（持久化状态不触碰）
       warpScheduler.dispose(); // 清曲率定时器 / 绑定（持久化状态不触碰）
       stopConfigWatch();

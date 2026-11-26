@@ -1301,6 +1301,244 @@ const button = { name: "审查", prompt: "请使用 /cosmos-review 审查本提�
   }
 }
 
+/* ── 4f. 团队意图登记（add-cosmos-agent-team-toggle 4.1/4.4 / spec cosmos-actions
+   「执行链路团队意图登记」）：登记先于标记、autoSend 等待 / float 非等待、缺席 toast 一次、
+   失败零阻断、未勾选与降级路径零行为 ── */
+{
+  /* 登记先于标记 + autoSend 等待落地（登记 Promise 悬决期间链路不继续）。 */
+  {
+    const order = [];
+    const pending = createPendingActionStore();
+    let releaseTeam;
+    const executor = createActionExecutor({
+      pending,
+      createSession: async () => {
+        order.push("create");
+        return "sess-team";
+      },
+      armTeamIntent: ({ sessionId }) => {
+        order.push("team:" + sessionId);
+        assert.equal(pending.peek(), null, "团队登记先于标记登记");
+        return new Promise((resolve) => {
+          releaseTeam = () => resolve({ ok: true, serviceAvailable: true, immediate: true });
+        });
+      },
+      openSession: (sessionId) => order.push("open:" + sessionId),
+      closePage: () => order.push("close"),
+      now: () => 500_000
+    });
+    const running = executor.run({ button: { ...button, team: true, autoSend: true }, card });
+    await new Promise((done) => setTimeout(done, 10));
+    assert.deepEqual(order, ["create", "team:sess-team"], "autoSend 分支等待登记落地（openSession 未提前）");
+    releaseTeam();
+    const run = await running;
+    assert.equal(run.ok, true);
+    assert.deepEqual(order, ["create", "team:sess-team", "open:sess-team", "close"], "登记落地后链路照常完成");
+    assert.equal(pending.peek()?.targetSessionId, "sess-team", "标记在团队登记之后登记");
+  }
+
+  /* float（非 autoSend）非等待：登记永不落地也不阻塞点击链路。 */
+  {
+    const order = [];
+    const executor = createActionExecutor({
+      pending: createPendingActionStore(),
+      createSession: async () => "sess-float",
+      armTeamIntent: () => {
+        order.push("team");
+        return new Promise(() => {}); // 永悬决：若被 await，run 不会返回
+      },
+      openSession: () => order.push("open"),
+      keepPage: () => order.push("keep"),
+      now: () => 600_000
+    });
+    const run = await executor.run({ button: { ...button, team: true, autoSend: false, jumpNewSession: false }, card });
+    assert.equal(run.ok, true, "float 分支不等待登记");
+    assert.deepEqual(order, ["team", "open", "keep"], "登记发出后链路照常流转（零阻塞）");
+  }
+
+  /* 服务缺席：toast 一次、链路照常；其它 toast 不重复。 */
+  {
+    const notices = [];
+    const executor = createActionExecutor({
+      pending: createPendingActionStore(),
+      createSession: async () => "sess-absent",
+      armTeamIntent: async () => ({ ok: false, serviceAvailable: false }),
+      openSession: () => {},
+      closePage: () => {},
+      notify: (text, isError) => notices.push({ text, isError }),
+      labels: { teamUnavailable: "智能团队不可用（测试文案）" },
+      now: () => 700_000
+    });
+    const run = await executor.run({ button: { ...button, team: true, autoSend: true }, card });
+    assert.equal(run.ok, true, "服务缺席不阻断链路");
+    assert.equal(notices.length, 1, "缺席 toast 恰一次");
+    assert.deepEqual(notices[0], { text: "智能团队不可用（测试文案）", isError: true });
+  }
+
+  /* 登记失败/抛错：零阻断、零 toast（serviceAvailable 未知按 true）。 */
+  {
+    const notices = [];
+    const executor = createActionExecutor({
+      pending: createPendingActionStore(),
+      createSession: async () => "sess-fail",
+      armTeamIntent: async () => ({ ok: false, serviceAvailable: true, error: "network" }),
+      openSession: () => {},
+      closePage: () => {},
+      notify: (text, isError) => notices.push({ text, isError }),
+      now: () => 800_000
+    });
+    const run = await executor.run({ button: { ...button, team: true, autoSend: true }, card });
+    assert.equal(run.ok, true, "登记失败不阻断");
+    assert.deepEqual(notices, [], "网络失败静默（无缺席 toast）");
+
+    let unhandled = null;
+    const onUnhandled = (reason) => {
+      unhandled = reason;
+    };
+    process.on("unhandledRejection", onUnhandled);
+    const throwing = createActionExecutor({
+      pending: createPendingActionStore(),
+      createSession: async () => "sess-throw",
+      armTeamIntent: () => {
+        throw new Error("sync boom");
+      },
+      openSession: () => {},
+      closePage: () => {},
+      now: () => 810_000
+    });
+    const syncRun = await throwing.run({ button: { ...button, team: true, autoSend: true }, card });
+    assert.equal(syncRun.ok, true, "同步抛错不阻断");
+    const rejecting = createActionExecutor({
+      pending: createPendingActionStore(),
+      createSession: async () => "sess-reject-team",
+      armTeamIntent: () => Promise.reject(new Error("async boom")),
+      openSession: () => {},
+      closePage: () => {},
+      now: () => 820_000
+    });
+    const rejectRun = await rejecting.run({ button: { ...button, team: true, autoSend: false }, card });
+    assert.equal(rejectRun.ok, true, "异步拒绝不阻断（非等待分支拒绝被吞）");
+    await new Promise((done) => setTimeout(done, 10));
+    process.off("unhandledRejection", onUnhandled);
+    assert.equal(unhandled, null, "零未处理拒绝");
+  }
+
+  /* 未勾选：零登记请求、零团队 toast（行为与变更前一致）。 */
+  {
+    let arms = 0;
+    const notices = [];
+    const executor = createActionExecutor({
+      pending: createPendingActionStore(),
+      createSession: async () => "sess-plain",
+      armTeamIntent: () => {
+        arms += 1;
+        return Promise.resolve({ ok: true, serviceAvailable: true });
+      },
+      openSession: () => {},
+      closePage: () => {},
+      notify: (text) => notices.push(text),
+      now: () => 900_000
+    });
+    const run = await executor.run({ button: { ...button, autoSend: true }, card });
+    assert.equal(run.ok, true);
+    assert.equal(arms, 0, "未勾选 → 零登记请求");
+    assert.deepEqual(notices, [], "未勾选 → 零 toast");
+    /* 独立执行器避开共享冷却窗（now 固定）。 */
+    const falseExecutor = createActionExecutor({
+      pending: createPendingActionStore(),
+      createSession: async () => "sess-false",
+      armTeamIntent: () => {
+        arms += 1;
+        return Promise.resolve({ ok: true, serviceAvailable: true });
+      },
+      openSession: () => {},
+      closePage: () => {},
+      notify: (text) => notices.push(text),
+      now: () => 950_000
+    });
+    const explicitFalse = await falseExecutor.run({ button: { ...button, team: false, autoSend: true }, card });
+    assert.equal(explicitFalse.ok, true);
+    assert.equal(arms, 0, "team:false → 零登记请求");
+  }
+
+  /* 降级路径（createSession 失败回落 startSession）：确定性跳过登记。 */
+  {
+    let arms = 0;
+    const notices = [];
+    const executor = createActionExecutor({
+      pending: createPendingActionStore(),
+      createSession: async () => {
+        throw new Error("no channel");
+      },
+      armTeamIntent: () => {
+        arms += 1;
+        return Promise.resolve({ ok: true, serviceAvailable: true });
+      },
+      startSession: async () => {},
+      notify: (text) => notices.push(text),
+      now: () => 910_000
+    });
+    const run = await executor.run({ button: { ...button, team: true, autoSend: true }, card });
+    assert.equal(run.ok, true);
+    assert.equal(run.degraded, true);
+    assert.equal(arms, 0, "降级路径跳过登记（回落目标会话 id 不可知）");
+    assert.equal(notices.length, 1, "仅既有降级 toast（不追加第二条团队 toast）");
+    assert.ok(notices[0].includes("新建会话通道不可用"), "既有降级文案");
+  }
+}
+
+/* ── 4g. 星胚动作链路的团队意图登记（add-cosmos-agent-team-toggle 4.3/4.4） ── */
+{
+  const protoButton = {
+    name: "推进",
+    prompt: "继续探索",
+    autoSend: true,
+    newSession: false,
+    preState: "proto",
+    team: true
+  };
+  const card = { sessionId: "sess-explore", slugs: ["demo"], wsId: "ws1", lifecycle: "proto", act: 0 };
+  const order = [];
+  let releaseTeam;
+  const executor = createEmbryoActionExecutor({
+    pending: createPendingActionStore(),
+    resolveTarget: (target) => ({ ok: true, reason: "ok", sessionId: target.sessionId }),
+    armTeamIntent: ({ sessionId }) => {
+      order.push("team:" + sessionId);
+      return new Promise((resolve) => {
+        releaseTeam = () => resolve({ ok: true, serviceAvailable: true });
+      });
+    },
+    openSession: (sessionId) => order.push("open:" + sessionId),
+    closePage: () => order.push("close"),
+    now: () => 920_000
+  });
+  const running = executor.run({ button: protoButton, card });
+  await new Promise((done) => setTimeout(done, 10));
+  assert.deepEqual(order, ["team:sess-explore"], "autoSend 等待登记落地（openSession 未提前）");
+  releaseTeam();
+  const run = await running;
+  assert.equal(run.ok, true);
+  assert.deepEqual(order, ["team:sess-explore", "open:sess-explore", "close"], "登记落地后星胚链路照常");
+
+  /* 未勾选团队：零登记（星胚链路行为与变更前一致）。 */
+  let arms = 0;
+  const plain = createEmbryoActionExecutor({
+    pending: createPendingActionStore(),
+    resolveTarget: () => ({ ok: true, reason: "ok", sessionId: "sess-e2" }),
+    armTeamIntent: () => {
+      arms += 1;
+      return Promise.resolve({ ok: true, serviceAvailable: true });
+    },
+    openSession: () => {},
+    keepPage: () => {},
+    now: () => 930_000
+  });
+  const plainRun = await plain.run({ button: { ...protoButton, team: undefined }, card });
+  assert.equal(plainRun.ok, true);
+  assert.equal(arms, 0, "星胚未勾选 → 零登记请求");
+}
+
 /* ── 6. 零写 openspec 工件（spec「点击不写工件」静态面） ── */
 {
   const source = readFileSync(new URL("../src/actions.mjs", import.meta.url), "utf8");

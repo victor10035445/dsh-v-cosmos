@@ -31,12 +31,14 @@ import { isEmbryoDismissButton } from "./buttons.mjs";
 
 /**
  * 按钮草稿条目构造（键序固定 name → prompt → autoSend → newSession → jumpNewSession →
- * prepend → model → preState → shortcut；`buttonsEqual` 的 JSON 串比较依赖键序稳定）。与宿主
- * 归一化同口径：未勾选前插 MUST NOT 输出 prepend 键、跳转开启（缺省）MUST NOT 输出
- * jumpNewSession 键、未绑定 MUST NOT 输出 model 键、未选前置状态 MUST NOT 输出
- * preState 键、未选快捷键 MUST NOT 输出 shortcut 键。`preState: "proto"` 行：`newSession`
+ * prepend → model → preState → shortcut → embryoDismiss → team；`buttonsEqual` 的 JSON 串
+ * 比较依赖键序稳定）。与宿主归一化同口径：未勾选前插 MUST NOT 输出 prepend 键、跳转开启
+ * （缺省）MUST NOT 输出 jumpNewSession 键、未绑定 MUST NOT 输出 model 键、未选前置状态
+ * MUST NOT 输出 preState 键、未选快捷键 MUST NOT 输出 shortcut 键、未勾选团队 MUST NOT
+ * 输出 team 键。`preState: "proto"` 行：`newSession`
  * 恒 false（星胚动作固定发往探索会话），且 `prepend` 无语义（星胚消息无 @引用）→ 草稿不落该键。
- * 漂移值（枚举外字符串）原样保留在草稿（设置页回显「不可用」，保存由 `buttonIssue` 拒绝）。
+ * 漂移值（枚举外字符串 / 非布尔 team）原样保留在草稿（设置页回显「不可用」，保存由
+ * `buttonIssue` 拒绝）。
  * @param {object} source
  * @returns {object}
  */
@@ -63,6 +65,12 @@ export function buttonDraftOf(source) {
   /* 星胚直执行键（add-cosmos-embryo-dismiss-button 5.3）：仅 true 落键（键序最末）；
      漂移值（非 proto 行 + true）原样保留供回显，保存由 `buttonIssue` 拒绝。 */
   if (source?.embryoDismiss === true) entry.embryoDismiss = true;
+  /* 团队启用键（add-cosmos-agent-team-toggle 5.1）：仅 true 落键（键序最末）；非布尔
+     漂移值原样保留供回显（保存由 `buttonIssue` 拒绝）。 */
+  if (source?.team === true) entry.team = true;
+  else if (source?.team !== undefined && source?.team !== null && typeof source.team !== "boolean") {
+    entry.team = source.team;
+  }
   return entry;
 }
 
@@ -101,6 +109,10 @@ export function buttonIssue(list) {
       return "buttonEmbryoDismissInvalid";
     }
     if (dismiss === true && !isProto) return "buttonEmbryoDismissProtoOnly";
+    /* 团队启用键（add-cosmos-agent-team-toggle 5.1 / spec「按钮团队启用设置字段」）：
+       仅布尔合法（非布尔漂移值可回显，但保存 MUST 拒绝）；false/null/缺省一律合法。 */
+    const team = button?.team;
+    if (team !== undefined && team !== null && typeof team !== "boolean") return "buttonTeamInvalid";
     /* 快捷键：仅按钮键域枚举内字符串合法（漂移值可回显，但保存 MUST 拒绝）；空串按
        「无」（未提供）处理，与宿主 normalize 口径一致。 */
     const shortcut = button?.shortcut;
@@ -116,9 +128,9 @@ export function buttonIssue(list) {
 
 /**
  * 星座按钮草稿条目构造（键序固定 name → prompt → autoSend → newSession → model →
- * shortcut；**恒无 prepend 键**——星座动作无「提示词在前」语义）。与
+ * shortcut → team；**恒无 prepend 键**——星座动作无「提示词在前」语义）。与
  * `normalizeConstButtons` 同口径：未绑定 MUST NOT 输出 model 键、未选快捷键 MUST NOT
- * 输出 shortcut 键（漂移值原样保留供回显）。
+ * 输出 shortcut 键、未勾选团队 MUST NOT 输出 team 键（漂移值原样保留供回显）。
  * @param {object} source
  * @returns {object}
  */
@@ -134,6 +146,12 @@ export function constButtonDraftOf(source) {
   if (model !== undefined) entry.model = model;
   const rawShortcut = typeof source?.shortcut === "string" && source.shortcut.trim() ? source.shortcut.trim() : undefined;
   if (rawShortcut !== undefined) entry.shortcut = rawShortcut;
+  /* 团队启用键（add-cosmos-agent-team-toggle 5.1）：仅 true 落键（键序最末）；非布尔漂移值
+     原样保留供回显（保存由 `constButtonIssue` 拒绝）。 */
+  if (source?.team === true) entry.team = true;
+  else if (source?.team !== undefined && source?.team !== null && typeof source.team !== "boolean") {
+    entry.team = source.team;
+  }
   return entry;
 }
 
@@ -162,6 +180,9 @@ export function constButtonIssue(list) {
       const trimmed = shortcut.trim();
       if (trimmed !== "" && !isButtonShortcut(trimmed)) return "constButtonShortcutInvalid";
     }
+    /* 团队启用键（add-cosmos-agent-team-toggle 5.1）：与快捷动作同口径——仅布尔合法。 */
+    const team = button?.team;
+    if (team !== undefined && team !== null && typeof team !== "boolean") return "buttonTeamInvalid";
   }
   if ((Array.isArray(list) ? list : []).length > MAX_CONST_BUTTONS) return "tooManyConstButtons";
   return "";
@@ -338,11 +359,11 @@ export function createButtonSettingsController(scope, profile) {
     },
     /**
      * 编辑第 index 条的字段（name/prompt/autoSend/jumpNewSession/prepend/model/preState/
-     * shortcut/embryoDismiss）。
-     * `model`/`prepend`/`jumpNewSession`/`preState`/`shortcut`/`embryoDismiss` 走 draftOf
-     * 特判：取消勾选/解绑/清空 MUST 删键（否则草稿残留显式 false/undefined，与存储条目不再
-     * 逐字同形，dirty 永不回清）。`prepend`/`jumpNewSession`/`preState`/`embryoDismiss` 在
-     * 对应 `supports*: false` 的 profile（星座动作）里是空操作。
+     * shortcut/embryoDismiss/team）。
+     * `model`/`prepend`/`jumpNewSession`/`preState`/`shortcut`/`embryoDismiss`/`team` 走
+     * draftOf 特判：取消勾选/解绑/清空 MUST 删键（否则草稿残留显式 false/undefined，与存储
+     * 条目不再逐字同形，dirty 永不回清）。`prepend`/`jumpNewSession`/`preState`/`embryoDismiss`
+     * 在对应 `supports*: false` 的 profile（星座动作）里是空操作。
      *
      * 两个联动纪律（add-cosmos-embryo-dismiss-button 5.2）：
      *  - 勾选 `embryoDismiss` → 草稿提示词**即时清空**（直执行行不残留死文案；保存落
@@ -369,6 +390,9 @@ export function createButtonSettingsController(scope, profile) {
           if (value === true) return draftOf({ ...button, embryoDismiss: true, prompt: "" });
           return draftOf({ ...button, embryoDismiss: undefined });
         }
+        /* 团队启用（add-cosmos-agent-team-toggle 5.1）：勾选 = true 落键；取消 = 删键
+           （存储最小形；非布尔漂移值由勾选/取消动作修复为布尔形状）。 */
+        if (field === "team") return draftOf({ ...button, team: value === true ? true : undefined });
         /* 快捷键（add-cosmos-shortcuts 3.3）：值 = 规范形字符串，`undefined`/`""` = 无
            （草稿删键，存储最小形）；漂移值原样保留供回显。 */
         if (field === "shortcut") return draftOf({ ...button, shortcut: value });
@@ -422,6 +446,7 @@ export function createButtonSettingsController(scope, profile) {
             ? button.preState.trim()
             : undefined;
           const isProto = preState === "proto";
+          const isDirect = isProto && button.embryoDismiss === true;
           const entry = {
             name: String(button.name ?? "").trim(),
             prompt: String(button.prompt ?? "").trim(),
@@ -441,6 +466,9 @@ export function createButtonSettingsController(scope, profile) {
           /* 星胚直执行键（add-cosmos-embryo-dismiss-button 5.3）：仅 proto 行写出（键序
              最末）；直执行行提示词按 schema 豁免恒落空串（控件已即时清空，双保险）。 */
           if (isProto && button.embryoDismiss === true) entry.embryoDismiss = true;
+          /* 团队启用键（add-cosmos-agent-team-toggle 5.1）：仅 true 落键（键序最末）；
+             直达移除行零会话依赖 → MUST NOT 产生该键（spec 场景「直达移除行无团队字段」）。 */
+          if (!isDirect && button.team === true) entry.team = true;
           return entry;
         });
         await scope.set(section, entries);

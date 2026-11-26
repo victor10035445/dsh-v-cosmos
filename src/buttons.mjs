@@ -4,7 +4,7 @@
  * 独立纯逻辑模块——宿主半区（configstore 节归一化 + 设置命名空间校验）与浏览器半区
  * （设置页草稿校验 / 动作条投影）共用，test/buttons-schema-smoke.mjs 直测。
  *
- * 模型：`{ name, prompt, autoSend, newSession, jumpNewSession?, prepend?, model?, preState?, shortcut?, embryoDismiss? }`
+ * 模型：`{ name, prompt, autoSend, newSession, jumpNewSession?, prepend?, model?, preState?, shortcut?, embryoDismiss?, team? }`
  *  - `name`   显示名（非空，trim 后去重；允许中文，不套用 commands 的小写正则）；
  *  - `prompt` 提示词（非空——**唯一豁免**：`embryoDismiss` 为 `true` 的直执行条目允许为空，
  *    trim 后空串合法且归一化恒输出 `prompt: ""` 保持键序恒定；直执行链路零消费 prompt）；
@@ -34,10 +34,15 @@
  *    该键（键序最末）；`false`/`null`/缺省按未提供处理（不落键不拒绝，与 `prepend` 同款
  *    布尔最小形纪律）；布尔 `true` 出现在非 proto / 缺省 `preState` 行保存拒绝；其余非布尔
  *    值保存拒绝。读面容错模式（`tolerateUnknownEmbryoDismiss`）保留漂移值不回写。
+ *  - `team` 可选布尔（add-cosmos-agent-team-toggle 2.1 / spec cosmos-actions「按钮团队启用键」）：
+ *    **智能体团队启用**（目标会话团队模式的按按钮开关）——**仅布尔 `true` 时输出该键**
+ *    （键序最末，`embryoDismiss` 之后）；`false`/`null`/缺省按未提供处理（不落键不拒绝，
+ *    存储最小形，语义 = 默认关）；其余非布尔值保存拒绝。读面容错模式
+ *    （`tolerateUnknownTeam`）保留漂移原值不回写（设置页回显「不可用」并拒绝保存）。
  *
  * 键序固定 name → prompt → autoSend → newSession → jumpNewSession → prepend → model
- * → preState → shortcut → embryoDismiss（`preState` / `shortcut` / `embryoDismiss` 依次
- * 追加尾部，既有条目序列化逐字节不变；客户端 `JSON.stringify` 比较依赖键序稳定）。
+ * → preState → shortcut → embryoDismiss → team（`preState` / `shortcut` / `embryoDismiss` /
+ * `team` 依次追加尾部，既有条目序列化逐字节不变；客户端 `JSON.stringify` 比较依赖键序稳定）。
  */
 
 import { SHORTCUT_BUTTON_KEYS, isButtonShortcut } from "./shortcuts.mjs";
@@ -95,22 +100,24 @@ export function normalizeButtonModel(raw, name) {
  *
  * @param {unknown} raw
  * @param {{tolerateUnknownPreState?: boolean, tolerateUnknownShortcut?: boolean,
- *          tolerateUnknownEmbryoDismiss?: boolean}} [options]
+ *          tolerateUnknownEmbryoDismiss?: boolean, tolerateUnknownTeam?: boolean}} [options]
  *        读面容错（默认严格）：`tolerateUnknownPreState` = true → 未知 `preState` 字符串原样
  *        保留（不回写、不丢弃该条）；`tolerateUnknownShortcut` = true → 池外 `shortcut`
  *        字符串原样保留（设置页回显「不可用」）；`tolerateUnknownEmbryoDismiss` = true →
  *        非 proto 行上的 `embryoDismiss: true` 漂移值原样保留（设置页回显「不可用」并拒绝
- *        保存）。保存路径 MUST NOT 使用任一模态（写入校验恒严格，见 configstore.writeSections）。
+ *        保存）；`tolerateUnknownTeam` = true → 非布尔 `team` 漂移值原样保留（同上）。
+ *        保存路径 MUST NOT 使用任一模态（写入校验恒严格，见 configstore.writeSections）。
  * @returns {Array<{name: string, prompt: string, autoSend: boolean, newSession: boolean,
  *          jumpNewSession?: false, prepend?: true,
  *          model?: {provider: string, model: string, reasoningEffort?: string},
- *          preState?: string, shortcut?: string, embryoDismiss?: true}>}
+ *          preState?: string, shortcut?: string, embryoDismiss?: true, team?: true}>}
  * @throws {TypeError} 形状非法 / 名称重复 / 超上限
  */
 export function normalizeButtons(raw, options = {}) {
   const tolerateUnknownPreState = options?.tolerateUnknownPreState === true;
   const tolerateUnknownShortcut = options?.tolerateUnknownShortcut === true;
   const tolerateUnknownEmbryoDismiss = options?.tolerateUnknownEmbryoDismiss === true;
+  const tolerateUnknownTeam = options?.tolerateUnknownTeam === true;
   let list = [];
   if (Array.isArray(raw)) list = raw;
   else if (raw && typeof raw === "object" && Array.isArray(raw.buttons)) list = raw.buttons;
@@ -214,6 +221,20 @@ export function normalizeButtons(raw, options = {}) {
         }
       }
     }
+    /* 团队启用键（add-cosmos-agent-team-toggle 2.1 / spec「按钮团队启用键」）：仅布尔
+       true 落键（键序最末）；false/null/缺省按未提供处理（不落键不拒绝，语义 = 默认关）；
+       其余非布尔值保存拒绝。读面容错模式（`tolerateUnknownTeam`）保留漂移原值不回写。 */
+    let team;
+    const rawTeam = item.team;
+    if (rawTeam !== undefined && rawTeam !== null) {
+      if (typeof rawTeam === "boolean") {
+        if (rawTeam === true) team = true;
+      } else if (tolerateUnknownTeam) {
+        team = rawTeam;
+      } else {
+        throw new TypeError(`button "${name}" team 智能团队开关必须为布尔值 (team must be a boolean)`);
+      }
+    }
     if (seen.has(name)) throw new TypeError(`button name "${name}" is duplicated`);
     seen.add(name);
     const entry = { name, prompt, autoSend: item.autoSend === true, newSession };
@@ -226,6 +247,8 @@ export function normalizeButtons(raw, options = {}) {
     if (shortcut !== undefined) entry.shortcut = shortcut;
     /* 星胚直执行键序最末（shortcut 之后）：无该键条目序列化逐字节不变。 */
     if (wantsDismiss) entry.embryoDismiss = true;
+    /* 团队启用键序最末（embryoDismiss 之后）：无该键条目序列化逐字节不变。 */
+    if (team !== undefined) entry.team = team;
     out.push(entry);
     if (out.length > MAX_BUTTONS) throw new TypeError(`buttons exceeds ${MAX_BUTTONS} entries`);
   }
@@ -236,9 +259,10 @@ export function normalizeButtons(raw, options = {}) {
  * 浏览器半区的**容错投影**（读面，不抛错）：非法/残缺条目直接跳过，条目重建走
  * `normalizeButtons` 的同款键序与条件键口径（单条失败即丢弃该条，SHALL NOT 波及其余）。
  * 读面容错模式（`tolerateUnknownPreState` / `tolerateUnknownShortcut` /
- * `tolerateUnknownEmbryoDismiss`）保留未知 `preState` / 池外 `shortcut` / 非 proto 行的
- * `embryoDismiss` 原值——设置页据此「原样回显标不可用」，动作条门控/分发对未知值恒不命中
- * （自然隐藏 / 不可触发）。直执行条目（proto ∧ `embryoDismiss: true`）的**空 prompt 合法**
+ * `tolerateUnknownEmbryoDismiss` / `tolerateUnknownTeam`）保留未知 `preState` / 池外
+ * `shortcut` / 非 proto 行的 `embryoDismiss` / 非布尔 `team` 原值——设置页据此
+ * 「原样回显标不可用」，动作条门控/分发对未知值恒不命中（自然隐藏 / 不可触发）。直执行
+ * 条目（proto ∧ `embryoDismiss: true`）的**空 prompt 合法**
  * ——此处的 `prompt` 非空前置过滤同口径豁免，否则免提示词的按钮会被投影静默丢弃。
  * @param {unknown} section 设置节（`scope.getSnapshot().value` 或 `/config` 的 value）
  * @returns {Array<object>}
@@ -255,7 +279,8 @@ export function buttonsSectionOf(section) {
       const [entry] = normalizeButtons([item], {
         tolerateUnknownPreState: true,
         tolerateUnknownShortcut: true,
-        tolerateUnknownEmbryoDismiss: true
+        tolerateUnknownEmbryoDismiss: true,
+        tolerateUnknownTeam: true
       });
       if (entry) out.push(entry);
     } catch {
@@ -304,7 +329,7 @@ export function actionButtonVisible(button, target) {
  * 可调用 + type/dict + toJSON）。本插件不注册宿主 settings 命名空间（design D7 的
  * 「自营 API 首选」决策），此函数保留给宿主设置服务 fallback 的完整性校验与冒烟。
  * 条目可选键：`jumpNewSession` / `prepend` / `model` / `preState` / `shortcut` /
- * `embryoDismiss`（尾部依次追加；口径由 `normalizeButtons` 单条枚举/绑定校验）。
+ * `embryoDismiss` / `team`（尾部依次追加；口径由 `normalizeButtons` 单条枚举/绑定校验）。
  * @returns {(value: unknown) => { buttons: Array<object> }}
  */
 export function buttonsSchema() {
